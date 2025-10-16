@@ -1,0 +1,24 @@
+eap {
+    default_eap_type = tls
+    timer_expire = 60
+    ignore_unknown_eap_types = no
+    cisco_accounting_username_bug = no
+    max_sessions = ${max_requests}
+
+    tls-config tls-common {
+        private_key_file = /etc/freeradius/3.0/certs/server.key
+        certificate_file = /etc/freeradius/3.0/certs/server.pem
+        ca_file = /etc/freeradius/3.0/certs/ca.pem
+        dh_file = /etc/freeradius/3.0/certs/dh.pem
+        fragment_size = 1600
+        include_length = yes
+
+        cache {
+            enable = no
+        }
+    }
+
+    tls {
+        tls = tls-common
+    }
+}
