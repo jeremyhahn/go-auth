@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/jhahn/go-auth/pkg/tpm2"
+	"github.com/jeremyhahn/go-auth/pkg/tpm2"
 )
 
 // ExampleNewAuthenticator demonstrates basic usage of the TPM 2.0 authenticator.

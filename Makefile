@@ -1,15 +1,15 @@
 GO ?= go
 
 MODULES := pam radius tacacs ldap pkcs11 yubikey oauth otp tpm2
-MODULE_DIR_pam := pkg/pam
-MODULE_DIR_radius := pkg/radius
-MODULE_DIR_tacacs := pkg/tacacs
-MODULE_DIR_ldap := pkg/ldap
-MODULE_DIR_pkcs11 := pkg/pkcs11
-MODULE_DIR_yubikey := pkg/yubikey
-MODULE_DIR_oauth := pkg/oauth
-MODULE_DIR_otp := pkg/otp
-MODULE_DIR_tpm2 := pkg/tpm2
+MODULE_DIR_pam := test/integration/pam
+MODULE_DIR_radius := test/integration/radius
+MODULE_DIR_tacacs := test/integration/tacacs
+MODULE_DIR_ldap := test/integration/ldap
+MODULE_DIR_pkcs11 := test/integration/pkcs11
+MODULE_DIR_yubikey := test/integration/yubikey
+MODULE_DIR_oauth := test/integration/oauth
+MODULE_DIR_otp := test/integration/otp
+MODULE_DIR_tpm2 := test/integration/tpm2
 
 .PHONY: all
 all: test

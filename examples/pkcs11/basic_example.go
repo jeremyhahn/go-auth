@@ -18,7 +18,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/jhahn/go-auth/pkg/pkcs11"
+	"github.com/jeremyhahn/go-auth/pkg/pkcs11"
 )
 
 func main() {

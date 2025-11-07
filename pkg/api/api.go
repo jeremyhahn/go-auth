@@ -5,15 +5,15 @@ import (
 	"errors"
 	"fmt"
 
-	ldapauth "github.com/jhahn/go-auth/pkg/ldap"
-	"github.com/jhahn/go-auth/pkg/oauth"
-	"github.com/jhahn/go-auth/pkg/otp"
-	"github.com/jhahn/go-auth/pkg/pam"
-	"github.com/jhahn/go-auth/pkg/pkcs11"
-	"github.com/jhahn/go-auth/pkg/radius"
-	"github.com/jhahn/go-auth/pkg/tacacs"
-	"github.com/jhahn/go-auth/pkg/tpm2"
-	"github.com/jhahn/go-auth/pkg/yubikey"
+	ldapauth "github.com/jeremyhahn/go-auth/pkg/ldap"
+	"github.com/jeremyhahn/go-auth/pkg/oauth"
+	"github.com/jeremyhahn/go-auth/pkg/otp"
+	"github.com/jeremyhahn/go-auth/pkg/pam"
+	"github.com/jeremyhahn/go-auth/pkg/pkcs11"
+	"github.com/jeremyhahn/go-auth/pkg/radius"
+	"github.com/jeremyhahn/go-auth/pkg/tacacs"
+	"github.com/jeremyhahn/go-auth/pkg/tpm2"
+	"github.com/jeremyhahn/go-auth/pkg/yubikey"
 )
 
 // Handler defines the contract for a backend authenticator.

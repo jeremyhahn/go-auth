@@ -16,7 +16,7 @@ import (
 
 	"github.com/google/go-tpm/tpm2"
 	"github.com/google/go-tpm/tpm2/transport"
-	tpm2auth "github.com/jhahn/go-auth/pkg/tpm2"
+	tpm2auth "github.com/jeremyhahn/go-auth/pkg/tpm2"
 )
 
 const (

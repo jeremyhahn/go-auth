@@ -16,7 +16,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/jhahn/go-auth/pkg/tacacs"
+	"github.com/jeremyhahn/go-auth/pkg/tacacs"
 )
 
 func main() {

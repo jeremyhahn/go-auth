@@ -34,7 +34,7 @@ import (
     "context"
     "log"
 
-    "github.com/jhahn/go-auth/pkg/radius"
+    "github.com/jeremyhahn/go-auth/pkg/radius"
 )
 
 func main() {
@@ -356,8 +356,8 @@ if err != nil {
 
 ```go
 import (
-    "github.com/jhahn/go-auth/pkg/api"
-    "github.com/jhahn/go-auth/pkg/radius"
+    "github.com/jeremyhahn/go-auth/pkg/api"
+    "github.com/jeremyhahn/go-auth/pkg/radius"
 )
 
 radiusAuth, _ := radius.NewAuthenticator(

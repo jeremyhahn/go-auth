@@ -8,7 +8,7 @@ import (
 	"io"
 	"time"
 
-	"github.com/jhahn/go-auth/pkg/radius/internal/tlsio"
+	"github.com/jeremyhahn/go-auth/pkg/radius/internal/tlsio"
 	radiuslib "layeh.com/radius"
 	"layeh.com/radius/rfc2865"
 )

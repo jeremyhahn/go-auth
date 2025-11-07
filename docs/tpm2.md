@@ -87,7 +87,7 @@ import (
     "errors"
     "log"
 
-    "github.com/jhahn/go-auth/pkg/tpm2"
+    "github.com/jeremyhahn/go-auth/pkg/tpm2"
 )
 
 func main() {

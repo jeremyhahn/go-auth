@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	tacacslib "github.com/jhahn/go-auth/pkg/tacacs"
+	tacacslib "github.com/jeremyhahn/go-auth/pkg/tacacs"
 	tacplus "github.com/nwaples/tacplus"
 )
 

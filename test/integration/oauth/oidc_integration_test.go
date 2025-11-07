@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jhahn/go-auth/pkg/oauth"
+	"github.com/jeremyhahn/go-auth/pkg/oauth"
 )
 
 // TestOIDC_Discovery tests the OIDC discovery endpoint functionality.

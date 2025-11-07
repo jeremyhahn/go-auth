@@ -16,7 +16,7 @@ import (
 	"log"
 	"time"
 
-	ldapauth "github.com/jhahn/go-auth/pkg/ldap"
+	ldapauth "github.com/jeremyhahn/go-auth/pkg/ldap"
 )
 
 func main() {

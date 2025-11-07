@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/jhahn/go-auth/pkg/api"
-	"github.com/jhahn/go-auth/pkg/oauth"
-	"github.com/jhahn/go-auth/pkg/otp"
+	"github.com/jeremyhahn/go-auth/pkg/api"
+	"github.com/jeremyhahn/go-auth/pkg/oauth"
+	"github.com/jeremyhahn/go-auth/pkg/otp"
 )
 
 func main() {

@@ -65,7 +65,7 @@ import (
     "context"
     "log"
 
-    "github.com/jhahn/go-auth/pkg/pam"
+    "github.com/jeremyhahn/go-auth/pkg/pam"
 )
 
 func main() {
@@ -272,8 +272,8 @@ Use PAM with the api package:
 
 ```go
 import (
-    "github.com/jhahn/go-auth/pkg/api"
-    "github.com/jhahn/go-auth/pkg/pam"
+    "github.com/jeremyhahn/go-auth/pkg/api"
+    "github.com/jeremyhahn/go-auth/pkg/pam"
 )
 
 pamAuth, _ := pam.NewAuthenticator("login", nil)

@@ -16,7 +16,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/jhahn/go-auth/pkg/yubikey"
+	"github.com/jeremyhahn/go-auth/pkg/yubikey"
 )
 
 func main() {

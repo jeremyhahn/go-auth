@@ -41,7 +41,7 @@ import (
     "context"
     "log"
 
-    "github.com/jhahn/go-auth/pkg/ldap"
+    "github.com/jeremyhahn/go-auth/pkg/ldap"
 )
 
 func main() {
@@ -393,8 +393,8 @@ auth, err := ldap.NewAuthenticator(
 
 ```go
 import (
-    "github.com/jhahn/go-auth/pkg/api"
-    "github.com/jhahn/go-auth/pkg/ldap"
+    "github.com/jeremyhahn/go-auth/pkg/api"
+    "github.com/jeremyhahn/go-auth/pkg/ldap"
 )
 
 ldapAuth, _ := ldap.NewAuthenticator(

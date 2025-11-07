@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/jhahn/go-auth/pkg/otp"
+	"github.com/jeremyhahn/go-auth/pkg/otp"
 )
 
 func main() {

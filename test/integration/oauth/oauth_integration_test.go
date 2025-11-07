@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jhahn/go-auth/pkg/api"
-	"github.com/jhahn/go-auth/pkg/oauth"
+	"github.com/jeremyhahn/go-auth/pkg/api"
+	"github.com/jeremyhahn/go-auth/pkg/oauth"
 )
 
 const (

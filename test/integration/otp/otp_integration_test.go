@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jhahn/go-auth/pkg/otp"
+	"github.com/jeremyhahn/go-auth/pkg/otp"
 )
 
 func TestIntegration_TOTP_EndToEnd(t *testing.T) {

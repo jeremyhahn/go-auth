@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	radiuslib "github.com/jhahn/go-auth/pkg/radius"
+	radiuslib "github.com/jeremyhahn/go-auth/pkg/radius"
 )
 
 const (

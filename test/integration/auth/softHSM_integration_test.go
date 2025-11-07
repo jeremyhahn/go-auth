@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jhahn/go-auth/pkg/api"
-	"github.com/jhahn/go-auth/pkg/pkcs11"
-	"github.com/jhahn/go-auth/pkg/yubikey"
+	"github.com/jeremyhahn/go-auth/pkg/api"
+	"github.com/jeremyhahn/go-auth/pkg/pkcs11"
+	"github.com/jeremyhahn/go-auth/pkg/yubikey"
 )
 
 func init() {

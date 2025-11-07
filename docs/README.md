@@ -97,7 +97,7 @@ Comprehensive authentication library for Go with support for multiple authentica
 ### Installation
 
 ```bash
-go get github.com/jhahn/go-auth
+go get github.com/jeremyhahn/go-auth
 ```
 
 ### Basic Usage
@@ -109,10 +109,10 @@ import (
     "context"
     "log"
 
-    "github.com/jhahn/go-auth/pkg/api"
-    "github.com/jhahn/go-auth/pkg/ldap"
-    "github.com/jhahn/go-auth/pkg/oauth"
-    "github.com/jhahn/go-auth/pkg/otp"
+    "github.com/jeremyhahn/go-auth/pkg/api"
+    "github.com/jeremyhahn/go-auth/pkg/ldap"
+    "github.com/jeremyhahn/go-auth/pkg/oauth"
+    "github.com/jeremyhahn/go-auth/pkg/otp"
 )
 
 func main() {

@@ -17,7 +17,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/jhahn/go-auth/pkg/radius"
+	"github.com/jeremyhahn/go-auth/pkg/radius"
 )
 
 func main() {

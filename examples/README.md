@@ -112,7 +112,7 @@ import (
     "log"
     "time"
 
-    "github.com/jhahn/go-auth/pkg/<module>"
+    "github.com/jeremyhahn/go-auth/pkg/<module>"
 )
 
 func main() {
@@ -217,7 +217,7 @@ This allows:
 
 - **Documentation**: See `docs/` directory for detailed module documentation
 - **Integration Tests**: See `test/integration/` for working test examples
-- **API Reference**: Run `go doc github.com/jhahn/go-auth/pkg/<module>`
+- **API Reference**: Run `go doc github.com/jeremyhahn/go-auth/pkg/<module>`
 
 ## Contributing
 

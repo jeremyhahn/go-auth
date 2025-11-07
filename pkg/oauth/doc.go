@@ -189,7 +189,7 @@
 // The Authenticator implements the passwordAuthenticator interface
 // and can be used with the api package:
 //
-//	import "github.com/jhahn/go-auth/pkg/api"
+//	import "github.com/jeremyhahn/go-auth/pkg/api"
 //
 //	oauthAuth, _ := oauth.NewAuthenticator(config)
 //	service, _ := api.NewService(api.Config{

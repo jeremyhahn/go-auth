@@ -66,7 +66,7 @@ import (
     "context"
     "log"
 
-    "github.com/jhahn/go-auth/pkg/yubikey"
+    "github.com/jeremyhahn/go-auth/pkg/yubikey"
 )
 
 func main() {
@@ -377,8 +377,8 @@ err := auth.Authenticate(ctx, otp)
 
 ```go
 import (
-    "github.com/jhahn/go-auth/pkg/api"
-    "github.com/jhahn/go-auth/pkg/yubikey"
+    "github.com/jeremyhahn/go-auth/pkg/api"
+    "github.com/jeremyhahn/go-auth/pkg/yubikey"
 )
 
 validator := NewYubiCloudValidator()

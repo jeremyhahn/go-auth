@@ -17,7 +17,7 @@ The `otp` package provides TOTP (Time-based One-Time Password) and HOTP (HMAC-ba
 ## Installation
 
 ```bash
-go get github.com/jhahn/go-auth/pkg/otp
+go get github.com/jeremyhahn/go-auth/pkg/otp
 ```
 
 ## Quick Start
@@ -32,7 +32,7 @@ import (
     "fmt"
     "log"
 
-    "github.com/jhahn/go-auth/pkg/otp"
+    "github.com/jeremyhahn/go-auth/pkg/otp"
 )
 
 func main() {
@@ -75,7 +75,7 @@ import (
     "fmt"
     "log"
 
-    "github.com/jhahn/go-auth/pkg/otp"
+    "github.com/jeremyhahn/go-auth/pkg/otp"
 )
 
 func main() {

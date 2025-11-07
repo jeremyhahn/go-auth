@@ -6,7 +6,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/jhahn/go-auth/pkg/otp"
+	"github.com/jeremyhahn/go-auth/pkg/otp"
 )
 
 func main() {

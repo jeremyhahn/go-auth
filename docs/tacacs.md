@@ -39,7 +39,7 @@ import (
     "context"
     "log"
 
-    "github.com/jhahn/go-auth/pkg/tacacs"
+    "github.com/jeremyhahn/go-auth/pkg/tacacs"
 )
 
 func main() {
@@ -274,8 +274,8 @@ err := auth.Authenticate(ctx, "username", "password")
 
 ```go
 import (
-    "github.com/jhahn/go-auth/pkg/api"
-    "github.com/jhahn/go-auth/pkg/tacacs"
+    "github.com/jeremyhahn/go-auth/pkg/api"
+    "github.com/jeremyhahn/go-auth/pkg/tacacs"
 )
 
 tacacsAuth, _ := tacacs.NewAuthenticator(

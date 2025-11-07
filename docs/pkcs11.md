@@ -61,7 +61,7 @@ import (
     "context"
     "log"
 
-    "github.com/jhahn/go-auth/pkg/pkcs11"
+    "github.com/jeremyhahn/go-auth/pkg/pkcs11"
 )
 
 func main() {
@@ -370,8 +370,8 @@ err := auth.Authenticate(ctx, "1234")
 
 ```go
 import (
-    "github.com/jhahn/go-auth/pkg/api"
-    "github.com/jhahn/go-auth/pkg/pkcs11"
+    "github.com/jeremyhahn/go-auth/pkg/api"
+    "github.com/jeremyhahn/go-auth/pkg/pkcs11"
 )
 
 cfg := pkcs11.Config{

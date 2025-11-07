@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	pamlib "github.com/jhahn/go-auth/pkg/pam"
+	pamlib "github.com/jeremyhahn/go-auth/pkg/pam"
 )
 
 func newAuthenticator(t *testing.T) *pamlib.Authenticator {

@@ -16,7 +16,7 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/jhahn/go-auth/pkg/oauth"
+	"github.com/jeremyhahn/go-auth/pkg/oauth"
 )
 
 func main() {

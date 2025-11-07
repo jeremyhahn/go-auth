@@ -17,7 +17,7 @@ import (
 
 	ldap "github.com/vjeantet/ldapserver"
 
-	ldapauth "github.com/jhahn/go-auth/pkg/ldap"
+	ldapauth "github.com/jeremyhahn/go-auth/pkg/ldap"
 )
 
 type credStore struct {
