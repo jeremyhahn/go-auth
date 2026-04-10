@@ -1,6 +1,6 @@
 module github.com/jeremyhahn/go-auth
 
-go 1.25.1
+go 1.25.5
 
 require (
 	github.com/go-ldap/ldap/v3 v3.4.12
