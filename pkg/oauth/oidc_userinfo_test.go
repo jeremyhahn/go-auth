@@ -328,7 +328,7 @@ func TestUserInfoClient_GetUserInfo(t *testing.T) {
 
 		_, err := client.GetUserInfo(ctx, "test-token", "https://example.com")
 		if err == nil {
-			t.Error("GetUserInfo() should error on cancelled context")
+			t.Error("GetUserInfo() should error on canceled context")
 		}
 	})
 

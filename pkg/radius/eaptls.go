@@ -466,7 +466,7 @@ func (s *eapTLSSession) closeTransport(err error) {
 		s.transport.Close()
 		return
 	}
-	s.transport.CloseWithError(err)
+	_ = s.transport.CloseWithError(err)
 }
 
 type fragmentAccumulator struct {

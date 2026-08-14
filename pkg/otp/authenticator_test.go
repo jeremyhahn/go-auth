@@ -591,7 +591,7 @@ func TestContextCancellation(t *testing.T) {
 	code, _ := auth.Generate()
 	err = auth.Authenticate(ctx, code)
 	if err == nil {
-		t.Error("expected error with cancelled context")
+		t.Error("expected error with canceled context")
 	}
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("expected context.Canceled error, got %v", err)
@@ -845,7 +845,7 @@ func TestValidateCounterWithNilContext(t *testing.T) {
 	}
 }
 
-// TestValidateCounterWithCancelledContext tests ValidateCounter with cancelled context
+// TestValidateCounterWithCancelledContext tests ValidateCounter with canceled context
 func TestValidateCounterWithCancelledContext(t *testing.T) {
 	cfg := Config{
 		Type:        TypeHOTP,
@@ -869,7 +869,7 @@ func TestValidateCounterWithCancelledContext(t *testing.T) {
 
 	_, err = auth.ValidateCounter(ctx, code, 0)
 	if err == nil {
-		t.Fatal("expected error with cancelled context")
+		t.Fatal("expected error with canceled context")
 	}
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("expected context.Canceled, got %v", err)

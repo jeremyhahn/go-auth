@@ -133,7 +133,7 @@ type Authenticator struct {
 //
 // The address must include host and port (for example, "127.0.0.1:1812"). The secret
 // provides the shared secret used to protect Access-Request packets. Options allow callers
-// to adjust transport behaviour, enable TLS, or supply custom packet exchangers.
+// to adjust transport behavior, enable TLS, or supply custom packet exchangers.
 func NewAuthenticator(address, secret string, opts ...Option) (*Authenticator, error) {
 	if address == "" {
 		return nil, errors.New("radius: address must not be empty")
@@ -299,7 +299,9 @@ func (t *tlsPacketExchanger) exchange(ctx context.Context, packet *radiuslib.Pac
 		for {
 			select {
 			case <-retryTimer:
-				conn.Write(wire)
+				// Best-effort retransmit: a failed write is retried on the
+				// next tick, and the surrounding read loop reports timeout.
+				_, _ = conn.Write(wire)
 			case <-ctx.Done():
 				return
 			}

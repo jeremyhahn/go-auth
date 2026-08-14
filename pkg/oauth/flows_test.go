@@ -572,8 +572,8 @@ func TestBuildAuthURL_WithAdditionalParams(t *testing.T) {
 	handler := newFlowHandler(config, httpClient)
 
 	additionalParams := map[string]string{
-		"prompt":          "consent",
-		"access_type":     "offline",
+		"prompt":                 "consent",
+		"access_type":            "offline",
 		"include_granted_scopes": "true",
 	}
 

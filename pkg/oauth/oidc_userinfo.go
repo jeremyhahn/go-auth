@@ -18,10 +18,10 @@ type userInfoEntry struct {
 
 // userInfoClient handles UserInfo endpoint requests and caching.
 type userInfoClient struct {
-	mu             sync.RWMutex
-	httpClient     *http.Client
-	config         *Config
-	cache          map[string]*userInfoEntry
+	mu              sync.RWMutex
+	httpClient      *http.Client
+	config          *Config
+	cache           map[string]*userInfoEntry
 	discoveryClient *discoveryClient
 }
 

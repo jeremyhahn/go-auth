@@ -47,7 +47,7 @@ type Authenticator struct {
 }
 
 // NewAuthenticator constructs a YubiKey authenticator. If validator is nil the
-// package-level system validator is used which must be initialised by platform code.
+// package-level system validator is used which must be initialized by platform code.
 func NewAuthenticator(cfg Config, validator OTPValidator) (*Authenticator, error) {
 	if err := cfg.validate(); err != nil {
 		return nil, err

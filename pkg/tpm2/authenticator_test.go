@@ -306,7 +306,7 @@ func TestAuthenticateErrors(t *testing.T) {
 			wantErr:  ErrEmptyPassword,
 		},
 		{
-			name: "context cancelled",
+			name: "context canceled",
 			auth: &Authenticator{
 				cfg: Config{
 					DevicePath:   "/dev/tpm0",

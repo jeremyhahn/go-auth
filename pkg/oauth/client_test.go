@@ -332,7 +332,6 @@ func TestRoundTrip_ExhaustedRetries(t *testing.T) {
 		t.Fatalf("Failed to create request: %v", err)
 	}
 
-
 	// The retry transport returns the last response after exhausting retries
 	// It does not return an error in this case, just the final 503 response
 	resp, err := transport.RoundTrip(req)

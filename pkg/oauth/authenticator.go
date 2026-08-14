@@ -12,13 +12,13 @@ import (
 // Authenticator is the main OAuth 2.0 authentication handler.
 // It is thread-safe and immutable after construction.
 type Authenticator struct {
-	config           *Config
-	validator        *tokenValidator
-	flows            *flowHandler
-	cache            TokenCache
-	oidcValidator    *oidcValidator
-	discoveryClient  *discoveryClient
-	userInfoClient   *userInfoClient
+	config          *Config
+	validator       *tokenValidator
+	flows           *flowHandler
+	cache           TokenCache
+	oidcValidator   *oidcValidator
+	discoveryClient *discoveryClient
+	userInfoClient  *userInfoClient
 }
 
 // NewAuthenticator creates a new OAuth authenticator with the given configuration.
@@ -340,8 +340,10 @@ func (a *Authenticator) GetIdentityClaims(ctx context.Context, token *Token, non
 		var err error
 		userInfo, err = a.GetUserInfo(ctx, token.AccessToken)
 		if err != nil {
-			// Don't fail if UserInfo fetch fails, just log and continue without it
-			// In production, you might want to log this error
+			// A UserInfo fetch failure must not fail authentication: the ID
+			// token already carries the authenticated identity. Continue
+			// without the supplementary claims.
+			userInfo = nil
 		}
 	}
 

@@ -32,12 +32,12 @@ func TestNewDiscoveryClient(t *testing.T) {
 
 func TestDiscoveryClient_GetDiscovery(t *testing.T) {
 	validDoc := &OIDCDiscoveryConfig{
-		Issuer:                "https://example.com",
-		AuthorizationEndpoint: "https://example.com/authorize",
-		TokenEndpoint:         "https://example.com/token",
-		JWKSUri:               "https://example.com/jwks",
-		ResponseTypesSupported: []string{"code"},
-		SubjectTypesSupported:  []string{"public"},
+		Issuer:                           "https://example.com",
+		AuthorizationEndpoint:            "https://example.com/authorize",
+		TokenEndpoint:                    "https://example.com/token",
+		JWKSUri:                          "https://example.com/jwks",
+		ResponseTypesSupported:           []string{"code"},
+		SubjectTypesSupported:            []string{"public"},
 		IDTokenSigningAlgValuesSupported: []string{"RS256"},
 	}
 
@@ -262,7 +262,7 @@ func TestDiscoveryClient_GetDiscovery(t *testing.T) {
 		dc := newDiscoveryClient(http.DefaultClient, &OIDCConfig{})
 		_, err := dc.getDiscovery(ctx, server.URL)
 		if err == nil {
-			t.Error("getDiscovery() should error on cancelled context")
+			t.Error("getDiscovery() should error on canceled context")
 		}
 	})
 
@@ -327,12 +327,12 @@ func TestBuildDiscoveryURL(t *testing.T) {
 
 func TestDiscoveryClient_RefreshDiscovery(t *testing.T) {
 	validDoc := &OIDCDiscoveryConfig{
-		Issuer:                "https://example.com",
-		AuthorizationEndpoint: "https://example.com/authorize",
-		TokenEndpoint:         "https://example.com/token",
-		JWKSUri:               "https://example.com/jwks",
-		ResponseTypesSupported: []string{"code"},
-		SubjectTypesSupported:  []string{"public"},
+		Issuer:                           "https://example.com",
+		AuthorizationEndpoint:            "https://example.com/authorize",
+		TokenEndpoint:                    "https://example.com/token",
+		JWKSUri:                          "https://example.com/jwks",
+		ResponseTypesSupported:           []string{"code"},
+		SubjectTypesSupported:            []string{"public"},
 		IDTokenSigningAlgValuesSupported: []string{"RS256"},
 	}
 
@@ -386,12 +386,12 @@ func TestDiscoveryClient_RefreshDiscovery(t *testing.T) {
 
 func TestDiscoveryClient_SetDiscovery(t *testing.T) {
 	validDoc := &OIDCDiscoveryConfig{
-		Issuer:                "https://example.com",
-		AuthorizationEndpoint: "https://example.com/authorize",
-		TokenEndpoint:         "https://example.com/token",
-		JWKSUri:               "https://example.com/jwks",
-		ResponseTypesSupported: []string{"code"},
-		SubjectTypesSupported:  []string{"public"},
+		Issuer:                           "https://example.com",
+		AuthorizationEndpoint:            "https://example.com/authorize",
+		TokenEndpoint:                    "https://example.com/token",
+		JWKSUri:                          "https://example.com/jwks",
+		ResponseTypesSupported:           []string{"code"},
+		SubjectTypesSupported:            []string{"public"},
 		IDTokenSigningAlgValuesSupported: []string{"RS256"},
 	}
 
@@ -435,12 +435,12 @@ func TestDiscoveryClient_GetCachedDiscovery(t *testing.T) {
 
 	t.Run("returns cached document", func(t *testing.T) {
 		validDoc := &OIDCDiscoveryConfig{
-			Issuer:                "https://example.com",
-			AuthorizationEndpoint: "https://example.com/authorize",
-			TokenEndpoint:         "https://example.com/token",
-			JWKSUri:               "https://example.com/jwks",
-			ResponseTypesSupported: []string{"code"},
-			SubjectTypesSupported:  []string{"public"},
+			Issuer:                           "https://example.com",
+			AuthorizationEndpoint:            "https://example.com/authorize",
+			TokenEndpoint:                    "https://example.com/token",
+			JWKSUri:                          "https://example.com/jwks",
+			ResponseTypesSupported:           []string{"code"},
+			SubjectTypesSupported:            []string{"public"},
 			IDTokenSigningAlgValuesSupported: []string{"RS256"},
 		}
 

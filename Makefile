@@ -14,12 +14,120 @@ MODULE_DIR_tpm2 := pkg/tpm2
 .PHONY: all
 all: test
 
+# pkg/pam splits its default SessionOpener across a //go:build cgo file that
+# needs libpam headers. Everything below builds with CGO_ENABLED=0 so the
+# module compiles, tests, lints and scans on a machine that does not have
+# libpam0g-dev installed. CI's unit-test job is the one exception: the race
+# detector requires cgo, so that job installs libpam0g-dev and drops the flag.
+export CGO_ENABLED = 0
+
+.PHONY: fmt
+fmt:
+	gofmt -s -w .
+
+.PHONY: fmt-check
+fmt-check:
+	@UNFORMATTED=$$(gofmt -l .); \
+	if [ -n "$$UNFORMATTED" ]; then \
+		echo "Files not formatted (run 'make fmt'):"; \
+		echo "$$UNFORMATTED"; \
+		exit 1; \
+	fi
+
 .PHONY: lint
-lint:
-	CGO_ENABLED=0 $(GO) vet $(shell $(GO) list ./... | grep -v /examples/)
+lint: fmt-check
+	$(GO) vet $(shell $(GO) list ./... | grep -v /examples/)
+	@LINTER=$$(command -v golangci-lint 2>/dev/null); \
+	if [ -n "$$LINTER" ]; then \
+		"$$LINTER" run --timeout=5m ./... || exit 1; \
+	else \
+		echo "golangci-lint not installed, skipping the umbrella run"; \
+		echo "  Install: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest"; \
+		echo "  CI installs it unconditionally, so .golangci.yml still gates every push."; \
+	fi
+
+.PHONY: build
+build:
+	$(GO) build ./...
 
 .PHONY: test
 test: lint $(MODULES:%=%-test)
+
+# The race detector requires cgo, and cgo in this module requires libpam
+# headers (pkg/pam). Install libpam0g-dev to run this locally; CI's unit-test
+# job does exactly that. `make test` stays CGO-free so it runs everywhere.
+.PHONY: test-race
+test-race:
+	CGO_ENABLED=1 $(GO) test -race -count=1 ./...
+
+# ---- devops.md §8: the mandatory security-analysis suite ----
+#
+# `make security` is the contract (devops.md §4): CI runs this same target, so
+# a finding here is the finding that blocks a merge. The suite is gosec,
+# govulncheck, `go mod verify` and `trivy fs`, all blocking.
+#
+# gosec deliberately runs with NO -exclude rules. The two weak-primitive
+# findings this repository carries are protocol constraints, not cipher
+# choices, and each is annotated at the import that causes it with the RFC
+# that mandates it:
+#   G501 crypto/md5  — pkg/radius: the RADIUS Message-Authenticator attribute
+#                      is defined as HMAC-MD5 (RFC 2869 §5.14, RFC 3579 §3.2).
+#   G505 crypto/sha1 — pkg/yubikey: the Yubico Validation Protocol 2.0 signs
+#                      every request and response with HMAC-SHA1.
+# Both are HMAC constructions, never bare hashes. A blanket -exclude would hide
+# the next crypto/md5 import somewhere it is not justified; a line annotation
+# cannot. -exclude-dir=examples drops the //go:build ignore documentation
+# snippets, which are not part of the module build.
+#
+# The tools are not installed by these targets — devops.md §4 forbids a make
+# target mutating the developer's machine. A missing tool prints how to get it
+# and the target skips; CI installs all of them explicitly.
+
+# CI passes GOSEC_EXTRA="-fmt=sarif -out=gosec.sarif" so the SARIF it uploads
+# to code scanning comes from the same flags a developer runs, not a second
+# set that can drift (devops.md §4).
+GOSEC_EXTRA ?=
+
+.PHONY: gosec
+gosec:
+	@GOSEC=$$(command -v gosec 2>/dev/null); \
+	if [ -n "$$GOSEC" ]; then \
+		"$$GOSEC" -exclude-generated -exclude-dir=examples -severity medium -confidence medium $(GOSEC_EXTRA) ./... || exit 1; \
+	else \
+		echo "gosec not installed, skipping"; \
+		echo "  Install: go install github.com/securego/gosec/v2/cmd/gosec@latest"; \
+	fi
+
+.PHONY: govulncheck
+govulncheck:
+	@GOVULN=$$(command -v govulncheck 2>/dev/null); \
+	if [ -n "$$GOVULN" ]; then \
+		"$$GOVULN" ./... || exit 1; \
+	else \
+		echo "govulncheck not installed, skipping"; \
+		echo "  Install: go install golang.org/x/vuln/cmd/govulncheck@latest"; \
+	fi
+
+.PHONY: mod-verify
+mod-verify:
+	$(GO) mod verify
+
+.PHONY: trivy-fs
+trivy-fs:
+	@if command -v trivy >/dev/null 2>&1; then \
+		trivy fs --scanners vuln,secret --severity CRITICAL,HIGH --exit-code 1 . || exit 1; \
+	else \
+		echo "trivy not installed, skipping filesystem scan"; \
+		echo "  Install: curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin"; \
+		echo "  CI installs trivy unconditionally, so this scan still gates every push."; \
+	fi
+
+.PHONY: security
+security: gosec govulncheck mod-verify trivy-fs
+
+# Everything a pull request must pass (devops.md §4). Includes security.
+.PHONY: ci
+ci: lint build test security
 
 .PHONY: clean
 clean:

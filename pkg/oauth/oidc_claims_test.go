@@ -171,13 +171,13 @@ func TestParseIDTokenClaims(t *testing.T) {
 
 	t.Run("parses phone claims", func(t *testing.T) {
 		claims := jwt.MapClaims{
-			"iss":                    "https://example.com",
-			"sub":                    "user123",
-			"aud":                    "client-id",
-			"exp":                    float64(time.Now().Add(1 * time.Hour).Unix()),
-			"iat":                    float64(time.Now().Unix()),
-			"phone_number":           "+1234567890",
-			"phone_number_verified":  true,
+			"iss":                   "https://example.com",
+			"sub":                   "user123",
+			"aud":                   "client-id",
+			"exp":                   float64(time.Now().Add(1 * time.Hour).Unix()),
+			"iat":                   float64(time.Now().Unix()),
+			"phone_number":          "+1234567890",
+			"phone_number_verified": true,
 		}
 
 		token := &jwt.Token{Claims: claims}
@@ -230,14 +230,14 @@ func TestParseIDTokenClaims(t *testing.T) {
 
 	t.Run("stores custom claims", func(t *testing.T) {
 		claims := jwt.MapClaims{
-			"iss":       "https://example.com",
-			"sub":       "user123",
-			"aud":       "client-id",
-			"exp":       float64(time.Now().Add(1 * time.Hour).Unix()),
-			"iat":       float64(time.Now().Unix()),
-			"custom1":   "value1",
-			"custom2":   123,
-			"custom3":   true,
+			"iss":     "https://example.com",
+			"sub":     "user123",
+			"aud":     "client-id",
+			"exp":     float64(time.Now().Add(1 * time.Hour).Unix()),
+			"iat":     float64(time.Now().Unix()),
+			"custom1": "value1",
+			"custom2": 123,
+			"custom3": true,
 		}
 
 		token := &jwt.Token{Claims: claims}

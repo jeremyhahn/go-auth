@@ -62,7 +62,7 @@ type Service struct {
 }
 
 var (
-	// ErrNoBackends indicates the service was initialised without any backends.
+	// ErrNoBackends indicates the service was initialized without any backends.
 	ErrNoBackends = errors.New("api: no authentication backends configured")
 	// ErrBackendNotFound indicates a requested backend name does not exist.
 	ErrBackendNotFound = errors.New("api: requested backend not configured")

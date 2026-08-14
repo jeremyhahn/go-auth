@@ -119,7 +119,7 @@ func TestDialError(t *testing.T) {
 }
 
 func TestBindError(t *testing.T) {
-    conn := &fakeConn{bindErrs: []error{errors.New("bad creds")}}
+	conn := &fakeConn{bindErrs: []error{errors.New("bad creds")}}
 	auth, err := NewAuthenticator("ldap://example.com:389", WithUserDNTemplate("cn=%s,dc=example,dc=com"), WithDialContext(func(ctx context.Context) (ldapConn, error) { return conn, nil }))
 	if err != nil {
 		t.Fatalf("NewAuthenticator error: %v", err)

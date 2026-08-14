@@ -1,0 +1,211 @@
+name: CI
+
+# One workflow file, run by both hosts (devops.md §1). Steps that only work on
+# github.com are guarded on github.server_url; everything that gates a merge
+# runs on Gitea too.
+on:
+  push:
+    branches: [main, master, develop]
+  pull_request:
+    branches: [main, master, develop]
+  # Lets a run be repeated without inventing a commit, which matters when a
+  # failure is the runner's rather than the code's.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+env:
+  GO_VERSION: "1.26.6"
+  # pkg/pam has a //go:build cgo file that needs libpam headers. Building with
+  # cgo off keeps every job independent of the runner image's dev packages;
+  # the unit-test job is the documented exception (see below).
+  CGO_ENABLED: "0"
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      # devops.md §9: tools installed in CI install @latest, never a pin.
+      - name: Install golangci-lint
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+
+      # `make lint` is gofmt -l, go vet and the golangci-lint umbrella, which
+      # is the same command a developer runs (devops.md §4). The security
+      # linters staticcheck/errcheck/unused/ineffassign/misspell/gocritic are
+      # enabled in .golangci.yml as §8 requires.
+      - name: Lint
+        run: make lint
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Build all packages
+        run: make build
+
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    needs: [lint, build]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      # The race detector requires cgo, and cgo in this module pulls in
+      # pkg/pam's //go:build cgo file, which needs libpam headers. This is the
+      # one job that turns cgo on, so it is the one job that installs them.
+      - name: Install libpam headers
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libpam0g-dev
+
+      - name: Run unit tests with the race detector
+        run: make test-race
+
+  security:
+    name: Security
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Install gosec
+        run: go install github.com/securego/gosec/v2/cmd/gosec@latest
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      # The Makefile carries the flags and the justification for every
+      # suppression (devops.md §4/§8). GOSEC_EXTRA only adds the SARIF output
+      # uploaded below; gosec still exits non-zero on a finding and gates here.
+      - name: Run gosec
+        run: make gosec GOSEC_EXTRA="-fmt=sarif -out=gosec.sarif"
+
+      # The code scanning API is github.com-only; anywhere else this 404s. The
+      # scan itself has already run and already failed the job on a finding.
+      - name: Upload gosec SARIF
+        if: always() && github.server_url == 'https://github.com'
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: gosec.sarif
+          category: gosec
+
+      # govulncheck is also the §9 forcing function for toolchain currency: it
+      # fails on a known-vulnerable stdlib, so a stale GO_VERSION breaks here.
+      - name: Run govulncheck
+        run: make govulncheck
+
+      - name: Verify module integrity
+        run: make mod-verify
+
+  trivy:
+    name: Trivy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      # aquasecurity/trivy-action fetches its install script through a nested
+      # checkout that a self-hosted runner resolves against its own server
+      # instead of github.com, failing with git exit 128. It is therefore
+      # github.com-only, and so is its consumer, the code scanning upload.
+      - name: Trivy scan (SARIF for code scanning)
+        if: github.server_url == 'https://github.com'
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret
+          format: sarif
+          output: trivy-results.sarif
+          exit-code: 0
+          skip-dirs: examples
+
+      - name: Upload Trivy SARIF
+        if: always() && github.server_url == 'https://github.com'
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy-fs
+
+      - name: Trivy gate (fail on CRITICAL/HIGH)
+        if: github.server_url == 'https://github.com'
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret
+          severity: CRITICAL,HIGH
+          exit-code: 1
+          format: table
+          skip-dirs: examples
+
+      # Gitea and any other non-github.com server run the same gate from the
+      # trivy CLI, installed from the upstream release script. Same scanners,
+      # same severities, same exit code — the dashboard upload is the only
+      # thing GitHub gets and the other host does not.
+      - name: Install trivy CLI
+        if: github.server_url != 'https://github.com'
+        run: curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+
+      - name: Trivy gate (fail on CRITICAL/HIGH)
+        if: github.server_url != 'https://github.com'
+        run: make trivy-fs
+
+  # The single required check (devops.md §1). Branch protection requires this
+  # job and nothing else; adding a job above means adding it to `needs` and to
+  # the results list below.
+  gate:
+    name: CI Gate
+    runs-on: ubuntu-latest
+    if: always()
+    needs: [lint, build, test, security, trivy]
+    steps:
+      # join(needs.*.result) is a GitHub extension that evaluates to an empty
+      # string on Gitea, so a gate built on it reports success while jobs are
+      # failing. Every job is listed by name, and a result that cannot be read
+      # at all is treated as a failure rather than a pass.
+      - name: Check job results
+        env:
+          LINT: ${{ needs.lint.result }}
+          BUILD: ${{ needs.build.result }}
+          TEST: ${{ needs.test.result }}
+          SECURITY: ${{ needs.security.result }}
+          TRIVY: ${{ needs.trivy.result }}
+        run: |
+          failed=0
+          for job in LINT BUILD TEST SECURITY TRIVY; do
+            eval "result=\$$job"
+            echo "${job}=${result:-<unreadable>}"
+            if [ "$result" != "success" ]; then
+              failed=1
+            fi
+          done
+          if [ "$failed" -ne 0 ]; then
+            echo "CI gate failed: not every job reported success."
+            exit 1
+          fi
+          echo "CI gate passed."

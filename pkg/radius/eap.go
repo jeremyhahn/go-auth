@@ -3,9 +3,15 @@ package radius
 import (
 	"bytes"
 	"crypto/hmac"
-	"crypto/md5"
+	// MD5 here is protocol-mandated, not a cipher choice: the RADIUS
+	// Message-Authenticator attribute is defined as HMAC-MD5 over the packet
+	// (RFC 2869 §5.14, RFC 3579 §3.2). Any other digest is unreadable by a
+	// conforming RADIUS server. It is used only for HMAC, never as a bare
+	// hash, and the collision attacks on MD5 do not carry over to HMAC-MD5.
+	"crypto/md5" // #nosec G501 -- RFC 2869 Message-Authenticator is HMAC-MD5 by definition
 	"encoding/binary"
 	"errors"
+	"math"
 
 	radiuslib "layeh.com/radius"
 )
@@ -58,6 +64,12 @@ func (m *eapMessage) marshal() ([]byte, error) {
 				length := m.TLSMessageLength
 				if length == 0 {
 					length = len(m.Data)
+				}
+				// RFC 3579 §4.1 carries the TLS Message Length as a four-octet
+				// field. Bound it before narrowing so a caller-supplied
+				// TLSMessageLength cannot wrap into a bogus wire value.
+				if length < 0 || length > math.MaxUint32 {
+					return nil, errors.New("radius: EAP-TLS message length out of range")
 				}
 				buf := make([]byte, 4)
 				binary.BigEndian.PutUint32(buf, uint32(length))

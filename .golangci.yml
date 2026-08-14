@@ -1,0 +1,95 @@
+# golangci-lint configuration for go-auth.
+#
+# devops.md §8 makes this file part of the security gate, not a style
+# preference: staticcheck, errcheck, gosimple, unused, ineffassign, misspell
+# and gocritic must all be enabled. Installing the umbrella with the security
+# linters switched off does not satisfy the section. In golangci-lint v2
+# gosimple was merged into staticcheck (the S1xxx checks), so enabling
+# staticcheck covers it.
+version: "2"
+
+run:
+  timeout: 5m
+  # Tests are analysed. Skipping them makes `unused` fire on helpers that only
+  # the test suite calls (getJWTAlgorithm, messageAuthenticatorAllZeros), which
+  # is a false positive that invites deleting live code. The noisier linters
+  # are relaxed on _test.go under exclusions.rules instead.
+  tests: true
+
+linters:
+  enable:
+    - govet
+    - errcheck
+    - staticcheck # includes the former gosimple (S1xxx) checks
+    - unused
+    - ineffassign
+    - misspell
+    - gocritic
+
+  settings:
+    misspell:
+      locale: US
+    staticcheck:
+      checks:
+        - all
+        # QF1008 rewrites packet.Attributes.Set(...) to packet.Set(...) on
+        # types that embed their field set. Naming the embedded field is
+        # deliberate in the RADIUS wire code: it says which part of the packet
+        # is being mutated. Style-only "quickfix" check, no correctness or
+        # security content.
+        - -QF1008
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - performance
+      disabled-checks:
+        # Would require changing exported signatures across every backend.
+        - hugeParam
+        - rangeValCopy
+
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      # Test bodies deliberately discard errors from setup helpers, pass nil
+      # contexts to prove the nil path is handled (SA1012), and keep
+      # instrumentation fields a given case does not read. Those are the tests
+      # doing their job, not defects. Findings in the library itself are what
+      # this gate is for, and the library is still linted in full.
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gocritic
+          - staticcheck
+          - unused
+      # pkg/pam splits its default SessionOpener across pam_default_cgo.go
+      # (//go:build cgo). Everything here — Makefile, CI, this lint run —
+      # builds with CGO_ENABLED=0 so the package compiles without libpam
+      # headers, which means the cgo file is invisible to the analyser and its
+      # only consumer of defaultSessionOpener disappears with it. The type is
+      # used; the build tag hides the use. Not a blanket unused waiver for the
+      # package — only this one build-tag artifact.
+      - path: pkg/pam/auth\.go
+        linters:
+          - unused
+        text: defaultSessionOpener
+    paths:
+      # Examples are //go:build ignore documentation snippets, compiled by
+      # hand rather than by the module build.
+      - examples
+      - third_party$
+      - builtin$
+
+formatters:
+  enable:
+    - gofmt
+  exclusions:
+    generated: lax
+    paths:
+      - examples
+      - third_party$
+      - builtin$

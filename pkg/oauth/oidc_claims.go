@@ -18,11 +18,11 @@ type IDTokenClaims struct {
 	NotBefore int64    `json:"nbf,omitempty"`
 
 	// OIDC-specific claims
-	AuthTime int64  `json:"auth_time,omitempty"`
-	Nonce    string `json:"nonce,omitempty"`
-	ACR      string `json:"acr,omitempty"`
+	AuthTime int64    `json:"auth_time,omitempty"`
+	Nonce    string   `json:"nonce,omitempty"`
+	ACR      string   `json:"acr,omitempty"`
 	AMR      []string `json:"amr,omitempty"`
-	AZP      string `json:"azp,omitempty"`
+	AZP      string   `json:"azp,omitempty"`
 
 	// Hash claims for validation
 	AtHash string `json:"at_hash,omitempty"`
@@ -71,27 +71,27 @@ type AddressClaim struct {
 
 // UserInfo represents claims from the OIDC UserInfo endpoint.
 type UserInfo struct {
-	Subject           string         `json:"sub"`
-	Name              string         `json:"name,omitempty"`
-	GivenName         string         `json:"given_name,omitempty"`
-	FamilyName        string         `json:"family_name,omitempty"`
-	MiddleName        string         `json:"middle_name,omitempty"`
-	Nickname          string         `json:"nickname,omitempty"`
-	PreferredUsername string         `json:"preferred_username,omitempty"`
-	Profile           string         `json:"profile,omitempty"`
-	Picture           string         `json:"picture,omitempty"`
-	Website           string         `json:"website,omitempty"`
-	Email             string         `json:"email,omitempty"`
-	EmailVerified     bool           `json:"email_verified,omitempty"`
-	Gender            string         `json:"gender,omitempty"`
-	Birthdate         string         `json:"birthdate,omitempty"`
-	Zoneinfo          string         `json:"zoneinfo,omitempty"`
-	Locale            string         `json:"locale,omitempty"`
-	PhoneNumber       string         `json:"phone_number,omitempty"`
-	PhoneNumberVerified bool         `json:"phone_number_verified,omitempty"`
-	Address           *AddressClaim  `json:"address,omitempty"`
-	UpdatedAt         int64          `json:"updated_at,omitempty"`
-	Custom            map[string]interface{} `json:"-"`
+	Subject             string                 `json:"sub"`
+	Name                string                 `json:"name,omitempty"`
+	GivenName           string                 `json:"given_name,omitempty"`
+	FamilyName          string                 `json:"family_name,omitempty"`
+	MiddleName          string                 `json:"middle_name,omitempty"`
+	Nickname            string                 `json:"nickname,omitempty"`
+	PreferredUsername   string                 `json:"preferred_username,omitempty"`
+	Profile             string                 `json:"profile,omitempty"`
+	Picture             string                 `json:"picture,omitempty"`
+	Website             string                 `json:"website,omitempty"`
+	Email               string                 `json:"email,omitempty"`
+	EmailVerified       bool                   `json:"email_verified,omitempty"`
+	Gender              string                 `json:"gender,omitempty"`
+	Birthdate           string                 `json:"birthdate,omitempty"`
+	Zoneinfo            string                 `json:"zoneinfo,omitempty"`
+	Locale              string                 `json:"locale,omitempty"`
+	PhoneNumber         string                 `json:"phone_number,omitempty"`
+	PhoneNumberVerified bool                   `json:"phone_number_verified,omitempty"`
+	Address             *AddressClaim          `json:"address,omitempty"`
+	UpdatedAt           int64                  `json:"updated_at,omitempty"`
+	Custom              map[string]interface{} `json:"-"`
 }
 
 // IdentityClaims represents the merged identity information from ID token and UserInfo.
@@ -127,12 +127,12 @@ type IdentityClaims struct {
 	Address *AddressClaim
 
 	// Authentication metadata
-	AuthTime   time.Time
-	ACR        string
-	AMR        []string
-	Issuer     string
-	IssuedAt   time.Time
-	ExpiresAt  time.Time
+	AuthTime  time.Time
+	ACR       string
+	AMR       []string
+	Issuer    string
+	IssuedAt  time.Time
+	ExpiresAt time.Time
 
 	// Custom claims from both ID token and UserInfo
 	Custom map[string]interface{}

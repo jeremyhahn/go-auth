@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net"
-	"sync"
 	"time"
 
 	tacplus "github.com/nwaples/tacplus"
@@ -17,8 +16,6 @@ type Authenticator struct {
 	privLevel   uint8
 	timeout     time.Duration
 	dialContext func(ctx context.Context, network, addr string) (net.Conn, error)
-
-	mu sync.Mutex
 }
 
 // Option configures an Authenticator.

@@ -4,7 +4,13 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
-	"crypto/sha1"
+	// SHA-1 here is protocol-mandated, not a cipher choice: the YubiCloud
+	// validation protocol (Yubico Validation Protocol 2.0) signs every
+	// request and response with HMAC-SHA1 over the sorted parameter list.
+	// Any other digest is rejected by the service. It is used only for HMAC,
+	// never as a bare hash, and SHA-1 collisions do not carry over to
+	// HMAC-SHA1.
+	"crypto/sha1" // #nosec G505 -- Yubico Validation Protocol 2.0 signs with HMAC-SHA1 by definition
 	"encoding/base64"
 	"errors"
 	"fmt"

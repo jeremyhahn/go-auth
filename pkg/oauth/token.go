@@ -174,9 +174,7 @@ func claimsFromJWT(token *jwt.Token) (*TokenClaims, error) {
 	// Extract scope claim (can be string or array)
 	if scope, ok := claims["scope"].(string); ok {
 		// Space-separated string
-		for _, s := range splitScopes(scope) {
-			tc.Scopes = append(tc.Scopes, s)
-		}
+		tc.Scopes = append(tc.Scopes, splitScopes(scope)...)
 	} else if scope, ok := claims["scopes"].([]interface{}); ok {
 		for _, s := range scope {
 			if str, ok := s.(string); ok {
