@@ -82,6 +82,33 @@ jobs:
       - name: Run unit tests with the race detector
         run: make test-race
 
+  # The integration suite exercises the external auth backends against real
+  # daemons (freeradius, OpenLDAP, PAM, SoftHSM, a TPM simulator, ory hydra),
+  # each baked into a per-module image so the job needs nothing from the host
+  # beyond a Docker daemon — devops.md §4's containerised-services pattern.
+  # It ran dark until 2026-08-14 and caught a real EAP-TLS interop defect that
+  # the unit suite could not, because the unit fake shared the client's own
+  # misreading of RFC 2869 §5.14.
+  #
+  # NOT in the CI Gate's needs yet: it is being observed on the runner first,
+  # per testing-guidelines.md — a suite that has only ever run on a workstation
+  # has not been shown to run anywhere else.
+  integration:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    needs: [lint, build]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Run integration suites
+        run: make integration-test
+
   security:
     name: Security
     runs-on: ubuntu-latest
