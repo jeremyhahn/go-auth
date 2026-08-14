@@ -102,8 +102,11 @@ jobs:
       # The Makefile carries the flags and the justification for every
       # suppression (devops.md §4/§8). GOSEC_EXTRA only adds the SARIF output
       # uploaded below; gosec still exits non-zero on a finding and gates here.
+      # -stdout -verbose text mirrors the findings into the job log: the SARIF
+      # upload is github.com-only, so on Gitea a real finding would otherwise
+      # produce an exit code and no diagnostics at all (ci-template v1.1).
       - name: Run gosec
-        run: make gosec GOSEC_EXTRA="-fmt=sarif -out=gosec.sarif"
+        run: make gosec GOSEC_EXTRA="-fmt=sarif -out=gosec.sarif -stdout -verbose text"
 
       # The code scanning API is github.com-only; anywhere else this 404s. The
       # scan itself has already run and already failed the job on a finding.
