@@ -4,11 +4,10 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"errors"
-	"io"
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -88,6 +87,12 @@ func mustLoadTLSConfigs(t *testing.T) (*tls.Config, *tls.Config) {
 		ClientAuth:   tls.RequireAndVerifyClientCert,
 		ClientCAs:    pool,
 		MinVersion:   tls.VersionTLS12,
+		// EAP-TLS carries the handshake and nothing else: a real server
+		// answers a completed handshake with Access-Accept rather than
+		// tunneling whatever the TLS stack writes afterwards. Suppressing
+		// session tickets keeps the harness to that, so the last round is
+		// decided by the handshake result alone.
+		SessionTicketsDisabled: true,
 	}
 
 	clientCfg := &tls.Config{
@@ -107,6 +112,19 @@ type fakeEAPTLSServer struct {
 
 	serverConn *tls.Conn
 	pipe       net.Conn
+
+	// serverOut carries every byte the TLS server writes. A dedicated pump
+	// goroutine drains the pipe into it so the server's handshake never
+	// blocks on a write nobody is reading. Reading the pipe on demand under
+	// a short deadline instead — which is what this harness used to do —
+	// makes progress depend on the server's crypto finishing inside a fixed
+	// wall-clock window; on a loaded CI runner it does not, the server stays
+	// blocked mid-write forever, and the conversation degenerates into an
+	// endless exchange of content-free EAP-TLS acknowledgements.
+	serverOut chan []byte
+
+	closed    chan struct{}
+	closeOnce sync.Once
 
 	handshakeDone chan struct{}
 	handshakeErr  error
@@ -133,28 +151,54 @@ func newFakeEAPTLSServer(t *testing.T, secret []byte, serverCfg *tls.Config) *fa
 		state:          []byte("state-token"),
 		pipe:           clientPipe,
 		serverConn:     tls.Server(serverPipe, serverCfg),
+		serverOut:      make(chan []byte, 32),
+		closed:         make(chan struct{}),
 		handshakeDone:  make(chan struct{}),
 		nextIdentifier: 1,
 	}
 
+	go s.pump()
 	go s.runHandshake()
 
 	return s
 }
 
+// runHandshake deliberately leaves the connection open: closing it here would
+// emit a close_notify alert that the harness would then forward as one more
+// EAP-TLS fragment, racing the handshake result it is supposed to report.
+// Close tears the connection down instead.
 func (s *fakeEAPTLSServer) runHandshake() {
-	err := s.serverConn.Handshake()
-	s.handshakeErr = err
-	s.serverConn.Close()
+	s.handshakeErr = s.serverConn.Handshake()
 	close(s.handshakeDone)
 }
 
+// pump moves everything the TLS server writes off the pipe as soon as it is
+// produced, so the server side is never blocked on an unread write.
+func (s *fakeEAPTLSServer) pump() {
+	defer close(s.serverOut)
+	buf := make([]byte, 4096)
+	for {
+		n, err := s.pipe.Read(buf)
+		if n > 0 {
+			record := make([]byte, n)
+			copy(record, buf[:n])
+			select {
+			case s.serverOut <- record:
+			case <-s.closed:
+				return
+			}
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
 func (s *fakeEAPTLSServer) Close() {
+	s.closeOnce.Do(func() { close(s.closed) })
 	s.pipe.Close()
 	s.serverConn.Close()
-	if s.handshakeDone != nil {
-		<-s.handshakeDone
-	}
+	<-s.handshakeDone
 }
 
 func (s *fakeEAPTLSServer) exchange(ctx context.Context, packet *radiuslib.Packet, addr string) (*radiuslib.Packet, error) {
@@ -205,8 +249,12 @@ func (s *fakeEAPTLSServer) exchange(ctx context.Context, packet *radiuslib.Packe
 		s.t.Fatalf("expected EAP-TLS response, got type %d", msg.Type)
 	}
 
-	// A pure ACK has no payload and no flags.
+	// A pure ACK has no payload and no flags: the client is waiting on the
+	// server. Block for the next record when the queue is empty rather than
+	// replying with another empty challenge and leaving both sides waiting
+	// for each other.
 	if len(msg.Data) == 0 && msg.Flags == 0 {
+		s.captureServerData(len(s.pendingServer) == 0 && len(s.currentServer) == 0)
 		if pkt := s.emitServerFragment(); pkt != nil {
 			return pkt, nil
 		}
@@ -228,7 +276,11 @@ func (s *fakeEAPTLSServer) exchange(ctx context.Context, packet *radiuslib.Packe
 		s.writeToServer(data)
 	}
 
-	s.captureServerData()
+	// A complete client flight has just been delivered, so the server either
+	// answers it or finishes the handshake. Waiting for one of those two
+	// events keeps the conversation in lock step without guessing how long
+	// the server's crypto takes.
+	s.captureServerData(true)
 
 	if pkt := s.emitServerFragment(); pkt != nil {
 		return pkt, nil
@@ -388,37 +440,36 @@ func (s *fakeEAPTLSServer) writeToServer(payload []byte) {
 	}
 }
 
-func (s *fakeEAPTLSServer) captureServerData() {
-	buf := make([]byte, 4096)
-	for {
-		s.pipe.SetReadDeadline(time.Now().Add(10 * time.Millisecond))
-		n, err := s.pipe.Read(buf)
-		if n > 0 {
-			copyBuf := make([]byte, n)
-			copy(copyBuf, buf[:n])
-			s.pendingServer = append(s.pendingServer, copyBuf)
-		}
-		if err != nil {
-			if ne, ok := err.(net.Error); ok && ne.Timeout() {
-				break
+// captureServerData queues the TLS records the server has produced. When
+// waitForFlight is set the server is known to owe an answer, so the call
+// blocks until it produces one or the handshake goroutine returns; otherwise
+// it takes only what is already queued.
+func (s *fakeEAPTLSServer) captureServerData(waitForFlight bool) {
+	if waitForFlight {
+		select {
+		case record, ok := <-s.serverOut:
+			if !ok {
+				return
 			}
-			if errors.Is(err, io.EOF) {
-				break
-			}
-			s.t.Fatalf("read from tls server: %v", err)
+			s.pendingServer = append(s.pendingServer, record)
+		case <-s.handshakeDone:
 		}
 	}
-	s.pipe.SetReadDeadline(time.Time{})
+	for {
+		select {
+		case record, ok := <-s.serverOut:
+			if !ok {
+				return
+			}
+			s.pendingServer = append(s.pendingServer, record)
+		default:
+			return
+		}
+	}
 }
 
 func (s *fakeEAPTLSServer) assertHandshakeComplete() {
 	s.t.Helper()
-	if s.handshakeDone == nil {
-		if s.handshakeErr != nil {
-			s.t.Fatalf("server handshake error: %v", s.handshakeErr)
-		}
-		return
-	}
 	select {
 	case <-s.handshakeDone:
 		if s.handshakeErr != nil {
@@ -430,15 +481,11 @@ func (s *fakeEAPTLSServer) assertHandshakeComplete() {
 }
 
 func (s *fakeEAPTLSServer) handshakeComplete() bool {
-	if s.handshakeDone == nil {
-		return s.handshakeErr == nil
-	}
 	select {
 	case <-s.handshakeDone:
 		if s.handshakeErr != nil {
 			s.t.Fatalf("server handshake failed: %v", s.handshakeErr)
 		}
-		s.handshakeDone = nil
 		return true
 	default:
 		return false

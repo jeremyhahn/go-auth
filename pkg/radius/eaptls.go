@@ -16,9 +16,19 @@ import (
 const (
 	defaultEAPTLSFragmentSize = 1010
 	maxEAPTLSFragmentSize     = 4096
+
+	// maxEAPTLSRoundTrips bounds one EAP-TLS conversation. EAP is lock-step,
+	// so a peer that keeps answering with content-free challenges can
+	// otherwise spin the client forever without the handshake ever
+	// progressing. A certificate chain fragmented at defaultEAPTLSFragmentSize
+	// stays far inside this bound; FreeRADIUS caps a conversation at 50.
+	maxEAPTLSRoundTrips = 100
 )
 
-var errEAPTLSHandshakeComplete = errors.New("radius: eap-tls handshake complete")
+var (
+	errEAPTLSHandshakeComplete = errors.New("radius: eap-tls handshake complete")
+	errEAPTLSTooManyRoundTrips = errors.New("radius: eap-tls exceeded the maximum number of round trips")
+)
 
 // EAPTLSConfig configures EAP-TLS authentication.
 type EAPTLSConfig struct {
@@ -128,7 +138,15 @@ func (s *eapTLSSession) run(ctx context.Context) error {
 		Data:       []byte(s.identity),
 	}
 
-	for {
+	for round := 0; ; round++ {
+		if round >= maxEAPTLSRoundTrips {
+			s.closeTransport(errEAPTLSTooManyRoundTrips)
+			return errEAPTLSTooManyRoundTrips
+		}
+		if err := ctx.Err(); err != nil {
+			s.closeTransport(err)
+			return err
+		}
 		if s.nextMsg == nil {
 			return errors.New("radius: EAP-TLS internal error: missing next message")
 		}
@@ -352,6 +370,24 @@ func (s *eapTLSSession) emptyTLSAck(identifier uint8) *eapMessage {
 func (s *eapTLSSession) collectTLSOutbound(ctx context.Context) {
 	buffers := s.transport.DrainOutbound()
 	if len(buffers) == 0 {
+		// A record already being fragmented out is the reply to this
+		// challenge; waiting for the TLS stack to produce a further one
+		// would block until the caller's deadline while the next fragment
+		// sits ready in the queue. That is what an Access-Challenge with no
+		// payload asks for after a fragment carrying More-Fragments.
+		if len(s.currentTLS) > 0 || len(s.pendingTLS) > 0 {
+			return
+		}
+
+		// Once the handshake goroutine has returned, the TLS stack writes
+		// again only when this session asks it to, so there is nothing to
+		// wait for. Blocking anyway consumes the caller's whole remaining
+		// deadline on the last round of every successful conversation.
+		s.checkHandshakeResult()
+		if s.handshakeDone {
+			return
+		}
+
 		waitCtx := ctx
 		var cancel context.CancelFunc
 		if waitCtx == nil {
