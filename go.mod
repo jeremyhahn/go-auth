@@ -1,6 +1,6 @@
 module github.com/jeremyhahn/go-auth
 
-go 1.25.5
+go 1.26.5
 
 require (
 	github.com/MicahParks/keyfunc/v3 v3.7.0
