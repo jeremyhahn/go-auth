@@ -1,3 +1,5 @@
+//go:build ignore
+
 // Package main demonstrates OAuth 2.0 authorization code flow with PKCE.
 //
 // This example shows how to:

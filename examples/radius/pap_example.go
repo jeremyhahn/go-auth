@@ -1,3 +1,5 @@
+//go:build ignore
+
 // Package main demonstrates RADIUS PAP authentication.
 //
 // This example shows how to:
