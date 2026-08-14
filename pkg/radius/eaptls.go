@@ -25,10 +25,7 @@ const (
 	maxEAPTLSRoundTrips = 100
 )
 
-var (
-	errEAPTLSHandshakeComplete = errors.New("radius: eap-tls handshake complete")
-	errEAPTLSTooManyRoundTrips = errors.New("radius: eap-tls exceeded the maximum number of round trips")
-)
+var errEAPTLSTooManyRoundTrips = errors.New("radius: eap-tls exceeded the maximum number of round trips")
 
 // EAPTLSConfig configures EAP-TLS authentication.
 type EAPTLSConfig struct {
@@ -123,11 +120,9 @@ type eapTLSSession struct {
 
 	incoming fragmentAccumulator
 
-	pendingTLS  [][]byte
-	currentTLS  []byte
-	offset      int
-	sentTLSData bool
-	sentAppData bool
+	pendingTLS [][]byte
+	currentTLS []byte
+	offset     int
 }
 
 func (s *eapTLSSession) run(ctx context.Context) error {
@@ -164,13 +159,12 @@ func (s *eapTLSSession) run(ctx context.Context) error {
 
 		s.nextMsg, err = s.handleResponse(ctx, resp)
 		if err != nil {
-			if errors.Is(err, errEAPTLSHandshakeComplete) {
-				s.closeTransport(nil)
-				return nil
-			}
 			s.closeTransport(err)
 			return err
 		}
+		// The only success path. handleAccept reaches it solely from an
+		// Access-Accept whose Message-Authenticator verified, carrying
+		// EAP-Success, with the TLS handshake completed without error.
 		if s.nextMsg == nil {
 			s.closeTransport(nil)
 			return nil
@@ -213,7 +207,7 @@ func (s *eapTLSSession) handleResponse(ctx context.Context, resp *radiuslib.Pack
 		if err := verifyMessageAuthenticator(resp, s.secret); err != nil {
 			return nil, err
 		}
-		return s.handleAccept(resp)
+		return s.handleAccept(ctx, resp)
 	case radiuslib.CodeAccessReject:
 		return nil, ErrRejected
 	default:
@@ -260,7 +254,7 @@ func (s *eapTLSSession) handleChallenge(ctx context.Context, resp *radiuslib.Pac
 	}
 }
 
-func (s *eapTLSSession) handleAccept(resp *radiuslib.Packet) (*eapMessage, error) {
+func (s *eapTLSSession) handleAccept(ctx context.Context, resp *radiuslib.Packet) (*eapMessage, error) {
 	raw, err := getEAPMessageAttr(resp)
 	if err != nil {
 		return nil, err
@@ -276,7 +270,10 @@ func (s *eapTLSSession) handleAccept(resp *radiuslib.Packet) (*eapMessage, error
 		return nil, fmt.Errorf("radius: unexpected EAP code %d in Access-Accept", msg.Code)
 	}
 
-	if err := s.waitForHandshake(); err != nil {
+	// An Access-Accept only authorizes the identity the TLS handshake proved.
+	// A server that sends one before the handshake finishes has authorized
+	// nothing yet, so wait for the result rather than taking its word for it.
+	if err := s.waitForHandshake(ctx); err != nil {
 		return nil, err
 	}
 	return nil, nil
@@ -318,10 +315,12 @@ func (s *eapTLSSession) handleTLSRequest(ctx context.Context, msg *eapMessage) (
 		return next, nil
 	}
 
-	if s.handshakeDone && len(s.pendingTLS) == 0 && len(s.currentTLS) == 0 {
-		return nil, errEAPTLSHandshakeComplete
-	}
-
+	// A completed handshake with nothing left to send is NOT the end of the
+	// conversation. RFC 5216 §2.1.1 has the peer answer with an empty EAP-TLS
+	// response and wait for the server's decision; the authorization is the
+	// server's to make, and this client does not get to infer it from its own
+	// TLS state. Falling through to the acknowledgement below is what keeps
+	// the only exit a verified Access-Accept or Access-Reject.
 	if s.handshakeCh != nil && !s.handshakeDone {
 		waitCtx := ctx
 		var cancel context.CancelFunc
@@ -343,17 +342,6 @@ func (s *eapTLSSession) handleTLSRequest(ctx context.Context, msg *eapMessage) (
 		} else if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) && err != io.EOF {
 			return nil, err
 		}
-	}
-
-	if s.handshakeDone && !s.sentAppData {
-		if _, err := s.tlsConn.Write([]byte{0x00}); err == nil {
-			s.collectTLSOutbound(ctx)
-			if frag := s.nextTLSFragment(msg.Identifier); frag != nil {
-				s.sentAppData = true
-				return frag, nil
-			}
-		}
-		s.sentAppData = true
 	}
 
 	return s.emptyTLSAck(msg.Identifier), nil
@@ -462,25 +450,28 @@ func (s *eapTLSSession) nextTLSFragment(identifier uint8) *eapMessage {
 		s.offset = 0
 	}
 
-	s.sentTLSData = true
-
 	return msg
 }
 
-func (s *eapTLSSession) waitForHandshake() error {
+func (s *eapTLSSession) waitForHandshake(ctx context.Context) error {
 	if s.handshakeDone {
 		return s.handshakeErr
 	}
 	if s.handshakeCh == nil {
 		return errors.New("radius: EAP-TLS handshake never started")
 	}
-	err := <-s.handshakeCh
-	s.handshakeDone = true
-	s.handshakeErr = err
-	if err != nil {
-		return err
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	return nil
+	select {
+	case err := <-s.handshakeCh:
+		s.handshakeDone = true
+		s.handshakeErr = err
+		return err
+	case <-ctx.Done():
+		// Never report success for a handshake whose result is unknown.
+		return ctx.Err()
+	}
 }
 
 func (s *eapTLSSession) checkHandshakeResult() {

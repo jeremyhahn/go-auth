@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
@@ -20,18 +21,10 @@ func TestAuthenticateEAPTLSSuccess(t *testing.T) {
 
 	serverCfg, clientCfg := mustLoadTLSConfigs(t)
 
-	srv := newFakeEAPTLSServer(t, secret, serverCfg)
+	srv := newFakeEAPTLSServer(t, secret, serverCfg, decisionAccept)
 	t.Cleanup(srv.Close)
 
-	auth, err := NewAuthenticator(
-		"127.0.0.1:1812",
-		string(secret),
-		WithPacketExchanger(srv),
-		WithEAPTLS(&EAPTLSConfig{TLSConfig: clientCfg}),
-	)
-	if err != nil {
-		t.Fatalf("unexpected error creating authenticator: %v", err)
-	}
+	auth := mustEAPTLSAuthenticator(t, secret, srv, clientCfg)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -41,6 +34,85 @@ func TestAuthenticateEAPTLSSuccess(t *testing.T) {
 	}
 
 	srv.assertHandshakeComplete()
+}
+
+// TestAuthenticateEAPTLSRequiresAccessAccept is the regression test for the
+// authorization gap fixed alongside it: the client used to report success as
+// soon as its own TLS handshake completed with nothing left to send, which
+// authenticated the user without the RADIUS server ever having made — or
+// been asked for — an authorization decision. A server that completes the
+// handshake and then withholds its verdict must authenticate nobody.
+//
+// The conversation is bounded by maxEAPTLSRoundTrips rather than by a clock,
+// so this test carries no timing assumption.
+func TestAuthenticateEAPTLSRequiresAccessAccept(t *testing.T) {
+	secret := []byte("sharedsecret")
+	serverCfg, clientCfg := mustLoadTLSConfigs(t)
+
+	srv := newFakeEAPTLSServer(t, secret, serverCfg, decisionWithhold)
+	t.Cleanup(srv.Close)
+
+	auth := mustEAPTLSAuthenticator(t, secret, srv, clientCfg)
+
+	err := auth.Authenticate(context.Background(), "user@example", "")
+	if !errors.Is(err, errEAPTLSTooManyRoundTrips) {
+		t.Fatalf("expected the conversation to run out of round trips, got %v", err)
+	}
+
+	// The handshake itself succeeded; that is precisely why it must not be
+	// mistaken for authorization.
+	srv.assertHandshakeComplete()
+}
+
+// TestAuthenticateEAPTLSRejectsBadFinalPacket covers the other half: the
+// server answers, but with something that is not an authorization. None of
+// these may authenticate, and a completed TLS handshake does not rescue any
+// of them.
+func TestAuthenticateEAPTLSRejectsBadFinalPacket(t *testing.T) {
+	tests := []struct {
+		name     string
+		decision finalDecision
+		wantErr  error // nil means "any error, but never success"
+	}{
+		{name: "Access-Reject", decision: decisionReject, wantErr: ErrRejected},
+		{name: "Access-Accept carrying EAP-Failure", decision: decisionAcceptEAPFailure, wantErr: ErrRejected},
+		{name: "Access-Accept carrying neither Success nor Failure", decision: decisionAcceptWrongEAPCode},
+		{name: "Access-Accept authenticated with the wrong secret", decision: decisionForgedAccept},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			secret := []byte("sharedsecret")
+			serverCfg, clientCfg := mustLoadTLSConfigs(t)
+
+			srv := newFakeEAPTLSServer(t, secret, serverCfg, tt.decision)
+			t.Cleanup(srv.Close)
+
+			auth := mustEAPTLSAuthenticator(t, secret, srv, clientCfg)
+
+			err := auth.Authenticate(context.Background(), "user@example", "")
+			if err == nil {
+				t.Fatal("authentication succeeded without an authorizing Access-Accept")
+			}
+			if tt.wantErr != nil && !errors.Is(err, tt.wantErr) {
+				t.Fatalf("expected %v, got %v", tt.wantErr, err)
+			}
+		})
+	}
+}
+
+func mustEAPTLSAuthenticator(t *testing.T, secret []byte, srv *fakeEAPTLSServer, clientCfg *tls.Config) *Authenticator {
+	t.Helper()
+	auth, err := NewAuthenticator(
+		"127.0.0.1:1812",
+		string(secret),
+		WithPacketExchanger(srv),
+		WithEAPTLS(&EAPTLSConfig{TLSConfig: clientCfg}),
+	)
+	if err != nil {
+		t.Fatalf("unexpected error creating authenticator: %v", err)
+	}
+	return auth
 }
 
 func TestAuthenticateEAPTLSMissingTLSConfig(t *testing.T) {
@@ -139,9 +211,37 @@ type fakeEAPTLSServer struct {
 	nextIdentifier   uint8
 	expectedResponse uint8
 	stateSeen        bool
+
+	decision finalDecision
 }
 
-func newFakeEAPTLSServer(t *testing.T, secret []byte, serverCfg *tls.Config) *fakeEAPTLSServer {
+// finalDecision is what the fake server does once its TLS handshake has
+// completed. A completed handshake is not an authorization, so every one of
+// these except decisionAccept must leave the client reporting failure.
+type finalDecision int
+
+const (
+	// decisionAccept is the only outcome that authenticates: Access-Accept
+	// carrying EAP-Success, with a Message-Authenticator over the real secret.
+	decisionAccept finalDecision = iota
+	// decisionWithhold never decides, answering forever with empty
+	// Access-Challenges. This is the case the removed short-circuit turned
+	// into a success.
+	decisionWithhold
+	// decisionReject is a plain Access-Reject.
+	decisionReject
+	// decisionAcceptEAPFailure is an Access-Accept whose EAP payload says
+	// Failure — the RADIUS code and the EAP code disagreeing.
+	decisionAcceptEAPFailure
+	// decisionAcceptWrongEAPCode is an Access-Accept carrying neither
+	// EAP-Success nor EAP-Failure.
+	decisionAcceptWrongEAPCode
+	// decisionForgedAccept is an Access-Accept authenticated with the wrong
+	// secret: an off-path peer that cannot compute the real HMAC.
+	decisionForgedAccept
+)
+
+func newFakeEAPTLSServer(t *testing.T, secret []byte, serverCfg *tls.Config, decision finalDecision) *fakeEAPTLSServer {
 	t.Helper()
 	clientPipe, serverPipe := net.Pipe()
 
@@ -155,6 +255,7 @@ func newFakeEAPTLSServer(t *testing.T, secret []byte, serverCfg *tls.Config) *fa
 		closed:         make(chan struct{}),
 		handshakeDone:  make(chan struct{}),
 		nextIdentifier: 1,
+		decision:       decision,
 	}
 
 	go s.pump()
@@ -259,7 +360,9 @@ func (s *fakeEAPTLSServer) exchange(ctx context.Context, packet *radiuslib.Packe
 			return pkt, nil
 		}
 		if s.handshakeComplete() {
-			return s.accessAccept(), nil
+			if pkt := s.finalPacket(); pkt != nil {
+				return pkt, nil
+			}
 		}
 		return s.challengeNext(), nil
 	}
@@ -286,7 +389,9 @@ func (s *fakeEAPTLSServer) exchange(ctx context.Context, packet *radiuslib.Packe
 		return pkt, nil
 	}
 	if s.handshakeComplete() {
-		return s.accessAccept(), nil
+		if pkt := s.finalPacket(); pkt != nil {
+			return pkt, nil
+		}
 	}
 	return s.challengeNext(), nil
 }
@@ -416,14 +521,41 @@ func (s *fakeEAPTLSServer) nextServerFragment() ([]byte, uint8, int, bool) {
 	return fragment, flags, totalLen, true
 }
 
-func (s *fakeEAPTLSServer) accessAccept() *radiuslib.Packet {
-	pkt := radiuslib.New(radiuslib.CodeAccessAccept, s.secret)
-	msg := &eapMessage{Code: eapCodeSuccess, Identifier: s.nextIdentifier}
-	if err := setEAPMessageAttr(pkt, msg); err != nil {
-		s.t.Fatalf("set success attr: %v", err)
+// finalPacket is the server's answer once its TLS handshake has completed.
+// A nil return means the server has not decided, which leaves the client
+// holding an empty challenge and nothing to conclude from.
+func (s *fakeEAPTLSServer) finalPacket() *radiuslib.Packet {
+	switch s.decision {
+	case decisionWithhold:
+		return nil
+	case decisionReject:
+		return s.decisionPacket(radiuslib.CodeAccessReject, eapCodeFailure, s.secret)
+	case decisionAcceptEAPFailure:
+		return s.decisionPacket(radiuslib.CodeAccessAccept, eapCodeFailure, s.secret)
+	case decisionAcceptWrongEAPCode:
+		return s.decisionPacket(radiuslib.CodeAccessAccept, eapCodeRequest, s.secret)
+	case decisionForgedAccept:
+		return s.decisionPacket(radiuslib.CodeAccessAccept, eapCodeSuccess, []byte("not-the-shared-secret"))
+	default:
+		return s.decisionPacket(radiuslib.CodeAccessAccept, eapCodeSuccess, s.secret)
 	}
-	if err := setMessageAuthenticator(pkt, s.secret); err != nil {
-		s.t.Fatalf("set success authenticator: %v", err)
+}
+
+// decisionPacket builds the terminating packet. macSecret is the key the
+// Message-Authenticator is computed under, so a test can present one an
+// off-path peer could have produced.
+func (s *fakeEAPTLSServer) decisionPacket(code radiuslib.Code, eapCode uint8, macSecret []byte) *radiuslib.Packet {
+	pkt := radiuslib.New(code, s.secret)
+	msg := &eapMessage{Code: eapCode, Identifier: s.nextIdentifier}
+	if eapCode == eapCodeRequest {
+		// Request and Response carry a type; Success and Failure do not.
+		msg.Type = eapTypeIdentity
+	}
+	if err := setEAPMessageAttr(pkt, msg); err != nil {
+		s.t.Fatalf("set decision attr: %v", err)
+	}
+	if err := setMessageAuthenticator(pkt, macSecret); err != nil {
+		s.t.Fatalf("set decision authenticator: %v", err)
 	}
 	return pkt
 }
