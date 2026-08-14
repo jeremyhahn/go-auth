@@ -1,4 +1,4 @@
-FROM golang:1.26.5-bookworm
+FROM golang:1.26.6-bookworm
 
 # Install swtpm (software TPM simulator) and dependencies
 RUN apt-get update \
