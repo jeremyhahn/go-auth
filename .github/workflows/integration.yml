@@ -1,0 +1,63 @@
+# Integration suites — the external auth backends against real daemons.
+#
+# Separate from ci.yml on purpose (devops.md §5): these build nine container
+# images and stand up freeradius, an LDAP server, PAM, SoftHSM, a TPM simulator
+# and ory hydra, which is minutes of work rather than seconds, and one suite has
+# a known upstream defect (below). §5's shape for exactly this case is a
+# scheduled workflow with workflow_dispatch and a paths filter, so the per-push
+# gate stays fast and honest while the suites still run.
+#
+# Why not a job inside ci.yml: Gitea does not honour job-level
+# continue-on-error for the overall run conclusion, so an advisory job there
+# turns the whole run red and there is no way to say "ran, informational".
+# Observed on run 367, 2026-08-14.
+#
+# These suites ran dark until 2026-08-14. Their first execution caught a real
+# EAP-TLS interop defect that the unit suite could not see, because the unit
+# fake shared the client's own misreading of RFC 2869 §5.14.
+#
+# KNOWN FAILURE, not this module's: the LDAP suite's fixture server
+# (github.com/vjeantet/ldapserver v1.0.1, unmaintained) races its own shutdown
+# against a client disconnect and panics with "send on closed channel". It
+# passes on a workstation and panics on the runner. Replacing that fixture is
+# what closes this out; until then this workflow is expected to be red on the
+# LDAP leg and green on the other eight.
+name: Integration
+
+on:
+  schedule:
+    - cron: '0 6 * * *'
+  # Gitea has no API to re-run a finished run (ci-template v1.3).
+  workflow_dispatch:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'pkg/**'
+      - 'test/integration/**'
+      - '**/Dockerfile'
+      - 'Makefile'
+      - '.github/workflows/integration.yml'
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.26.6"
+
+jobs:
+  integration:
+    name: Integration Suites
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      # Every suite runs in its own container with its daemon baked in, so this
+      # step needs nothing from the host but a Docker daemon (devops.md §4).
+      - name: Run integration suites
+        run: make integration-test
