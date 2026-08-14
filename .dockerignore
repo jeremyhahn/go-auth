@@ -1,0 +1,44 @@
+# Keep the build context small and reproducible.
+#
+# The seven per-protocol test images under pkg/ all use `COPY . .` with the
+# repository root as their context, so anything not excluded here is baked into
+# every one of them — .git alone is usually larger than the source.
+
+# VCS and CI config — never needed inside the image
+.git/
+.gitignore
+.gitattributes
+.github/
+
+# Host-built binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test and coverage artifacts, regenerated in the container
+coverage/
+*.test
+*.out
+*.prof
+
+# A stray go.work silently changes module resolution inside the build
+go.work
+go.work.sum
+vendor/
+
+# Editor, agent and OS noise
+.idea/
+.vscode/
+.claude/
+.serena/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Docker files themselves
+.dockerignore
+**/Dockerfile
