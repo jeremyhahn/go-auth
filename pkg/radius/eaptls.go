@@ -25,7 +25,14 @@ const (
 	maxEAPTLSRoundTrips = 100
 )
 
-var errEAPTLSTooManyRoundTrips = errors.New("radius: eap-tls exceeded the maximum number of round trips")
+var (
+	errEAPTLSTooManyRoundTrips = errors.New("radius: eap-tls exceeded the maximum number of round trips")
+
+	// errEAPTLSDiscardPacket marks a response that failed Message-Authenticator
+	// verification. It is not an authentication outcome — it means the packet
+	// is treated as never having arrived (RFC 3579 §3.2).
+	errEAPTLSDiscardPacket = errors.New("radius: discarded unauthenticated response")
+)
 
 // EAPTLSConfig configures EAP-TLS authentication.
 type EAPTLSConfig struct {
@@ -157,11 +164,19 @@ func (s *eapTLSSession) run(ctx context.Context) error {
 			return err
 		}
 
-		s.nextMsg, err = s.handleResponse(ctx, resp)
+		next, err := s.handleResponse(ctx, resp)
 		if err != nil {
+			// A discarded packet leaves the session exactly as it was, so the
+			// outstanding request is retransmitted on the next iteration
+			// rather than the conversation being abandoned. s.nextMsg is
+			// deliberately not touched.
+			if errors.Is(err, errEAPTLSDiscardPacket) {
+				continue
+			}
 			s.closeTransport(err)
 			return err
 		}
+		s.nextMsg = next
 		// The only success path. handleAccept reaches it solely from an
 		// Access-Accept whose Message-Authenticator verified, carrying
 		// EAP-Success, with the TLS handshake completed without error.
@@ -198,17 +213,34 @@ func (s *eapTLSSession) handleResponse(ctx context.Context, resp *radiuslib.Pack
 		return nil, errors.New("radius: nil response packet")
 	}
 
+	// RFC 3579 §3.2: a client receiving an Access-Challenge, Access-Accept or
+	// Access-Reject belonging to an EAP conversation MUST verify the
+	// Message-Authenticator and silently discard the packet when it does not
+	// match. All three are checked here, before a single field is read out of
+	// the packet — in particular before cacheState, so a packet nobody could
+	// authenticate cannot plant the State attribute that every subsequent
+	// request echoes.
+	//
+	// Discarding rather than failing is what the RFC asks for, and it is also
+	// the safer behavior: an injected packet does not end a conversation the
+	// legitimate server may still be answering. Nothing in the session
+	// advances, so run retransmits; a peer that only ever sends packets we
+	// must discard is stopped by maxEAPTLSRoundTrips.
+	if err := verifyMessageAuthenticator(resp, s.secret); err != nil {
+		return nil, fmt.Errorf("%w: %s: %w", errEAPTLSDiscardPacket, resp.Code, err)
+	}
+
 	s.cacheState(resp)
 
 	switch resp.Code {
 	case radiuslib.CodeAccessChallenge:
 		return s.handleChallenge(ctx, resp)
 	case radiuslib.CodeAccessAccept:
-		if err := verifyMessageAuthenticator(resp, s.secret); err != nil {
-			return nil, err
-		}
 		return s.handleAccept(ctx, resp)
 	case radiuslib.CodeAccessReject:
+		// Only a verified Access-Reject is the server's decision. An
+		// unverifiable one was discarded above and never reaches this line,
+		// so a forged denial cannot be laundered into an authoritative one.
 		return nil, ErrRejected
 	default:
 		return nil, fmt.Errorf("radius: unexpected response code %s", resp.Code)

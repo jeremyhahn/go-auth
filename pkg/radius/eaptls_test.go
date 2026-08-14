@@ -78,6 +78,7 @@ func TestAuthenticateEAPTLSRejectsBadFinalPacket(t *testing.T) {
 		{name: "Access-Accept carrying EAP-Failure", decision: decisionAcceptEAPFailure, wantErr: ErrRejected},
 		{name: "Access-Accept carrying neither Success nor Failure", decision: decisionAcceptWrongEAPCode},
 		{name: "Access-Accept authenticated with the wrong secret", decision: decisionForgedAccept},
+		{name: "Access-Reject authenticated with the wrong secret", decision: decisionForgedReject},
 	}
 
 	for _, tt := range tests {
@@ -98,6 +99,52 @@ func TestAuthenticateEAPTLSRejectsBadFinalPacket(t *testing.T) {
 				t.Fatalf("expected %v, got %v", tt.wantErr, err)
 			}
 		})
+	}
+}
+
+// TestAuthenticateEAPTLSDiscardsForgedReject pins the specific hazard in an
+// unverified Access-Reject: it must not reach the caller as ErrRejected.
+// ErrRejected is the server's authoritative denial, and an off-path peer that
+// cannot compute the Message-Authenticator must not be able to produce one.
+// RFC 3579 §3.2 has the packet discarded, so the conversation carries on and
+// ends on the round-trip bound instead.
+func TestAuthenticateEAPTLSDiscardsForgedReject(t *testing.T) {
+	secret := []byte("sharedsecret")
+	serverCfg, clientCfg := mustLoadTLSConfigs(t)
+
+	srv := newFakeEAPTLSServer(t, secret, serverCfg, decisionForgedReject)
+	t.Cleanup(srv.Close)
+
+	auth := mustEAPTLSAuthenticator(t, secret, srv, clientCfg)
+
+	err := auth.Authenticate(context.Background(), "user@example", "")
+	if errors.Is(err, ErrRejected) {
+		t.Fatal("a forged Access-Reject was surfaced as the server's rejection")
+	}
+	if !errors.Is(err, errEAPTLSTooManyRoundTrips) {
+		t.Fatalf("expected the forged rejects to be discarded until the round-trip bound, got %v", err)
+	}
+}
+
+// TestAuthenticateEAPTLSDiscardsForgedChallenge covers the same rule on the
+// challenge path. Verification happens before any field is read, so a forged
+// challenge cannot plant the State attribute either.
+func TestAuthenticateEAPTLSDiscardsForgedChallenge(t *testing.T) {
+	secret := []byte("sharedsecret")
+	serverCfg, clientCfg := mustLoadTLSConfigs(t)
+
+	srv := newFakeEAPTLSServer(t, secret, serverCfg, decisionAccept)
+	srv.forgeChallenges = true
+	t.Cleanup(srv.Close)
+
+	auth := mustEAPTLSAuthenticator(t, secret, srv, clientCfg)
+
+	err := auth.Authenticate(context.Background(), "user@example", "")
+	if err == nil {
+		t.Fatal("authentication succeeded on a conversation of unauthenticated challenges")
+	}
+	if !errors.Is(err, errEAPTLSTooManyRoundTrips) {
+		t.Fatalf("expected the forged challenges to be discarded until the round-trip bound, got %v", err)
 	}
 }
 
@@ -213,6 +260,26 @@ type fakeEAPTLSServer struct {
 	stateSeen        bool
 
 	decision finalDecision
+
+	// forgeChallenges signs every Access-Challenge with the wrong secret,
+	// standing in for an off-path peer injecting challenges into the
+	// conversation.
+	forgeChallenges bool
+
+	// The last answer sent, replayed when the client retransmits — the RADIUS
+	// server's duplicate-detection cache.
+	lastHandledIdentifier uint8
+	lastResponse          *radiuslib.Packet
+	haveLastResponse      bool
+}
+
+// challengeSecret is the key the server's Access-Challenges are authenticated
+// under.
+func (s *fakeEAPTLSServer) challengeSecret() []byte {
+	if s.forgeChallenges {
+		return wrongSecret
+	}
+	return s.secret
 }
 
 // finalDecision is what the fake server does once its TLS handshake has
@@ -239,7 +306,15 @@ const (
 	// decisionForgedAccept is an Access-Accept authenticated with the wrong
 	// secret: an off-path peer that cannot compute the real HMAC.
 	decisionForgedAccept
+	// decisionForgedReject is an Access-Reject authenticated with the wrong
+	// secret. It must never surface as ErrRejected, which would turn an
+	// injected packet into the server's authoritative denial.
+	decisionForgedReject
 )
+
+// wrongSecret is what an off-path peer signs with: anything that is not the
+// shared secret.
+var wrongSecret = []byte("not-the-shared-secret")
 
 func newFakeEAPTLSServer(t *testing.T, secret []byte, serverCfg *tls.Config, decision finalDecision) *fakeEAPTLSServer {
 	t.Helper()
@@ -335,6 +410,27 @@ func (s *fakeEAPTLSServer) exchange(ctx context.Context, packet *radiuslib.Packe
 		s.t.Fatalf("expected EAP response, got code %d", msg.Code)
 	}
 
+	// A client that discarded our last answer retransmits the same EAP
+	// response. A real RADIUS server replies from its cache rather than
+	// re-running the conversation, and this harness has to as well: replaying
+	// the request would feed the same bytes to a TLS handshake that has
+	// already returned, blocking on a pipe nobody reads any more.
+	if s.haveLastResponse && msg.Identifier == s.lastHandledIdentifier {
+		return s.lastResponse, nil
+	}
+
+	resp, err := s.respond(msg)
+	if resp != nil {
+		s.lastHandledIdentifier = msg.Identifier
+		s.lastResponse = resp
+		s.haveLastResponse = true
+	}
+	return resp, err
+}
+
+// respond produces the server's answer to a client EAP response it has not
+// already seen.
+func (s *fakeEAPTLSServer) respond(msg *eapMessage) (*radiuslib.Packet, error) {
 	s.verifyIdentifier(msg.Identifier)
 
 	if s.expectedResponse == 0 {
@@ -414,7 +510,7 @@ func (s *fakeEAPTLSServer) challengeStart() *radiuslib.Packet {
 	if err := setEAPMessageAttr(pkt, msg); err != nil {
 		s.t.Fatalf("set challenge attr: %v", err)
 	}
-	if err := setMessageAuthenticator(pkt, s.secret); err != nil {
+	if err := setMessageAuthenticator(pkt, s.challengeSecret()); err != nil {
 		s.t.Fatalf("set challenge authenticator: %v", err)
 	}
 	return pkt
@@ -432,7 +528,7 @@ func (s *fakeEAPTLSServer) challengeNext() *radiuslib.Packet {
 	if err := setEAPMessageAttr(pkt, msg); err != nil {
 		s.t.Fatalf("set ack attr: %v", err)
 	}
-	if err := setMessageAuthenticator(pkt, s.secret); err != nil {
+	if err := setMessageAuthenticator(pkt, s.challengeSecret()); err != nil {
 		s.t.Fatalf("set ack authenticator: %v", err)
 	}
 	return pkt
@@ -464,7 +560,7 @@ func (s *fakeEAPTLSServer) emitServerFragment() *radiuslib.Packet {
 	if err := setEAPMessageAttr(pkt, msg); err != nil {
 		s.t.Fatalf("set server fragment attr: %v", err)
 	}
-	if err := setMessageAuthenticator(pkt, s.secret); err != nil {
+	if err := setMessageAuthenticator(pkt, s.challengeSecret()); err != nil {
 		s.t.Fatalf("set server fragment authenticator: %v", err)
 	}
 	return pkt
@@ -535,7 +631,9 @@ func (s *fakeEAPTLSServer) finalPacket() *radiuslib.Packet {
 	case decisionAcceptWrongEAPCode:
 		return s.decisionPacket(radiuslib.CodeAccessAccept, eapCodeRequest, s.secret)
 	case decisionForgedAccept:
-		return s.decisionPacket(radiuslib.CodeAccessAccept, eapCodeSuccess, []byte("not-the-shared-secret"))
+		return s.decisionPacket(radiuslib.CodeAccessAccept, eapCodeSuccess, wrongSecret)
+	case decisionForgedReject:
+		return s.decisionPacket(radiuslib.CodeAccessReject, eapCodeFailure, wrongSecret)
 	default:
 		return s.decisionPacket(radiuslib.CodeAccessAccept, eapCodeSuccess, s.secret)
 	}
