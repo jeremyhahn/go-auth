@@ -271,6 +271,29 @@ type fakeEAPTLSServer struct {
 	lastHandledIdentifier uint8
 	lastResponse          *radiuslib.Packet
 	haveLastResponse      bool
+
+	// reqAuthenticator is the Authenticator of the request being answered.
+	// RFC 2869 §5.14 defines a response's Message-Authenticator over it rather
+	// than over the response's own Authenticator, so every reply this server
+	// signs must use it. Deriving the fake from the RFC rather than from the
+	// client is the point: signing responses the way the client used to verify
+	// them made the unit suite agree with itself while every conforming server
+	// was rejected on the wire.
+	reqAuthenticator [16]byte
+
+	// lastSignSecret is the key lastResponse was signed under, so a replay can
+	// be re-signed for the retransmission it answers.
+	lastSignSecret []byte
+}
+
+// signResponse applies the Message-Authenticator a conforming RADIUS server
+// would, over the Authenticator of the request being answered.
+func (s *fakeEAPTLSServer) signResponse(pkt *radiuslib.Packet, secret []byte) {
+	s.t.Helper()
+	s.lastSignSecret = secret
+	if err := setResponseMessageAuthenticator(pkt, s.reqAuthenticator, secret); err != nil {
+		s.t.Fatalf("sign response: %v", err)
+	}
 }
 
 // challengeSecret is the key the server's Access-Challenges are authenticated
@@ -382,6 +405,7 @@ func (s *fakeEAPTLSServer) exchange(ctx context.Context, packet *radiuslib.Packe
 	if err := verifyMessageAuthenticator(packet, s.secret); err != nil {
 		s.t.Fatalf("verify request authenticator: %v", err)
 	}
+	s.reqAuthenticator = packet.Authenticator
 
 	if !s.stateSeen {
 		attr, ok := packet.Attributes.Lookup(rfc2865.State_Type)
@@ -416,6 +440,9 @@ func (s *fakeEAPTLSServer) exchange(ctx context.Context, packet *radiuslib.Packe
 	// the request would feed the same bytes to a TLS handshake that has
 	// already returned, blocking on a pipe nobody reads any more.
 	if s.haveLastResponse && msg.Identifier == s.lastHandledIdentifier {
+		// A retransmission carries a fresh Request Authenticator, so the
+		// cached reply is re-signed for it rather than replayed verbatim.
+		s.signResponse(s.lastResponse, s.lastSignSecret)
 		return s.lastResponse, nil
 	}
 
@@ -510,9 +537,7 @@ func (s *fakeEAPTLSServer) challengeStart() *radiuslib.Packet {
 	if err := setEAPMessageAttr(pkt, msg); err != nil {
 		s.t.Fatalf("set challenge attr: %v", err)
 	}
-	if err := setMessageAuthenticator(pkt, s.challengeSecret()); err != nil {
-		s.t.Fatalf("set challenge authenticator: %v", err)
-	}
+	s.signResponse(pkt, s.challengeSecret())
 	return pkt
 }
 
@@ -528,9 +553,7 @@ func (s *fakeEAPTLSServer) challengeNext() *radiuslib.Packet {
 	if err := setEAPMessageAttr(pkt, msg); err != nil {
 		s.t.Fatalf("set ack attr: %v", err)
 	}
-	if err := setMessageAuthenticator(pkt, s.challengeSecret()); err != nil {
-		s.t.Fatalf("set ack authenticator: %v", err)
-	}
+	s.signResponse(pkt, s.challengeSecret())
 	return pkt
 }
 
@@ -560,9 +583,7 @@ func (s *fakeEAPTLSServer) emitServerFragment() *radiuslib.Packet {
 	if err := setEAPMessageAttr(pkt, msg); err != nil {
 		s.t.Fatalf("set server fragment attr: %v", err)
 	}
-	if err := setMessageAuthenticator(pkt, s.challengeSecret()); err != nil {
-		s.t.Fatalf("set server fragment authenticator: %v", err)
-	}
+	s.signResponse(pkt, s.challengeSecret())
 	return pkt
 }
 
@@ -652,9 +673,7 @@ func (s *fakeEAPTLSServer) decisionPacket(code radiuslib.Code, eapCode uint8, ma
 	if err := setEAPMessageAttr(pkt, msg); err != nil {
 		s.t.Fatalf("set decision attr: %v", err)
 	}
-	if err := setMessageAuthenticator(pkt, macSecret); err != nil {
-		s.t.Fatalf("set decision authenticator: %v", err)
-	}
+	s.signResponse(pkt, macSecret)
 	return pkt
 }
 

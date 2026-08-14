@@ -120,7 +120,16 @@ type eapTLSSession struct {
 	handshakeOnce bool
 	handshakeDone bool
 	handshakeErr  error
-	handshakeCh   chan error
+
+	// handshakeDoneCh is closed when the handshake goroutine returns, and
+	// handshakeResult is written before that close so a reader that observes
+	// the close also observes the result. It is a signal rather than a value
+	// channel because several places need to *wait* on completion without
+	// consuming it — in particular the wait for outbound records, which would
+	// otherwise sit until the caller's deadline whenever the handshake ends
+	// without producing anything further.
+	handshakeDoneCh chan struct{}
+	handshakeResult error
 
 	nextMsg   *eapMessage
 	stateAttr []byte
@@ -164,7 +173,7 @@ func (s *eapTLSSession) run(ctx context.Context) error {
 			return err
 		}
 
-		next, err := s.handleResponse(ctx, resp)
+		next, err := s.handleResponse(ctx, packet, resp)
 		if err != nil {
 			// A discarded packet leaves the session exactly as it was, so the
 			// outstanding request is retransmitted on the next iteration
@@ -208,9 +217,12 @@ func (s *eapTLSSession) buildAccessRequest(msg *eapMessage) (*radiuslib.Packet, 
 	return packet, nil
 }
 
-func (s *eapTLSSession) handleResponse(ctx context.Context, resp *radiuslib.Packet) (*eapMessage, error) {
+func (s *eapTLSSession) handleResponse(ctx context.Context, req, resp *radiuslib.Packet) (*eapMessage, error) {
 	if resp == nil {
 		return nil, errors.New("radius: nil response packet")
+	}
+	if req == nil {
+		return nil, errors.New("radius: nil request packet")
 	}
 
 	// RFC 3579 §3.2: a client receiving an Access-Challenge, Access-Accept or
@@ -226,7 +238,7 @@ func (s *eapTLSSession) handleResponse(ctx context.Context, resp *radiuslib.Pack
 	// legitimate server may still be answering. Nothing in the session
 	// advances, so run retransmits; a peer that only ever sends packets we
 	// must discard is stopped by maxEAPTLSRoundTrips.
-	if err := verifyMessageAuthenticator(resp, s.secret); err != nil {
+	if err := verifyResponseMessageAuthenticator(resp, req.Authenticator, s.secret); err != nil {
 		return nil, fmt.Errorf("%w: %s: %w", errEAPTLSDiscardPacket, resp.Code, err)
 	}
 
@@ -316,11 +328,11 @@ func (s *eapTLSSession) ensureHandshakeStarted() {
 		return
 	}
 	s.handshakeOnce = true
-	s.handshakeCh = make(chan error, 1)
+	s.handshakeDoneCh = make(chan struct{})
 	go func() {
 		err := s.tlsConn.Handshake()
-		s.handshakeCh <- err
-		close(s.handshakeCh)
+		s.handshakeResult = err
+		close(s.handshakeDoneCh)
 	}()
 }
 
@@ -353,26 +365,20 @@ func (s *eapTLSSession) handleTLSRequest(ctx context.Context, msg *eapMessage) (
 	// server's to make, and this client does not get to infer it from its own
 	// TLS state. Falling through to the acknowledgement below is what keeps
 	// the only exit a verified Access-Accept or Access-Reject.
-	if s.handshakeCh != nil && !s.handshakeDone {
-		waitCtx := ctx
-		var cancel context.CancelFunc
-		if waitCtx == nil {
-			waitCtx = context.Background()
-		}
-		if _, ok := waitCtx.Deadline(); !ok {
-			waitCtx, cancel = context.WithTimeout(waitCtx, 2*time.Second)
-		}
-		if cancel != nil {
-			defer cancel()
-		}
-		if data, err := s.transport.NextOutbound(waitCtx); err == nil {
+	if s.handshakeDoneCh != nil && !s.handshakeDone {
+		if data, err := s.awaitOutbound(ctx); err == nil {
 			s.pendingTLS = append(s.pendingTLS, data)
 			s.pendingTLS = append(s.pendingTLS, s.transport.DrainOutbound()...)
 			if frag := s.nextTLSFragment(msg.Identifier); frag != nil {
 				return frag, nil
 			}
-		} else if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) && err != io.EOF {
+		} else if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) && err != io.EOF {
 			return nil, err
+		} else {
+			s.pendingTLS = append(s.pendingTLS, s.transport.DrainOutbound()...)
+			if frag := s.nextTLSFragment(msg.Identifier); frag != nil {
+				return frag, nil
+			}
 		}
 	}
 
@@ -385,6 +391,45 @@ func (s *eapTLSSession) emptyTLSAck(identifier uint8) *eapMessage {
 		Identifier: identifier,
 		Type:       eapTypeTLS,
 	}
+}
+
+// awaitOutbound blocks until the TLS stack produces a record, the handshake
+// goroutine returns, or the deadline expires — whichever comes first. Waiting
+// on records alone is what stalled the last round of a real conversation: a
+// handshake that completes without writing anything further never wakes a
+// NextOutbound, so the session sat until the caller's deadline expired.
+// It returns the record, or nil when the wake-up was the handshake finishing.
+func (s *eapTLSSession) awaitOutbound(ctx context.Context) ([]byte, error) {
+	waitCtx := ctx
+	if waitCtx == nil {
+		waitCtx = context.Background()
+	}
+	var cancel context.CancelFunc
+	if _, ok := waitCtx.Deadline(); !ok {
+		waitCtx, cancel = context.WithTimeout(waitCtx, 2*time.Second)
+		defer cancel()
+	}
+
+	// Stop waiting as soon as the handshake ends, whichever way it ends.
+	if s.handshakeDoneCh != nil {
+		linked, stop := context.WithCancel(waitCtx)
+		defer stop()
+		go func() {
+			select {
+			case <-s.handshakeDoneCh:
+				stop()
+			case <-linked.Done():
+			}
+		}()
+		waitCtx = linked
+	}
+
+	data, err := s.transport.NextOutbound(waitCtx)
+	if err != nil {
+		s.checkHandshakeResult()
+		return nil, err
+	}
+	return data, nil
 }
 
 func (s *eapTLSSession) collectTLSOutbound(ctx context.Context) {
@@ -408,23 +453,16 @@ func (s *eapTLSSession) collectTLSOutbound(ctx context.Context) {
 			return
 		}
 
-		waitCtx := ctx
-		var cancel context.CancelFunc
-		if waitCtx == nil {
-			waitCtx = context.Background()
-		}
-		if _, ok := waitCtx.Deadline(); !ok {
-			waitCtx, cancel = context.WithTimeout(waitCtx, 2*time.Second)
-		}
-		if cancel != nil {
-			defer cancel()
-		}
-		if data, err := s.transport.NextOutbound(waitCtx); err == nil {
+		if data, err := s.awaitOutbound(ctx); err == nil {
 			buffers = append(buffers, data)
 			buffers = append(buffers, s.transport.DrainOutbound()...)
-		} else if err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) && err != io.EOF {
+		} else if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) && err != io.EOF {
 			s.handshakeErr = err
 			s.handshakeDone = true
+		} else {
+			// The wait may have ended because the handshake finished; take
+			// anything it wrote on its way out.
+			buffers = append(buffers, s.transport.DrainOutbound()...)
 		}
 	}
 	if len(buffers) == 0 {
@@ -489,17 +527,17 @@ func (s *eapTLSSession) waitForHandshake(ctx context.Context) error {
 	if s.handshakeDone {
 		return s.handshakeErr
 	}
-	if s.handshakeCh == nil {
+	if s.handshakeDoneCh == nil {
 		return errors.New("radius: EAP-TLS handshake never started")
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	select {
-	case err := <-s.handshakeCh:
+	case <-s.handshakeDoneCh:
 		s.handshakeDone = true
-		s.handshakeErr = err
-		return err
+		s.handshakeErr = s.handshakeResult
+		return s.handshakeErr
 	case <-ctx.Done():
 		// Never report success for a handshake whose result is unknown.
 		return ctx.Err()
@@ -507,14 +545,12 @@ func (s *eapTLSSession) waitForHandshake(ctx context.Context) error {
 }
 
 func (s *eapTLSSession) checkHandshakeResult() {
-	if s.handshakeDone || s.handshakeCh == nil {
+	if s.handshakeDone || s.handshakeDoneCh == nil {
 		return
 	}
 	select {
-	case err, ok := <-s.handshakeCh:
-		if ok {
-			s.handshakeErr = err
-		}
+	case <-s.handshakeDoneCh:
+		s.handshakeErr = s.handshakeResult
 		s.handshakeDone = true
 	default:
 	}

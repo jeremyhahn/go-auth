@@ -191,6 +191,42 @@ func setMessageAuthenticator(packet *radiuslib.Packet, secret []byte) error {
 	return nil
 }
 
+// setResponseMessageAuthenticator computes the Message-Authenticator a server
+// puts on a response, over the request's Authenticator as RFC 2869 §5.14
+// requires. It is the counterpart of verifyResponseMessageAuthenticator.
+func setResponseMessageAuthenticator(resp *radiuslib.Packet, requestAuthenticator [16]byte, secret []byte) error {
+	if resp == nil {
+		return errors.New("radius: nil response packet")
+	}
+	saved := resp.Authenticator
+	resp.Authenticator = requestAuthenticator
+	defer func() { resp.Authenticator = saved }()
+	return setMessageAuthenticator(resp, secret)
+}
+
+// verifyResponseMessageAuthenticator validates the Message-Authenticator on a
+// response packet.
+//
+// RFC 2869 §5.14 and RFC 3579 §3.2 compute the attribute for an Access-Accept,
+// Access-Reject or Access-Challenge over the response with the *request's*
+// Authenticator standing in the Authenticator field — not the response's own,
+// which at that point holds the Response Authenticator. Verifying against the
+// response's own value cannot match a conforming server, so this is a separate
+// entry point from the request-side check rather than a flag on it.
+func verifyResponseMessageAuthenticator(resp *radiuslib.Packet, requestAuthenticator [16]byte, secret []byte) error {
+	if resp == nil {
+		return errors.New("radius: nil response packet")
+	}
+	saved := resp.Authenticator
+	resp.Authenticator = requestAuthenticator
+	defer func() { resp.Authenticator = saved }()
+	return verifyMessageAuthenticator(resp, secret)
+}
+
+// verifyMessageAuthenticator validates the attribute over the packet as it
+// stands. That is correct for an Access-Request, whose Authenticator field
+// already holds the Request Authenticator the HMAC is defined over. Responses
+// go through verifyResponseMessageAuthenticator.
 func verifyMessageAuthenticator(packet *radiuslib.Packet, secret []byte) error {
 	attr, ok := packet.Attributes.Lookup(radiusTypeMessageAuthenticator)
 	if !ok {
