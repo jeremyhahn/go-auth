@@ -20,6 +20,11 @@ My client authentication libraries for Golang.
 The [api package](pkg/api/) contains a factory pattern for working with all of the clients through a uniform constructor.
 
 
+## Protected memory
+
+Keys, passwords, shared secrets and API keys are held in [protected memory](docs/secret.md) — a memguard enclave — for their whole lifetime, and are decrypted only for the moment they are used. The entry points that take a credential as a Go string still work and are deprecated; see the [changelog](CHANGELOG.md).
+
+
 ## Support
 
 Please consider supporting this project for ongoing success and sustainability. I'm a passionate open source contributor making a professional living creating free, secure, scalable, robust, enterprise grade, distributed systems and cloud native solutions.

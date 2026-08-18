@@ -10,18 +10,29 @@ import (
 	"time"
 
 	"github.com/go-ldap/ldap/v3"
+
+	secretpkg "github.com/jeremyhahn/go-auth/pkg/secret"
 )
 
 // Authenticator performs username/password authentication against an LDAP directory.
 type Authenticator struct {
-	url             string
-	userDNTemplate  string
-	serviceBindDN   string
-	servicePassword string
-	startTLS        bool
-	tlsConfig       *tls.Config
-	timeout         time.Duration
-	implicitTLS     bool
+	url            string
+	userDNTemplate string
+	serviceBindDN  string
+	// servicePassword is the service account's bind password, sealed in
+	// protected memory for the lifetime of the authenticator and opened only
+	// for the duration of a single service bind.
+	//
+	// It is nil when the service account was configured with an empty
+	// password, which nothing can seal; emptyServicePassword records that case
+	// so the bind still happens exactly as it did before this field held a
+	// secret. See WithServiceAccount.
+	servicePassword      *secretpkg.Secret
+	emptyServicePassword bool
+	startTLS             bool
+	tlsConfig            *tls.Config
+	timeout              time.Duration
+	implicitTLS          bool
 
 	dialContext func(ctx context.Context) (ldapConn, error)
 }
@@ -38,10 +49,53 @@ func WithUserDNTemplate(template string) Option {
 }
 
 // WithServiceAccount sets the DN and password used for an initial bind before authenticating users.
+//
+// The password is sealed in protected memory before the authenticator is
+// returned, but the string the caller passed in cannot be wiped and stays
+// resident until the collector reclaims it.
+//
+// Deprecated: use WithProtectedServiceAccount, which takes the password in
+// protected memory and never requires it to exist as a Go string. This option
+// is still supported and will be removed in the coordinated breaking release.
 func WithServiceAccount(dn, password string) Option {
 	return func(a *Authenticator) {
 		a.serviceBindDN = dn
+		// An Option cannot report an error, and an empty password is the only
+		// failure NewString has. There is nothing to protect in that case, so
+		// the bind is left exactly as it was before this field held a secret:
+		// it still calls Bind with an empty password, and go-ldap still
+		// refuses it locally with ErrorEmptyPassword ("empty password not
+		// allowed by the client", bind.go:65) rather than sending an
+		// unauthenticated bind. Keeping the call preserves the behavior of an
+		// injected connection, which is the only place it is observable.
+		sealed, err := secretpkg.NewString(password)
+		if err != nil {
+			a.servicePassword = nil
+			a.emptyServicePassword = true
+			return
+		}
+		a.servicePassword = sealed
+		a.emptyServicePassword = false
+	}
+}
+
+// WithProtectedServiceAccount sets the DN and protected-memory password used
+// for an initial bind before authenticating users.
+//
+// It is the replacement for WithServiceAccount: the password is opened only
+// for the duration of the service bind. go-ldap's Bind takes the password as a
+// string, so one immutable copy is made for that call and is unreachable once
+// it returns; it cannot be wiped, which is a property of the LDAP client's API
+// rather than of this package. Everything before and after that call keeps the
+// password sealed.
+//
+// The authenticator borrows the secret and does not take ownership of it:
+// destroy it when the last component using it is done.
+func WithProtectedServiceAccount(dn string, password *secretpkg.Secret) Option {
+	return func(a *Authenticator) {
+		a.serviceBindDN = dn
 		a.servicePassword = password
+		a.emptyServicePassword = false
 	}
 }
 
@@ -142,7 +196,18 @@ func (a *Authenticator) Authenticate(ctx context.Context, username, password str
 	}
 
 	if a.serviceBindDN != "" {
-		if err := conn.Bind(a.serviceBindDN, a.servicePassword); err != nil {
+		var err error
+		if a.emptyServicePassword {
+			// Nothing to open: the option was given an empty password, and the
+			// bind is made as it was before, for whatever the connection makes
+			// of it.
+			err = conn.Bind(a.serviceBindDN, "")
+		} else {
+			err = a.servicePassword.OpenString(func(servicePassword string) error {
+				return conn.Bind(a.serviceBindDN, servicePassword)
+			})
+		}
+		if err != nil {
 			return fmt.Errorf("ldap: service bind failed: %w", err)
 		}
 	}

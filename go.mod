@@ -4,6 +4,7 @@ go 1.26.6
 
 require (
 	github.com/MicahParks/keyfunc/v3 v3.7.0
+	github.com/awnumar/memguard v0.23.0
 	github.com/go-ldap/ldap/v3 v3.4.12
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/go-tpm v0.9.8
@@ -19,6 +20,7 @@ require (
 require (
 	github.com/Azure/go-ntlmssp v0.0.0-20221128193559-754e69321358 // indirect
 	github.com/MicahParks/jwkset v0.11.0 // indirect
+	github.com/awnumar/memcall v0.4.0 // indirect
 	github.com/boombuler/barcode v1.1.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/go-asn1-ber/asn1-ber v1.5.8-0.20250403174932-29230038a667 // indirect

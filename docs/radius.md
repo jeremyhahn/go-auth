@@ -454,6 +454,29 @@ auth, err := radius.NewAuthenticator(
 )
 ```
 
+## Protected Memory
+
+The RADIUS shared secret authenticates every packet, so it is held in protected
+memory for the lifetime of the authenticator and opened only for the duration of
+one exchange — see [Protected Memory](secret.md).
+
+```go
+import "github.com/jeremyhahn/go-auth/pkg/secret"
+
+sharedSecret, err := secret.NewString(os.Getenv("RADIUS_SECRET"))
+if err != nil {
+    log.Fatal(err)
+}
+defer sharedSecret.Destroy()
+
+auth, err := radius.NewAuthenticatorWithSecret("127.0.0.1:1812", sharedSecret,
+    radius.WithDialTimeout(5*time.Second))
+```
+
+`radius.NewAuthenticator`, which takes the secret as a `string`, is deprecated.
+It still works, and it now seals the secret before returning, but the caller's
+string cannot be wiped.
+
 ## Security Considerations
 
 ### Shared Secret Security

@@ -96,7 +96,6 @@ func (a *Authenticator) authenticateEAPTLS(ctx context.Context, username, passwo
 
 	session := &eapTLSSession{
 		auth:         a,
-		secret:       []byte(a.secret),
 		identity:     identity,
 		outer:        outer,
 		fragmentSize: cfg.fragmentSize(),
@@ -104,7 +103,18 @@ func (a *Authenticator) authenticateEAPTLS(ctx context.Context, username, passwo
 	}
 	session.tlsConn = tls.Client(session.transport, tlsCfg)
 
-	return session.run(ctx)
+	// The shared secret authenticates every request and verifies every reply
+	// of the conversation (RFC 3579 §3.2), so it has to be readable for as
+	// long as the conversation runs — but no longer. run is synchronous and
+	// the only reader of session.secret; the handshake goroutine it starts
+	// works on the TLS transport and never touches the key. Clearing the field
+	// on the way out keeps a stale reference to unmapped memory from
+	// outliving the open.
+	return a.secret.Open(func(sharedSecret []byte) error {
+		session.secret = sharedSecret
+		defer func() { session.secret = nil }()
+		return session.run(ctx)
+	})
 }
 
 type eapTLSSession struct {

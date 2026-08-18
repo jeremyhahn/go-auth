@@ -10,6 +10,8 @@ import (
 
 	radiuslib "layeh.com/radius"
 	"layeh.com/radius/rfc2865"
+
+	secretpkg "github.com/jeremyhahn/go-auth/pkg/secret"
 )
 
 var (
@@ -42,6 +44,13 @@ type dialContext interface {
 type Option func(*authConfig)
 
 // WithPacketExchanger overrides the packet exchanger implementation; primarily used for testing.
+//
+// The packet an exchanger is given aliases the shared secret in protected
+// memory, which is unmapped as soon as the exchange returns. An implementation
+// must not retain the packet, its Secret field, or anything derived from them
+// beyond the call — a later read is of unmapped memory and faults the process.
+// The exchangers in this package, and layeh.com/radius itself, use the secret
+// only on the synchronous encode and verify paths.
 func WithPacketExchanger(pe packetExchanger) Option {
 	return func(c *authConfig) {
 		c.exchanger = pe
@@ -124,9 +133,12 @@ func (c radiusClient) exchange(ctx context.Context, packet *radiuslib.Packet, ad
 // Authenticator performs PAP-based authentication against an upstream RADIUS server.
 type Authenticator struct {
 	address string
-	secret  string
-	client  packetExchanger
-	eapTLS  *EAPTLSConfig
+	// secret is the RADIUS shared secret, sealed in protected memory for the
+	// lifetime of the authenticator and opened only for the duration of a
+	// single packet exchange.
+	secret *secretpkg.Secret
+	client packetExchanger
+	eapTLS *EAPTLSConfig
 }
 
 // NewAuthenticator constructs a RADIUS authenticator.
@@ -134,11 +146,41 @@ type Authenticator struct {
 // The address must include host and port (for example, "127.0.0.1:1812"). The secret
 // provides the shared secret used to protect Access-Request packets. Options allow callers
 // to adjust transport behavior, enable TLS, or supply custom packet exchangers.
+//
+// The secret is sealed in protected memory before this returns, but the string
+// the caller passed in cannot be wiped and stays resident until the collector
+// reclaims it.
+//
+// Deprecated: use NewAuthenticatorWithSecret, which takes the shared secret in
+// protected memory and never requires it to exist as a Go string. This
+// constructor is still supported and will be removed in the coordinated
+// breaking release.
 func NewAuthenticator(address, secret string, opts ...Option) (*Authenticator, error) {
+	if secret == "" {
+		return nil, errors.New("radius: secret must not be empty")
+	}
+	sealed, err := secretpkg.NewString(secret)
+	if err != nil {
+		return nil, fmt.Errorf("radius: seal shared secret: %w", err)
+	}
+	return NewAuthenticatorWithSecret(address, sealed, opts...)
+}
+
+// NewAuthenticatorWithSecret constructs a RADIUS authenticator whose shared
+// secret is held in protected memory.
+//
+// It is the protected-memory replacement for NewAuthenticator: the secret is
+// opened only for the duration of a single packet exchange, and the plaintext
+// is wiped and unmapped before Authenticate returns. Build the secret with
+// secret.New or secret.NewString.
+//
+// The authenticator borrows the secret and does not take ownership of it:
+// destroy it when the last component using it is done.
+func NewAuthenticatorWithSecret(address string, sharedSecret *secretpkg.Secret, opts ...Option) (*Authenticator, error) {
 	if address == "" {
 		return nil, errors.New("radius: address must not be empty")
 	}
-	if secret == "" {
+	if sharedSecret.Size() == 0 {
 		return nil, errors.New("radius: secret must not be empty")
 	}
 
@@ -180,7 +222,7 @@ func NewAuthenticator(address, secret string, opts ...Option) (*Authenticator, e
 
 	return &Authenticator{
 		address: address,
-		secret:  secret,
+		secret:  sharedSecret,
 		client:  client,
 		eapTLS:  cfg.eapTLS,
 	}, nil
@@ -204,26 +246,41 @@ func (a *Authenticator) Authenticate(ctx context.Context, username, password str
 		return errors.New("radius: password must not be empty")
 	}
 
-	packet := radiuslib.New(radiuslib.CodeAccessRequest, []byte(a.secret))
-	if err := rfc2865.UserName_SetString(packet, username); err != nil {
-		return fmt.Errorf("radius: set username: %w", err)
-	}
-	if err := rfc2865.UserPassword_SetString(packet, password); err != nil {
-		return fmt.Errorf("radius: set password: %w", err)
-	}
+	// The packet keeps a reference to the shared secret rather than a copy of
+	// it: layeh.com/radius reads it back when the request is encoded and again
+	// when the response authenticator is checked. So the whole exchange runs
+	// inside Open, and only the response code — which carries nothing secret —
+	// is carried back out. Nothing that aliases the key may escape this
+	// callback: the memory is unmapped when it returns, so a retained
+	// reference faults rather than reads stale bytes.
+	var code radiuslib.Code
+	err := a.secret.Open(func(sharedSecret []byte) error {
+		packet := radiuslib.New(radiuslib.CodeAccessRequest, sharedSecret)
+		if err := rfc2865.UserName_SetString(packet, username); err != nil {
+			return fmt.Errorf("radius: set username: %w", err)
+		}
+		if err := rfc2865.UserPassword_SetString(packet, password); err != nil {
+			return fmt.Errorf("radius: set password: %w", err)
+		}
 
-	response, err := a.client.exchange(ctx, packet, a.address)
+		response, err := a.client.exchange(ctx, packet, a.address)
+		if err != nil {
+			return err
+		}
+		code = response.Code
+		return nil
+	})
 	if err != nil {
 		return err
 	}
 
-	switch response.Code {
+	switch code {
 	case radiuslib.CodeAccessAccept:
 		return nil
 	case radiuslib.CodeAccessReject:
 		return ErrRejected
 	default:
-		return fmt.Errorf("radius: unexpected response code %s", response.Code)
+		return fmt.Errorf("radius: unexpected response code %s", code)
 	}
 }
 

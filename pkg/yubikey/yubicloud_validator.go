@@ -19,6 +19,8 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+
+	secretpkg "github.com/jeremyhahn/go-auth/pkg/secret"
 )
 
 // HTTPValidator validates YubiKey OTPs against the public YubiCloud service.
@@ -44,7 +46,24 @@ func init() {
 	systemValidator = NewHTTPValidator(nil, "")
 }
 
+// Validate implements OTPValidator.
+//
+// Deprecated: use ValidateProtected. This method seals the key it is given
+// before doing any work, so the exposure is limited to the string the caller
+// already holds.
 func (v *HTTPValidator) Validate(ctx context.Context, clientID, apiKey, otp string) error {
+	sealed, err := secretpkg.NewString(apiKey)
+	if err != nil {
+		return err
+	}
+	defer sealed.Destroy()
+	return v.ValidateProtected(ctx, clientID, sealed, otp)
+}
+
+// ValidateProtected implements ProtectedOTPValidator: it signs the request and
+// verifies the response signature with the API key opened from protected
+// memory, and never materializes the key as a string.
+func (v *HTTPValidator) ValidateProtected(ctx context.Context, clientID string, apiKey *secretpkg.Secret, otp string) error {
 	nonce, err := randomNonce()
 	if err != nil {
 		return err
@@ -104,7 +123,54 @@ func (v *HTTPValidator) Validate(ctx context.Context, clientID, apiKey, otp stri
 	return nil
 }
 
-func computeSignature(values url.Values, apiKey string) (string, error) {
+// computeSignature signs the sorted parameter list with the API key, which is
+// opened from protected memory and decoded into a locked scratch buffer for
+// the HMAC. Neither the base64 key nor the decoded key reaches ordinary heap.
+func computeSignature(values url.Values, apiKey *secretpkg.Secret) (string, error) {
+	var signature string
+	err := apiKey.Open(func(encoded []byte) error {
+		return withDecodedAPIKey(encoded, func(key []byte) error {
+			signed, err := signValues(values, key)
+			if err != nil {
+				return err
+			}
+			signature = signed
+			return nil
+		})
+	})
+	if err != nil {
+		return "", fmt.Errorf("yubikey: sign request: %w", err)
+	}
+	return signature, nil
+}
+
+// withDecodedAPIKey base64-decodes the API key into locked scratch memory and
+// calls fn with it.
+//
+// A key that is not valid base64 is passed through as its own bytes. That is
+// what this package has always done — Yubico issues base64 keys, but callers
+// have been known to configure the raw value, and changing that here would
+// break their signatures rather than protect anything.
+func withDecodedAPIKey(encoded []byte, fn func(key []byte) error) error {
+	// base64 needs two characters to carry a byte, so a key shorter than that
+	// decodes to nothing and can only be a raw one. Asking for a zero-length
+	// scratch buffer would fail before the fallback could run, which would
+	// reject a one-byte raw key that Config.validate accepts.
+	size := base64.StdEncoding.DecodedLen(len(encoded))
+	if size == 0 {
+		return fn(encoded)
+	}
+
+	return secretpkg.Scratch(size, func(buf []byte) error {
+		n, err := base64.StdEncoding.Decode(buf, encoded)
+		if err != nil {
+			return fn(encoded)
+		}
+		return fn(buf[:n])
+	})
+}
+
+func signValues(values url.Values, key []byte) (string, error) {
 	copied := url.Values{}
 	for k, v := range values {
 		if k == "h" {
@@ -129,17 +195,9 @@ func computeSignature(values url.Values, apiKey string) (string, error) {
 		builder.WriteString(strings.Join(copied[k], ""))
 	}
 
-	mac := hmac.New(sha1.New, decodeAPIKey(apiKey))
+	mac := hmac.New(sha1.New, key)
 	mac.Write([]byte(builder.String()))
 	return base64.StdEncoding.EncodeToString(mac.Sum(nil)), nil
-}
-
-func decodeAPIKey(key string) []byte {
-	decoded, err := base64.StdEncoding.DecodeString(key)
-	if err != nil {
-		return []byte(key)
-	}
-	return decoded
 }
 
 func randomNonce() (string, error) {

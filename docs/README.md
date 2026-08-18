@@ -72,6 +72,12 @@ Comprehensive authentication library for Go with support for multiple authentica
 - QR code provisioning support
 - **Use cases**: Two-factor authentication, MFA, passwordless login
 
+#### [Protected Memory](secret.md)
+- Credential material sealed in memguard enclaves
+- Keys, passwords, shared secrets and tokens kept out of Go strings
+- Used by the OTP, RADIUS, TACACS+, LDAP and YubiKey backends
+- **Use cases**: every backend that holds a long-lived secret
+
 ### Hardware-Based Authentication
 
 #### [PKCS#11 (Cryptographic Token Interface)](pkcs11.md)
@@ -284,6 +290,8 @@ auth, _ := NewAuthenticator(config, mockValidator)
    - Use environment variables
    - Leverage secret managers
    - Never commit secrets to version control
+   - Hand long-lived secrets to the protected-memory API of each backend
+     ([Protected Memory](secret.md)) rather than keeping them in Go strings
 
 5. **Audit logging**
    - Log all authentication attempts
@@ -476,6 +484,7 @@ See [LICENSE](../LICENSE) for details.
 - [PKCS#11 Authentication](pkcs11.md) - Hardware security modules
 - [YubiKey OTP](yubikey.md) - Hardware tokens
 - [TPM 2.0 Authentication](tpm2.md) - Platform integrity
+- [Protected Memory](secret.md) - How credential material is held in memory
 
 ## Additional Resources
 

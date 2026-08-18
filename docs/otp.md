@@ -317,9 +317,62 @@ uri := auth.GetProvisioningURI()
 err := qrcode.WriteFile(uri, qrcode.Medium, 256, "qr.png")
 ```
 
+## Protected Memory
+
+The shared secret is a long-lived key, so it belongs in protected memory rather
+than in a Go `string` — see [Protected Memory](secret.md) for the rule and its
+limits.
+
+```go
+// A new key, generated straight into protected memory.
+key, err := otp.GenerateProtectedSecret()
+if err != nil {
+    log.Fatal(err)
+}
+defer key.Destroy()
+
+auth, err := otp.NewAuthenticator(otp.Config{
+    Type:        otp.TypeTOTP,
+    SecretKey:   key,          // instead of Secret
+    Issuer:      "MyApp",
+    AccountName: "user@example.com",
+})
+
+// Enroll the user: the URI carries the secret, because that is what enrollment is.
+uri, err := auth.ProvisioningURI()
+if err != nil {
+    log.Fatal(err) // the sealed key could not be read — do not show a secret-less URI
+}
+```
+
+`ProvisioningURI` replaces `GetProvisioningURI`, which has no way to report that
+the sealed key could not be opened and returns an empty string instead.
+
+An existing base32 secret is imported with `otp.NewProtectedSecret`, which
+decodes it directly into the enclave:
+
+```go
+key, err := otp.NewProtectedSecret(storedBase32Secret)
+```
+
+`otp.EncodeSecret(key)` renders a protected key back to base32 for enrollment or
+persistence. It deliberately takes the key out of protected memory, so use it
+only at those two moments.
+
+With `SecretKey` set, codes are derived in this package from the opened enclave
+(RFC 4226 §5.3, RFC 6238 §4.2) rather than by `github.com/pquerna/otp`, which
+takes the secret as a `string` and decodes it on every call. Both paths produce
+identical codes, so migrating a `Config` does not invalidate anyone's
+authenticator app.
+
+`Config.Secret` and `GenerateSecret` remain supported and are deprecated.
+
 ## Security Considerations
 
 ### Secret Storage
+
+- **Prefer `Config.SecretKey`**: keeps the key in protected memory for its whole
+  lifetime (see [Protected Memory](secret.md))
 
 - **Never hardcode secrets**: Store them securely (database, secrets manager)
 - **Use encrypted storage**: Encrypt secrets at rest
@@ -328,7 +381,7 @@ err := qrcode.WriteFile(uri, qrcode.Medium, 256, "qr.png")
 
 ### Clock Skew
 
-- **Minimal skew**: Use `Skew: 1` (default) for balance between security and usability
+- **Minimal skew**: Use `Skew: 1` (default) for balance between security and usability. `Skew` may not exceed 10: every extra step keeps a code valid for another period, and costs an HMAC per validation. Drift measured in minutes is a clock problem — run NTP
 - **NTP synchronization**: Ensure server time is accurate
 - **Monitor drift**: Alert on excessive time drift
 

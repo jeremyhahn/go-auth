@@ -240,15 +240,51 @@ err := auth.Authenticate(ctx, "previously-used-otp")
 // Error: yubikey.ErrInvalidOTP
 ```
 
+## Protected Memory
+
+The Yubico API key signs every request and verifies every response, so it is
+held in protected memory rather than in a Go `string` — see
+[Protected Memory](secret.md).
+
+```go
+import "github.com/jeremyhahn/go-auth/pkg/secret"
+
+apiKey, err := secret.NewString(os.Getenv("YUBICO_API_KEY"))
+if err != nil {
+    log.Fatal(err)
+}
+defer apiKey.Destroy()
+
+auth, err := yubikey.NewAuthenticator(yubikey.Config{
+    ClientID:        "12345",
+    ProtectedAPIKey: apiKey,     // instead of APIKey
+}, nil)
+```
+
+`Config.APIKey` is deprecated. It still works, and the authenticator now seals
+it before calling any validator, but the caller's string cannot be wiped.
+
 ## OTPValidator Interface
 
 Implement this interface for custom validation:
 
 ```go
+// Deprecated: implement ProtectedOTPValidator instead.
 type OTPValidator interface {
     Validate(ctx context.Context, clientID, secret, otp string) error
 }
+
+// Preferred: the API key arrives in protected memory.
+type ProtectedOTPValidator interface {
+    ValidateProtected(ctx context.Context, clientID string, apiKey *secret.Secret, otp string) error
+}
 ```
+
+A validator implementing `ProtectedOTPValidator` is never handed the key as a
+string; one that implements only `OTPValidator` is still called, with the key
+opened for the duration of that call. `HTTPValidator`, the YubiCloud client in
+this package, implements both: it opens the enclave, decodes the base64 key into
+locked scratch memory, and keys HMAC-SHA1 from there.
 
 ### Yubico Cloud Validator Example
 

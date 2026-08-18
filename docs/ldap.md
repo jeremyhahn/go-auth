@@ -507,6 +507,38 @@ if err == context.DeadlineExceeded {
 }
 ```
 
+## Protected Memory
+
+The service account's bind password is long-lived, so it is held in protected
+memory for the lifetime of the authenticator and opened only for the service
+bind — see [Protected Memory](secret.md).
+
+```go
+import "github.com/jeremyhahn/go-auth/pkg/secret"
+
+servicePassword, err := secret.NewString(os.Getenv("LDAP_SERVICE_PASSWORD"))
+if err != nil {
+    log.Fatal(err)
+}
+defer servicePassword.Destroy()
+
+auth, err := ldap.NewAuthenticator("ldaps://ldap.example.com:636",
+    ldap.WithUserDNTemplate("uid=%s,ou=people,dc=example,dc=com"),
+    ldap.WithProtectedServiceAccount("cn=admin,dc=example,dc=com", servicePassword))
+```
+
+`ldap.WithServiceAccount`, which takes the password as a `string`, is
+deprecated. It still works, and it now seals the password before the
+authenticator is returned, but the caller's string cannot be wiped. An empty
+password has nothing to seal, so that case binds exactly as it did before —
+`go-ldap` refuses an empty simple bind locally in any case, unless the
+connection is one the caller injected.
+
+`go-ldap`'s `Bind` takes the password as a `string`, so one immutable copy is
+made for each service bind and is unreachable once the bind returns. The user's
+own password is not covered by this at all: it arrives as a `string` parameter
+of `Authenticate` and is passed straight through.
+
 ## Security Considerations
 
 ### Transport Security

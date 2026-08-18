@@ -296,6 +296,50 @@ err := service.Login(ctx, api.LoginRequest{
 })
 ```
 
+## Protected Memory
+
+The TACACS+ shared secret keys the obfuscation of every packet body (RFC 8907
+§4.5), so it is held in protected memory for the lifetime of the authenticator —
+see [Protected Memory](secret.md).
+
+```go
+import "github.com/jeremyhahn/go-auth/pkg/secret"
+
+sharedSecret, err := secret.NewString(os.Getenv("TACACS_SECRET"))
+if err != nil {
+    log.Fatal(err)
+}
+defer sharedSecret.Destroy()
+
+auth, err := tacacs.NewAuthenticatorWithSecret("tacacs.example.com:49", sharedSecret,
+    tacacs.WithPrivLevel(15))
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+`tacacs.NewAuthenticator`, which takes the secret as a `string`, is deprecated.
+It still works, and it now seals the secret before returning, but the caller's
+string cannot be wiped.
+
+Unlike the other backends, the authenticator takes its **own locked copy** of
+the secret rather than borrowing the caller's. `tacplus` keeps the key for the
+life of a connection and decrypts with it from goroutines it does not join, so
+the bytes have to stay mapped for as long as the authenticator can be used: an
+enclave opened per exchange would be unmapped underneath a live reader. The
+copy lives in a `secret.Locked` — locked against swap, excluded from core
+dumps, never in the Go heap — so releasing the caller's secret does not disable
+the authenticator.
+
+**Known limitation.** That copy has no release point. Destroying it would unmap
+pages a `tacplus` goroutine may still be reading, which faults the process, and
+wiping them instead would be an unsynchronized write to the same bytes; neither
+is safe without joining goroutines the dependency does not expose. So the key
+stays resident in locked memory for as long as the process holds the
+authenticator — one page each. **Construct one authenticator per TACACS+
+server and reuse it**, rather than one per authentication. Releasing it safely
+needs `tacplus` forked or replaced, which is an owner decision.
+
 ## Security Considerations
 
 ### Packet Encryption

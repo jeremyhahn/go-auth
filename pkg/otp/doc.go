@@ -72,6 +72,35 @@
 //	}
 //	// Use secret in Config.Secret
 //
+// # Protected Memory
+//
+// The shared secret is a long-lived key, and Config.Secret keeps it in a Go
+// string that cannot be wiped. Config.SecretKey is the replacement: the key is
+// held in a secret.Secret — a memguard enclave — and is decrypted only for the
+// moment a code is derived.
+//
+//	key, err := otp.GenerateProtectedSecret() // or otp.NewProtectedSecret(base32)
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//	defer key.Destroy()
+//
+//	auth, err := otp.NewAuthenticator(otp.Config{
+//	    Type:        otp.TypeTOTP,
+//	    SecretKey:   key,
+//	    Issuer:      "MyApp",
+//	    AccountName: "user@example.com",
+//	})
+//
+// With SecretKey set, codes are derived in this package from the opened
+// enclave (RFC 4226 §5.3, RFC 6238 §4.2) rather than by
+// github.com/pquerna/otp, which takes the secret as a string and decodes it on
+// every call. Both paths produce identical codes.
+//
+// The authenticator borrows the secret and does not take ownership of it:
+// destroy it when the last component using it is done. See package
+// github.com/jeremyhahn/go-auth/pkg/secret for the rule and its limits.
+//
 // # Hash Algorithms
 //
 // The package supports multiple hash algorithms:
