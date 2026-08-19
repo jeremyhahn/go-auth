@@ -6,6 +6,8 @@ the release versioning of the company conventions (`release-versioning.md`).
 
 ## [Unreleased]
 
+## [0.2.0-alpha] - 2026-08-19
+
 ### Added
 
 - `pkg/secret`: `Secret.Lock` and `secret.Locked`, for a value a dependency
