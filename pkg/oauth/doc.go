@@ -117,17 +117,20 @@
 //	    log.Fatal(err)
 //	}
 //
-//	// Generate authorization URL
+//	// Generate authorization URL. The PKCE code verifier comes back in
+//	// protected memory: it is a bearer credential for the length of the flow,
+//	// since whoever holds it can redeem an intercepted authorization code.
 //	state := generateRandomState() // Your CSRF token
-//	authURL, codeVerifier, err := auth.BuildAuthURL(state, true, nil)
+//	authURL, verifier, err := auth.BuildAuthURLPKCE(state, nil)
 //	if err != nil {
 //	    log.Fatal(err)
 //	}
+//	defer verifier.Destroy() // no-op once the exchange has consumed it
 //
-//	// Redirect user to authURL...
+//	// Redirect user to authURL and keep the verifier against the state...
 //	// After callback with authorization code:
 //
-//	token, err := auth.ExchangeAuthorizationCode(context.Background(), code, codeVerifier)
+//	token, err := auth.ExchangeAuthorizationCodePKCE(context.Background(), code, verifier)
 //	if err != nil {
 //	    log.Printf("Token exchange failed: %v", err)
 //	    return

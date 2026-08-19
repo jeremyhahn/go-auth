@@ -80,12 +80,14 @@ config := &oauth.Config{
 
 auth, _ := oauth.NewAuthenticator(config)
 
-// Step 1: Generate auth URL
-authURL, codeVerifier, _ := auth.BuildAuthURL("state", true, nil)
+// Step 1: Generate auth URL. The code verifier comes back in protected
+// memory (pkg/secret) and is destroyed by the exchange.
+authURL, verifier, _ := auth.BuildAuthURLPKCE("state", nil)
+defer verifier.Destroy()
 // Redirect user to authURL
 
 // Step 2: Exchange code for token
-token, err := auth.ExchangeAuthorizationCode(ctx, code, codeVerifier)
+token, err := auth.ExchangeAuthorizationCodePKCE(ctx, code, verifier)
 ```
 
 ### With Token Caching
@@ -256,19 +258,58 @@ if err != nil {
 
 // Generate authorization URL with PKCE
 state := generateRandomState() // Your CSRF token
-authURL, codeVerifier, err := auth.BuildAuthURL(state, true, nil)
+authURL, verifier, err := auth.BuildAuthURLPKCE(state, nil)
 if err != nil {
     log.Fatal(err)
 }
+defer verifier.Destroy() // no-op once the exchange has consumed it
 
-// Redirect user to authURL...
+// Redirect user to authURL, keeping the verifier against the state...
 
 // After receiving callback with authorization code:
-token, err := auth.ExchangeAuthorizationCode(ctx, code, codeVerifier)
+token, err := auth.ExchangeAuthorizationCodePKCE(ctx, code, verifier)
 if err != nil {
     log.Fatal(err)
 }
 ```
+
+### The code verifier is a credential
+
+A PKCE code verifier is a bearer secret for the length of the flow: whoever
+holds it can redeem an intercepted authorization code, which is the whole attack
+PKCE exists to stop. `BuildAuthURLPKCE` generates it inside a
+[protected-memory enclave](secret.md) and derives the S256 challenge from there,
+so it has no plaintext form on the Go heap; `ExchangeAuthorizationCodePKCE`
+copies it into a locked request body and destroys it, since RFC 7636 gives a
+verifier exactly one authorization code to redeem.
+
+The verifier is an `oauth.Verifier`, and it never yields its value by return.
+Single use is enforced rather than documented: the exchange takes the sealed
+value out under a lock before it opens or sends anything, so two goroutines
+racing on one login cannot both reach the token endpoint — the loser gets
+`ErrVerifierConsumed`.
+
+An enclave is process memory and cannot be written to an out-of-process session
+store, and nothing exported reads a `Verifier`'s value back out — a Go string
+cannot be wiped, so an escape hatch that produced one would undo what the
+enclave is for. Hold the `Verifier` in an in-process map keyed by `state`.
+
+An application that cannot do that is on the deprecated string flow
+(`BuildAuthURL` with `usePKCE`) until the coordinated breaking release.
+`oauth.NewVerifier` seals a verifier it already holds so the redemption half is
+protected: plaintext goes in, nothing comes back out.
+
+`additionalParams` may not set a parameter the library owns — `client_id`,
+`redirect_uri`, `response_type`, `state`, `scope`, `code_challenge` or
+`code_challenge_method`. Silently overriding `code_challenge` would hand back a
+verifier that does not match the URL, and the flow would then fail at the token
+endpoint with nothing pointing at the cause. Those keys are rejected.
+
+`BuildAuthURL(state, true, nil)` and the `codeVerifier` argument of
+`ExchangeAuthorizationCode` are the deprecated string form of the same flow. They
+still generate the verifier in protected memory, but their signatures have to
+hand it back as an immutable Go string that cannot be wiped. They are replaced in
+the coordinated breaking release.
 
 ## Provider Configuration
 
@@ -480,7 +521,7 @@ if err != nil {
 ## Security Best Practices
 
 1. **Always use TLS in production** - Enabled by default
-2. **Use PKCE for authorization code flow** - Prevents code interception
+2. **Use PKCE for authorization code flow** - Prevents code interception; take the verifier from `BuildAuthURLPKCE`, which keeps it in protected memory
 3. **Validate issuer and audience claims** - Prevents token misuse
 4. **Set appropriate clock skew** - Accounts for time drift (default: 60s)
 5. **Never log secrets or tokens** - Prevents credential leakage
@@ -493,7 +534,7 @@ if err != nil {
 - [ ] Use TLS in production (enabled by default)
 - [ ] Validate issuer claim
 - [ ] Validate audience claim
-- [ ] Use PKCE for authorization code flow
+- [ ] Use PKCE for authorization code flow (`BuildAuthURLPKCE` / `ExchangeAuthorizationCodePKCE`)
 - [ ] Set appropriate clock skew tolerance
 - [ ] Never log tokens or secrets
 - [ ] Use state parameter for CSRF protection

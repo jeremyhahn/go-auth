@@ -529,7 +529,10 @@ func TestBuildAuthURL_Complete(t *testing.T) {
 	handler := newFlowHandler(config, httpClient)
 
 	// Test with PKCE
-	authURL := handler.buildAuthURL("random-state", "test-challenge", nil)
+	authURL, err := handler.buildAuthURL("random-state", "test-challenge", nil)
+	if err != nil {
+		t.Fatalf("buildAuthURL() failed: %v", err)
+	}
 
 	if !contains(authURL, "client_id=test-client") {
 		t.Error("Auth URL missing client_id")
@@ -577,7 +580,10 @@ func TestBuildAuthURL_WithAdditionalParams(t *testing.T) {
 		"include_granted_scopes": "true",
 	}
 
-	authURL := handler.buildAuthURL("random-state", "", additionalParams)
+	authURL, err := handler.buildAuthURL("random-state", "", additionalParams)
+	if err != nil {
+		t.Fatalf("buildAuthURL() failed: %v", err)
+	}
 
 	if !contains(authURL, "prompt=consent") {
 		t.Error("Auth URL missing prompt parameter")
@@ -603,7 +609,10 @@ func TestFlowHandler_BuildAuthURL_WithoutPKCE(t *testing.T) {
 	httpClient := newDefaultHTTPClient(30*time.Second, nil, false)
 	handler := newFlowHandler(config, httpClient)
 
-	authURL := handler.buildAuthURL("random-state", "", nil)
+	authURL, err := handler.buildAuthURL("random-state", "", nil)
+	if err != nil {
+		t.Fatalf("buildAuthURL() failed: %v", err)
+	}
 
 	if contains(authURL, "code_challenge=") {
 		t.Error("Auth URL should not have code_challenge without PKCE")

@@ -166,6 +166,10 @@ func (a *Authenticator) AuthenticateClientCredentials(ctx context.Context) (*Tok
 
 // ExchangeAuthorizationCode exchanges an authorization code for tokens.
 // codeVerifier is optional and only required if PKCE was used.
+//
+// Deprecated with a codeVerifier: use ExchangeAuthorizationCodePKCE, which takes
+// the verifier from protected memory and destroys it after the exchange. Passing
+// an empty codeVerifier is the flow without PKCE and is not deprecated.
 func (a *Authenticator) ExchangeAuthorizationCode(ctx context.Context, code, codeVerifier string) (*Token, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -206,6 +210,14 @@ func (a *Authenticator) RefreshToken(ctx context.Context, refreshToken string) (
 // BuildAuthURL builds the authorization URL for the authorization code flow.
 // state should be a random string to prevent CSRF attacks.
 // usePKCE enables PKCE (Proof Key for Code Exchange) and returns the code verifier.
+// additionalParams may not set a parameter this package owns; see buildAuthURL's
+// reservedAuthParams.
+//
+// Deprecated with usePKCE true: use BuildAuthURLPKCE. The verifier is generated
+// in protected memory either way, but this signature has to return it as a Go
+// string — an immutable heap copy that cannot be wiped and that outlives the
+// flow it belongs to. BuildAuthURLPKCE keeps it in an enclave instead.
+// usePKCE false involves no secret and is not deprecated.
 func (a *Authenticator) BuildAuthURL(state string, usePKCE bool, additionalParams map[string]string) (authURL string, codeVerifier string, err error) {
 	if a.config.Flow != FlowAuthorizationCode {
 		return "", "", fmt.Errorf("%w: authorization code flow not configured", ErrFlowNotSupported)
@@ -217,10 +229,17 @@ func (a *Authenticator) BuildAuthURL(state string, usePKCE bool, additionalParam
 
 	var codeChallenge string
 	if usePKCE {
-		codeVerifier, codeChallenge = generatePKCE()
+		codeVerifier, codeChallenge, err = generatePKCE()
+		if err != nil {
+			return "", "", err
+		}
 	}
 
-	authURL = a.flows.buildAuthURL(state, codeChallenge, additionalParams)
+	authURL, err = a.flows.buildAuthURL(state, codeChallenge, additionalParams)
+	if err != nil {
+		return "", "", err
+	}
+
 	return authURL, codeVerifier, nil
 }
 
@@ -264,23 +283,6 @@ func (a *Authenticator) Close() error {
 	}
 
 	return nil
-}
-
-// generatePKCE generates PKCE code verifier and challenge.
-func generatePKCE() (verifier, challenge string) {
-	// Generate a random code verifier (43-128 chars)
-	verifierBytes := make([]byte, 32)
-	for i := range verifierBytes {
-		verifierBytes[i] = byte(i)
-	}
-
-	verifier = base64.RawURLEncoding.EncodeToString(verifierBytes)
-
-	// Generate code challenge (SHA256 of verifier)
-	hash := sha256.Sum256([]byte(verifier))
-	challenge = base64.RawURLEncoding.EncodeToString(hash[:])
-
-	return verifier, challenge
 }
 
 // OIDC-specific methods

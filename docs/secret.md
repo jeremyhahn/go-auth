@@ -86,12 +86,13 @@ lifetime.
 | `pkg/tacacs` | `NewAuthenticatorWithSecret` | `NewAuthenticator` |
 | `pkg/ldap` | `WithProtectedServiceAccount` | `WithServiceAccount` |
 | `pkg/yubikey` | `Config.ProtectedAPIKey`, `ProtectedOTPValidator` | `Config.APIKey`, `OTPValidator` |
+| `pkg/oauth` | `BuildAuthURLPKCE`, `ExchangeAuthorizationCodePKCE` (PKCE code verifier) | `BuildAuthURL(state, true, …)`, `ExchangeAuthorizationCode`'s `codeVerifier` |
 
 The deprecated entry points still work and are not going away in this release.
 They now seal what they are given before doing anything else, so the exposure
 they carry is limited to the caller's own copy of the value.
 
-`pkg/oauth` (`ClientSecret`, token cache) and `pkg/api`
+The rest of `pkg/oauth` (`ClientSecret`, the token cache) and `pkg/api`
 (`LoginRequest.Password`) are not covered yet; they are tracked by the
 repository-wide protected-memory audit.
 

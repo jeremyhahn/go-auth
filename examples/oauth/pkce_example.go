@@ -60,27 +60,31 @@ func microsoftExample() {
 	// In production, store this in session and validate in callback
 	state := "random-state-for-csrf-protection"
 
-	// Build authorization URL with PKCE
-	// The second parameter (true) enables PKCE
-	// The third parameter allows additional query parameters
-	authURL, codeVerifier, err := auth.BuildAuthURL(state, true, map[string]string{
+	// Build authorization URL with PKCE. The verifier comes back in protected
+	// memory; keep it against the state until the callback arrives.
+	// The second parameter allows additional query parameters.
+	authURL, verifier, err := auth.BuildAuthURLPKCE(state, map[string]string{
 		"prompt": "consent", // Force consent screen
 	})
 	if err != nil {
 		log.Fatalf("Failed to build auth URL: %v", err)
 	}
+	defer verifier.Destroy() // no-op once the exchange has consumed it
 
 	fmt.Println("Authorization URL generated with PKCE:")
 	fmt.Printf("%s\n", authURL)
 	fmt.Println()
-	fmt.Printf("Code Verifier (save for callback): %s\n", codeVerifier)
+	// The verifier is deliberately not printed: it is a bearer credential for
+	// the length of the flow, and printing it undoes the point of holding it in
+	// protected memory. %v renders it as a redaction anyway.
+	fmt.Printf("Code verifier (held in protected memory): %v\n", verifier)
 	fmt.Println()
 	fmt.Println("OAuth Flow Steps:")
 	fmt.Println("  1. Redirect user to the authorization URL")
 	fmt.Println("  2. User authenticates with Microsoft")
 	fmt.Println("  3. User grants consent to requested scopes")
 	fmt.Println("  4. Microsoft redirects to your callback URL with code")
-	fmt.Println("  5. Exchange code for tokens using ExchangeAuthorizationCode()")
+	fmt.Println("  5. Exchange code for tokens using ExchangeAuthorizationCodePKCE()")
 	fmt.Println()
 
 	// After user authenticates and you receive the callback:
@@ -99,7 +103,7 @@ func microsoftExample() {
 	//     }
 	//
 	//     ctx := context.Background()
-	//     token, err := auth.ExchangeAuthorizationCode(ctx, code, codeVerifier)
+	//     token, err := auth.ExchangeAuthorizationCodePKCE(ctx, code, verifier)
 	//     if err != nil {
 	//         http.Error(w, "Failed to exchange code", http.StatusInternalServerError)
 	//         return
@@ -113,7 +117,7 @@ func microsoftExample() {
 	fmt.Println()
 	fmt.Println("  ctx := context.Background()")
 	fmt.Println("  code := \"authorization-code-from-callback\"")
-	fmt.Println("  token, err := auth.ExchangeAuthorizationCode(ctx, code, codeVerifier)")
+	fmt.Println("  token, err := auth.ExchangeAuthorizationCodePKCE(ctx, code, verifier)")
 	fmt.Println("  if err != nil {")
 	fmt.Println("      log.Fatal(err)")
 	fmt.Println("  }")
@@ -141,18 +145,19 @@ func googleExample() {
 	state := "random-state-for-csrf-protection"
 
 	// Build authorization URL with PKCE
-	authURL, codeVerifier, err := auth.BuildAuthURL(state, true, map[string]string{
+	authURL, verifier, err := auth.BuildAuthURLPKCE(state, map[string]string{
 		"access_type": "offline", // Request refresh token
 		"prompt":      "consent", // Force consent to get refresh token
 	})
 	if err != nil {
 		log.Fatalf("Failed to build auth URL: %v", err)
 	}
+	defer verifier.Destroy()
 
 	fmt.Println("Google Sign-In URL with PKCE:")
 	fmt.Printf("%s\n", authURL)
 	fmt.Println()
-	fmt.Printf("Code Verifier: %s\n", codeVerifier)
+	fmt.Printf("Code verifier (held in protected memory): %v\n", verifier)
 	fmt.Println()
 	fmt.Println("Additional Google-specific parameters:")
 	fmt.Println("  - access_type=offline: Request refresh token")
@@ -167,11 +172,11 @@ func googleExample() {
 	fmt.Println("  - Recommended for all OAuth 2.0 clients")
 	fmt.Println()
 	fmt.Println("To implement full OAuth flow:")
-	fmt.Println("  1. Generate and store state and codeVerifier in session")
+	fmt.Println("  1. Generate the state, and hold the verifier in process against it")
 	fmt.Println("  2. Redirect user to authURL")
 	fmt.Println("  3. Implement callback handler at redirect URL")
 	fmt.Println("  4. Validate state matches")
-	fmt.Println("  5. Exchange code for tokens using stored codeVerifier")
+	fmt.Println("  5. Exchange code for tokens using the held verifier")
 	fmt.Println("  6. Store tokens securely (encrypted, HTTP-only cookies)")
 	fmt.Println("  7. Use refresh token to get new access tokens")
 }

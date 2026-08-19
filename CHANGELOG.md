@@ -29,6 +29,22 @@ the release versioning of the company conventions (`release-versioning.md`).
 - `pkg/yubikey`: `Config.ProtectedAPIKey` and the `ProtectedOTPValidator`
   interface. `HTTPValidator` implements it and keys HMAC-SHA1 from locked
   scratch memory.
+- `pkg/oauth`: `Verifier`, `NewVerifier` and `ErrVerifierConsumed`. A `Verifier`
+  is a PKCE code verifier in protected memory, redeemable exactly once: the
+  exchange takes the sealed value out under a lock before it opens or sends
+  anything, so two goroutines racing on one login cannot both reach the token
+  endpoint. Nothing exported reads a `Verifier`'s value back out — a Go string
+  cannot be wiped. `NewVerifier` seals a verifier an application already holds,
+  so code still on the deprecated string flow can at least redeem it through
+  protected memory.
+- `pkg/oauth`: `Authenticator.BuildAuthURLPKCE` and
+  `Authenticator.ExchangeAuthorizationCodePKCE`, which carry the PKCE code
+  verifier in protected memory. The verifier is a bearer credential for the
+  length of the flow — whoever holds it can redeem an intercepted authorization
+  code — so it is generated inside an enclave, its S256 challenge is derived
+  from the enclave, and the exchange copies it into a locked request body. The
+  exchange destroys it afterwards: RFC 7636 gives a verifier exactly one
+  authorization code to redeem.
 - `fips140only` build tag, selecting the subset of this library that can run
   under `GODEBUG=fips140=only`. It excludes the code whose wire protocol
   mandates a non-approved primitive — the RADIUS (MD5, RFC 2865 §3) and
@@ -39,6 +55,24 @@ the release versioning of the company conventions (`release-versioning.md`).
   Default builds keep every backend. See [docs/fips.md](docs/fips.md).
 - `docs/fips.md`, recording each exemption with the citation that mandates the
   primitive and the scope it covers.
+
+### Fixed
+
+- `pkg/oauth`: the PKCE code verifier was the constant byte sequence
+  `0x00 0x01 … 0x1f` — every process and every deployment emitted the verifier
+  `AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8` and the same `code_challenge`.
+  An attacker who intercepted an authorization code already held the verifier,
+  so the authorization-code flow had exactly the security of no PKCE. It is now
+  read from `crypto/rand`. `BuildAuthURL` returns an error where it previously
+  could not fail. (#9)
+
+- `pkg/oauth`: `BuildAuthURL` applied `additionalParams` after the parameters the
+  library owns, so a caller could override `code_challenge` — receiving a
+  verifier that did not match the authorization URL, and a token exchange that
+  could only fail later, at the provider, with nothing pointing at the cause.
+  `state`, `client_id`, `redirect_uri`, `response_type` and `scope` were
+  overridable the same way. Those keys are now rejected with
+  `ErrInvalidConfiguration` rather than applied.
 
 ### Changed
 
@@ -103,10 +137,16 @@ the coordinated breaking release, when the whole stack migrates bottom-up.
 | `ldap.WithServiceAccount` | `ldap.WithProtectedServiceAccount` |
 | `yubikey.Config.APIKey` | `yubikey.Config.ProtectedAPIKey` |
 | `yubikey.OTPValidator` | `yubikey.ProtectedOTPValidator` |
+| `oauth.Authenticator.BuildAuthURL` with `usePKCE` true | `oauth.Authenticator.BuildAuthURLPKCE` |
+| `oauth.Authenticator.ExchangeAuthorizationCode` with a `codeVerifier` | `oauth.Authenticator.ExchangeAuthorizationCodePKCE` |
+
+Both oauth entry points still generate the verifier in protected memory; their
+signatures are what force the plaintext string copy back out. Passing `usePKCE`
+false, or an empty `codeVerifier`, involves no secret and is not deprecated.
 
 Not yet covered, and tracked by the repository-wide protected-memory audit:
-`pkg/oauth` (`ClientSecret`, token cache), `pkg/api` (`LoginRequest.Password`)
-and the `pkg/pam` cgo boundary.
+the rest of `pkg/oauth` (`ClientSecret`, token cache), `pkg/api`
+(`LoginRequest.Password`) and the `pkg/pam` cgo boundary.
 
 ## [0.1.1-alpha]
 
