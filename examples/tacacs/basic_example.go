@@ -1,3 +1,7 @@
+// Excluded from fips140only builds; see pkg/tacacs and docs/fips.md.
+
+//go:build !fips140only
+
 // Package main demonstrates TACACS+ authentication.
 //
 // This example shows how to:

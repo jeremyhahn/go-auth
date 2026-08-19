@@ -67,7 +67,11 @@ jobs:
     timeout-minutes: 30
     env:
       GOFIPS140: latest
-      GODEBUG: fips140=on
+      # fips140=only, not fips140=on: `on` loads the Go Cryptographic Module
+      # but still permits MD5 and SHA-1, so this job would report green while
+      # a regulated path used a prohibited primitive. `only` makes those
+      # operations panic (configuration.md §5).
+      GODEBUG: fips140=only
     steps:
       - uses: actions/checkout@v6
 
@@ -75,11 +79,19 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
+      # The fips140only tag drops the code whose protocols mandate a
+      # non-approved primitive and so cannot run under fips140=only at all:
+      # the RADIUS and TACACS+ backends (MD5 — RFC 2865 §3, RFC 8907 §4.5) and
+      # the YubiCloud validator (HMAC-SHA-1 — Yubico Validation Protocol 2.0).
+      # These are the documented exemptions in docs/fips.md, not a way to make
+      # the gate test less: that code is still built, linted, scanned and
+      # tested by every other job, and everything that CAN be FIPS-140-only
+      # compliant is exercised here.
       - name: Build all packages (FIPS mode)
-        run: go build ./...
+        run: go build -tags fips140only ./...
 
       - name: Unit tests (FIPS mode)
-        run: go test -count=1 -timeout=900s ./...
+        run: go test -count=1 -timeout=900s -tags fips140only ./...
 
   test:
     name: Unit Tests

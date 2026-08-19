@@ -2,10 +2,21 @@ package otp
 
 import (
 	"context"
+	"encoding/base32"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 )
+
+// testSecret is the RFC 4226 Appendix D reference seed ("12345678901234567890")
+// in base32 — 20 bytes / 160 bits, which is also what GenerateSecret emits.
+//
+// It replaces the widely copied 80-bit "JBSWY3DPEHPK3PXP" doc example: FIPS
+// 140-3 rejects HMAC keys shorter than 112 bits, so under the CI FIPS job's
+// GODEBUG=fips140=only the shorter fixture panics inside crypto/hmac. The
+// algorithm was never the problem, only the key length of the fixture.
+const testSecret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"
 
 // TestNewAuthenticator tests authenticator construction
 func TestNewAuthenticator(t *testing.T) {
@@ -18,12 +29,12 @@ func TestNewAuthenticator(t *testing.T) {
 			name: "valid TOTP config",
 			cfg: Config{
 				Type:        TypeTOTP,
-				Secret:      "JBSWY3DPEHPK3PXP",
+				Secret:      testSecret,
 				Issuer:      "TestApp",
 				AccountName: "user@example.com",
 				Digits:      6,
 				Period:      30,
-				Algorithm:   AlgorithmSHA1,
+				Algorithm:   testAlgorithm,
 				Skew:        1,
 			},
 			wantErr: nil,
@@ -32,12 +43,12 @@ func TestNewAuthenticator(t *testing.T) {
 			name: "valid HOTP config",
 			cfg: Config{
 				Type:        TypeHOTP,
-				Secret:      "JBSWY3DPEHPK3PXP",
+				Secret:      testSecret,
 				Issuer:      "TestApp",
 				AccountName: "user@example.com",
 				Digits:      6,
 				Counter:     0,
-				Algorithm:   AlgorithmSHA1,
+				Algorithm:   testAlgorithm,
 			},
 			wantErr: nil,
 		},
@@ -45,7 +56,7 @@ func TestNewAuthenticator(t *testing.T) {
 			name: "valid SHA256 config",
 			cfg: Config{
 				Type:        TypeTOTP,
-				Secret:      "JBSWY3DPEHPK3PXP",
+				Secret:      testSecret,
 				Issuer:      "TestApp",
 				AccountName: "user@example.com",
 				Algorithm:   AlgorithmSHA256,
@@ -56,7 +67,7 @@ func TestNewAuthenticator(t *testing.T) {
 			name: "valid SHA512 config",
 			cfg: Config{
 				Type:        TypeTOTP,
-				Secret:      "JBSWY3DPEHPK3PXP",
+				Secret:      testSecret,
 				Issuer:      "TestApp",
 				AccountName: "user@example.com",
 				Algorithm:   AlgorithmSHA512,
@@ -67,7 +78,7 @@ func TestNewAuthenticator(t *testing.T) {
 			name: "valid 7 digit config",
 			cfg: Config{
 				Type:        TypeTOTP,
-				Secret:      "JBSWY3DPEHPK3PXP",
+				Secret:      testSecret,
 				Issuer:      "TestApp",
 				AccountName: "user@example.com",
 				Digits:      7,
@@ -78,7 +89,7 @@ func TestNewAuthenticator(t *testing.T) {
 			name: "valid 8 digit config",
 			cfg: Config{
 				Type:        TypeTOTP,
-				Secret:      "JBSWY3DPEHPK3PXP",
+				Secret:      testSecret,
 				Issuer:      "TestApp",
 				AccountName: "user@example.com",
 				Digits:      8,
@@ -98,7 +109,7 @@ func TestNewAuthenticator(t *testing.T) {
 			name: "invalid type",
 			cfg: Config{
 				Type:        "invalid",
-				Secret:      "JBSWY3DPEHPK3PXP",
+				Secret:      testSecret,
 				Issuer:      "TestApp",
 				AccountName: "user@example.com",
 			},
@@ -108,7 +119,7 @@ func TestNewAuthenticator(t *testing.T) {
 			name: "invalid digits",
 			cfg: Config{
 				Type:        TypeTOTP,
-				Secret:      "JBSWY3DPEHPK3PXP",
+				Secret:      testSecret,
 				Issuer:      "TestApp",
 				AccountName: "user@example.com",
 				Digits:      5,
@@ -119,7 +130,7 @@ func TestNewAuthenticator(t *testing.T) {
 			name: "invalid algorithm",
 			cfg: Config{
 				Type:        TypeTOTP,
-				Secret:      "JBSWY3DPEHPK3PXP",
+				Secret:      testSecret,
 				Issuer:      "TestApp",
 				AccountName: "user@example.com",
 				Algorithm:   "MD5",
@@ -164,12 +175,12 @@ func TestNewAuthenticator(t *testing.T) {
 func TestAuthenticateTOTP(t *testing.T) {
 	cfg := Config{
 		Type:        TypeTOTP,
-		Secret:      "JBSWY3DPEHPK3PXP",
+		Secret:      testSecret,
 		Issuer:      "TestApp",
 		AccountName: "user@example.com",
 		Digits:      6,
 		Period:      30,
-		Algorithm:   AlgorithmSHA1,
+		Algorithm:   testAlgorithm,
 		Skew:        1,
 	}
 
@@ -245,12 +256,12 @@ func TestAuthenticateTOTP(t *testing.T) {
 func TestAuthenticateTOTPWithSkew(t *testing.T) {
 	cfg := Config{
 		Type:        TypeTOTP,
-		Secret:      "JBSWY3DPEHPK3PXP",
+		Secret:      testSecret,
 		Issuer:      "TestApp",
 		AccountName: "user@example.com",
 		Digits:      6,
 		Period:      30,
-		Algorithm:   AlgorithmSHA1,
+		Algorithm:   testAlgorithm,
 		Skew:        2, // Allow 2 periods of skew
 	}
 
@@ -275,12 +286,12 @@ func TestAuthenticateTOTPWithSkew(t *testing.T) {
 func TestAuthenticateHOTP(t *testing.T) {
 	cfg := Config{
 		Type:        TypeHOTP,
-		Secret:      "JBSWY3DPEHPK3PXP",
+		Secret:      testSecret,
 		Issuer:      "TestApp",
 		AccountName: "user@example.com",
 		Digits:      6,
 		Counter:     0,
-		Algorithm:   AlgorithmSHA1,
+		Algorithm:   testAlgorithm,
 	}
 
 	auth, err := NewAuthenticator(cfg)
@@ -314,9 +325,10 @@ func TestAuthenticateHOTP(t *testing.T) {
 func TestValidateCounter(t *testing.T) {
 	cfg := Config{
 		Type:        TypeHOTP,
-		Secret:      "JBSWY3DPEHPK3PXP",
+		Secret:      testSecret,
 		Issuer:      "TestApp",
 		AccountName: "user@example.com",
+		Algorithm:   testAlgorithm,
 	}
 
 	auth, err := NewAuthenticator(cfg)
@@ -386,9 +398,10 @@ func TestGenerate(t *testing.T) {
 	t.Run("TOTP", func(t *testing.T) {
 		cfg := Config{
 			Type:        TypeTOTP,
-			Secret:      "JBSWY3DPEHPK3PXP",
+			Secret:      testSecret,
 			Issuer:      "TestApp",
 			AccountName: "user@example.com",
+			Algorithm:   testAlgorithm,
 			Digits:      6,
 		}
 
@@ -410,9 +423,10 @@ func TestGenerate(t *testing.T) {
 	t.Run("HOTP", func(t *testing.T) {
 		cfg := Config{
 			Type:        TypeHOTP,
-			Secret:      "JBSWY3DPEHPK3PXP",
+			Secret:      testSecret,
 			Issuer:      "TestApp",
 			AccountName: "user@example.com",
+			Algorithm:   testAlgorithm,
 			Digits:      6,
 		}
 
@@ -434,9 +448,10 @@ func TestGenerate(t *testing.T) {
 	t.Run("7 digits", func(t *testing.T) {
 		cfg := Config{
 			Type:        TypeTOTP,
-			Secret:      "JBSWY3DPEHPK3PXP",
+			Secret:      testSecret,
 			Issuer:      "TestApp",
 			AccountName: "user@example.com",
+			Algorithm:   testAlgorithm,
 			Digits:      7,
 		}
 
@@ -458,9 +473,10 @@ func TestGenerate(t *testing.T) {
 	t.Run("8 digits", func(t *testing.T) {
 		cfg := Config{
 			Type:        TypeTOTP,
-			Secret:      "JBSWY3DPEHPK3PXP",
+			Secret:      testSecret,
 			Issuer:      "TestApp",
 			AccountName: "user@example.com",
+			Algorithm:   testAlgorithm,
 			Digits:      8,
 		}
 
@@ -491,14 +507,14 @@ func TestGetProvisioningURI(t *testing.T) {
 			name: "TOTP URI",
 			cfg: Config{
 				Type:        TypeTOTP,
-				Secret:      "JBSWY3DPEHPK3PXP",
+				Secret:      testSecret,
 				Issuer:      "TestApp",
 				AccountName: "user@example.com",
 			},
 			wantContain: []string{
 				"otpauth://totp/",
 				"TestApp:user@example.com",
-				"secret=JBSWY3DPEHPK3PXP",
+				"secret=" + testSecret,
 				"issuer=TestApp",
 			},
 		},
@@ -506,7 +522,7 @@ func TestGetProvisioningURI(t *testing.T) {
 			name: "HOTP URI",
 			cfg: Config{
 				Type:        TypeHOTP,
-				Secret:      "JBSWY3DPEHPK3PXP",
+				Secret:      testSecret,
 				Issuer:      "TestApp",
 				AccountName: "user@example.com",
 				Counter:     0,
@@ -514,7 +530,7 @@ func TestGetProvisioningURI(t *testing.T) {
 			wantContain: []string{
 				"otpauth://hotp/",
 				"TestApp:user@example.com",
-				"secret=JBSWY3DPEHPK3PXP",
+				"secret=" + testSecret,
 				"issuer=TestApp",
 				"counter=0",
 			},
@@ -575,9 +591,10 @@ func TestGenerateSecret(t *testing.T) {
 func TestContextCancellation(t *testing.T) {
 	cfg := Config{
 		Type:        TypeTOTP,
-		Secret:      "JBSWY3DPEHPK3PXP",
+		Secret:      testSecret,
 		Issuer:      "TestApp",
 		AccountName: "user@example.com",
+		Algorithm:   testAlgorithm,
 	}
 
 	auth, err := NewAuthenticator(cfg)
@@ -602,9 +619,10 @@ func TestContextCancellation(t *testing.T) {
 func TestContextTimeout(t *testing.T) {
 	cfg := Config{
 		Type:        TypeTOTP,
-		Secret:      "JBSWY3DPEHPK3PXP",
+		Secret:      testSecret,
 		Issuer:      "TestApp",
 		AccountName: "user@example.com",
+		Algorithm:   testAlgorithm,
 	}
 
 	auth, err := NewAuthenticator(cfg)
@@ -671,13 +689,13 @@ func TestNilAuthenticator(t *testing.T) {
 
 // TestAlgorithms tests different hash algorithms
 func TestAlgorithms(t *testing.T) {
-	algorithms := []Algorithm{AlgorithmSHA1, AlgorithmSHA256, AlgorithmSHA512}
+	algorithms := testAlgorithms
 
 	for _, algo := range algorithms {
 		t.Run(string(algo), func(t *testing.T) {
 			cfg := Config{
 				Type:        TypeTOTP,
-				Secret:      "JBSWY3DPEHPK3PXP",
+				Secret:      testSecret,
 				Issuer:      "TestApp",
 				AccountName: "user@example.com",
 				Algorithm:   algo,
@@ -701,38 +719,6 @@ func TestAlgorithms(t *testing.T) {
 	}
 }
 
-// TestDefaults tests default configuration values
-func TestDefaults(t *testing.T) {
-	cfg := Config{
-		Type:        TypeTOTP,
-		Secret:      "JBSWY3DPEHPK3PXP",
-		Issuer:      "TestApp",
-		AccountName: "user@example.com",
-		// No digits, period, algorithm, or skew specified
-	}
-
-	auth, err := NewAuthenticator(cfg)
-	if err != nil {
-		t.Fatalf("failed to create authenticator: %v", err)
-	}
-
-	code, err := auth.Generate()
-	if err != nil {
-		t.Fatalf("failed to generate code: %v", err)
-	}
-
-	// Default is 6 digits
-	if len(code) != 6 {
-		t.Errorf("expected 6 digit code (default), got %d digits", len(code))
-	}
-
-	// Should be able to authenticate
-	err = auth.Authenticate(context.Background(), code)
-	if err != nil {
-		t.Errorf("failed to authenticate with defaults: %v", err)
-	}
-}
-
 // Helper function
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
@@ -752,7 +738,7 @@ func indexOf(s, substr string) int {
 func TestHOTPWithoutCounter(t *testing.T) {
 	cfg := Config{
 		Type:        TypeHOTP,
-		Secret:      "JBSWY3DPEHPK3PXP",
+		Secret:      testSecret,
 		Issuer:      "TestApp",
 		AccountName: "user@example.com",
 	}
@@ -773,7 +759,7 @@ func TestHOTPWithoutCounter(t *testing.T) {
 func TestTOTPValidateCounterError(t *testing.T) {
 	cfg := Config{
 		Type:        TypeTOTP,
-		Secret:      "JBSWY3DPEHPK3PXP",
+		Secret:      testSecret,
 		Issuer:      "TestApp",
 		AccountName: "user@example.com",
 	}
@@ -797,7 +783,7 @@ func TestTOTPValidateCounterError(t *testing.T) {
 func TestValidateCounterWithEmptyCode(t *testing.T) {
 	cfg := Config{
 		Type:        TypeHOTP,
-		Secret:      "JBSWY3DPEHPK3PXP",
+		Secret:      testSecret,
 		Issuer:      "TestApp",
 		AccountName: "user@example.com",
 	}
@@ -820,9 +806,10 @@ func TestValidateCounterWithEmptyCode(t *testing.T) {
 func TestValidateCounterWithNilContext(t *testing.T) {
 	cfg := Config{
 		Type:        TypeHOTP,
-		Secret:      "JBSWY3DPEHPK3PXP",
+		Secret:      testSecret,
 		Issuer:      "TestApp",
 		AccountName: "user@example.com",
+		Algorithm:   testAlgorithm,
 	}
 
 	auth, err := NewAuthenticator(cfg)
@@ -849,9 +836,10 @@ func TestValidateCounterWithNilContext(t *testing.T) {
 func TestValidateCounterWithCancelledContext(t *testing.T) {
 	cfg := Config{
 		Type:        TypeHOTP,
-		Secret:      "JBSWY3DPEHPK3PXP",
+		Secret:      testSecret,
 		Issuer:      "TestApp",
 		AccountName: "user@example.com",
+		Algorithm:   testAlgorithm,
 	}
 
 	auth, err := NewAuthenticator(cfg)
@@ -880,9 +868,10 @@ func TestValidateCounterWithCancelledContext(t *testing.T) {
 func TestAuthenticateHOTPWithContext(t *testing.T) {
 	cfg := Config{
 		Type:        TypeHOTP,
-		Secret:      "JBSWY3DPEHPK3PXP",
+		Secret:      testSecret,
 		Issuer:      "TestApp",
 		AccountName: "user@example.com",
+		Algorithm:   testAlgorithm,
 		Counter:     0,
 	}
 
@@ -900,5 +889,148 @@ func TestAuthenticateHOTPWithContext(t *testing.T) {
 	err = auth.Authenticate(context.Background(), code)
 	if err != nil {
 		t.Errorf("failed to authenticate with valid HOTP code: %v", err)
+	}
+}
+
+// TestHOTPRoundTripHonoursConfig is the regression test for HOTP validation
+// ignoring the configured algorithm and digit count.
+//
+// Generate has always used the configured options, but both validation paths
+// called hotp.Validate, which hardcodes 6 digits and SHA-1. Any HOTP
+// authenticator configured with SHA-256/SHA-512 or 7/8 digits therefore
+// rejected the very codes it had just generated. Only the 6-digit SHA-1
+// combination — the one the old tests happened to use — worked.
+func TestHOTPRoundTripHonoursConfig(t *testing.T) {
+	const counter = 7
+
+	for _, algo := range testAlgorithms {
+		for _, digits := range []uint{6, 7, 8} {
+			t.Run(fmt.Sprintf("%s/%d", algo, digits), func(t *testing.T) {
+				auth, err := NewAuthenticator(Config{
+					Type:        TypeHOTP,
+					Secret:      testSecret,
+					Issuer:      "TestApp",
+					AccountName: "user@example.com",
+					Algorithm:   algo,
+					Digits:      digits,
+					Counter:     counter,
+				})
+				if err != nil {
+					t.Fatalf("failed to create authenticator: %v", err)
+				}
+
+				code, err := auth.Generate(counter)
+				if err != nil {
+					t.Fatalf("failed to generate code: %v", err)
+				}
+				if uint(len(code)) != digits {
+					t.Fatalf("expected %d digit code, got %d", digits, len(code))
+				}
+
+				if err := auth.Authenticate(context.Background(), code); err != nil {
+					t.Errorf("Authenticate rejected a code it generated: %v", err)
+				}
+
+				next, err := auth.ValidateCounter(context.Background(), code, counter)
+				if err != nil {
+					t.Errorf("ValidateCounter rejected a code it generated: %v", err)
+				}
+				if next != counter+1 {
+					t.Errorf("expected counter %d, got %d", counter+1, next)
+				}
+			})
+		}
+	}
+}
+
+// TestDefaults tests default configuration values
+func TestDefaults(t *testing.T) {
+	cfg := Config{
+		Type:        TypeTOTP,
+		Secret:      testSecret,
+		Issuer:      "TestApp",
+		AccountName: "user@example.com",
+		// No digits, period, algorithm, or skew specified
+	}
+
+	auth, err := NewAuthenticator(cfg)
+	if err != nil {
+		t.Fatalf("failed to create authenticator: %v", err)
+	}
+
+	code, err := auth.Generate()
+	if err != nil {
+		t.Fatalf("failed to generate code: %v", err)
+	}
+
+	// Default is 6 digits
+	if len(code) != 6 {
+		t.Errorf("expected 6 digit code (default), got %d digits", len(code))
+	}
+
+	// Should be able to authenticate
+	err = auth.Authenticate(context.Background(), code)
+	if err != nil {
+		t.Errorf("failed to authenticate with defaults: %v", err)
+	}
+}
+
+// TestDecodedSecretBits checks the secret-strength measurement against
+// encoding/base32 itself, so the streaming decode that keeps the plaintext key
+// out of a single allocation cannot silently disagree with a plain
+// DecodeString about how long a secret is, or about which secrets are
+// well-formed.
+func TestDecodedSecretBits(t *testing.T) {
+	// Padding is optional, as it is for NewProtectedSecret, which decodes for
+	// both paths: an unpadded final group is what provisioning tools emit, so
+	// "…QOJ" is a 19-byte secret rather than a malformed 20-byte one.
+	valid := map[string]int{
+		"MZXW6===":                        3,
+		"MZXW6YTBOI======":                6,
+		"JBSWY3DPEHPK3PXP":                10, // the old 80-bit doc example
+		testSecret:                        20,
+		"GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJ": 19, // unpadded, final group of 7
+		"GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ": 40,
+	}
+	for secret, wantBytes := range valid {
+		t.Run("valid/"+secret, func(t *testing.T) {
+			got, err := decodedSecretBits(secret)
+			if err != nil {
+				t.Fatalf("decodedSecretBits(%q) returned error: %v", secret, err)
+			}
+			if got != wantBytes*8 {
+				t.Errorf("decodedSecretBits(%q) = %d bits, want %d", secret, got, wantBytes*8)
+			}
+		})
+	}
+
+	// A trailing group of 1, 3 or 6 characters cannot encode a whole byte.
+	// Go's unpadded decoder drops it silently — "…QOJQA" decodes to the same
+	// key as "…QOJQ" — so these assert the guard in decodedSecretBits, not the
+	// decoder.
+	malformed := map[string]string{
+		"illegal characters":    "INVALID@SECRET!",
+		"misplaced padding":     "MZ=XW6YTB",
+		"valid prefix then bad": testSecret + "@@@@@@@@",
+		"stray trailing char":   testSecret + "A",
+		"three trailing chars":  testSecret + "ABC",
+		"six trailing chars":    testSecret + "ABCDEF",
+	}
+	for name, secret := range malformed {
+		t.Run("malformed/"+name, func(t *testing.T) {
+			if _, err := base32.StdEncoding.DecodeString(secret); err == nil {
+				t.Fatalf("fixture %q is actually valid base32", secret)
+			}
+			bits, err := decodedSecretBits(secret)
+			if err == nil {
+				t.Fatalf("decodedSecretBits(%q) = %d bits, want an error", secret, bits)
+			}
+			// A malformed secret must not report a usable strength: the
+			// prefix the decoder managed to emit has been wiped, so there is
+			// nothing to measure.
+			if bits != 0 {
+				t.Errorf("decodedSecretBits(%q) = %d bits on error, want 0", secret, bits)
+			}
+		})
 	}
 }

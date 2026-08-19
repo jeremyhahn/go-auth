@@ -110,9 +110,11 @@ func (c Config) validate() error {
 		return fmt.Errorf("%w: type must be 'totp' or 'hotp'", ErrInvalidConfig)
 	}
 
-	// Validate the secret. The protected path has already decoded and sealed
-	// its key, so there is nothing left to parse and nothing to wipe; the
-	// string path still has to prove the secret is well-formed base32.
+	// Validate the secret and measure its strength. The protected path has
+	// already decoded and sealed its key, so its size is known without touching
+	// the key at all; the string path still has to prove the secret is
+	// well-formed base32, and decodes into protected memory to do it.
+	var secretBits int
 	if c.SecretKey != nil {
 		if strings.TrimSpace(c.Secret) != "" {
 			return fmt.Errorf("%w: set either Secret or SecretKey, not both", ErrInvalidConfig)
@@ -120,15 +122,26 @@ func (c Config) validate() error {
 		if c.SecretKey.Size() == 0 {
 			return fmt.Errorf("%w: secret key must not be empty", ErrInvalidConfig)
 		}
+		secretBits = c.SecretKey.Size() * 8
 	} else {
 		if strings.TrimSpace(c.Secret) == "" {
 			return fmt.Errorf("%w: secret must not be empty", ErrInvalidConfig)
 		}
 
-		// Validate secret is valid base32
-		if _, err := base32.StdEncoding.DecodeString(strings.ToUpper(c.Secret)); err != nil {
-			return fmt.Errorf("%w: secret must be valid base32: %v", ErrInvalidConfig, err)
+		// Prove the secret is well-formed base32 and measure its strength.
+		// decodedSecretBits does both without putting the decoded key on the
+		// heap; it also accepts the unpadded form, matching what the protected
+		// path and provisioning tools use.
+		bits, err := decodedSecretBits(c.Secret)
+		if err != nil {
+			return err
 		}
+		secretBits = bits
+	}
+
+	// Reject a key this build cannot use to key HMAC.
+	if err := checkSecretSupported(secretBits); err != nil {
+		return err
 	}
 
 	// Validate digits (if specified)
@@ -151,7 +164,48 @@ func (c Config) validate() error {
 		return fmt.Errorf("%w: algorithm must be SHA1, SHA256, or SHA512", ErrInvalidConfig)
 	}
 
+	// Reject a digest this build cannot execute. Runs before defaults are
+	// applied, so it only ever sees an explicit choice.
+	if err := checkAlgorithmSupported(c.Algorithm); err != nil {
+		return err
+	}
+
 	return nil
+}
+
+// decodedSecretBits reports the strength, in bits, of a base32-encoded shared
+// secret, and reports an error if the encoding is malformed.
+//
+// The decoded bytes are the key itself, so they never reach ordinary memory:
+// NewProtectedSecret decodes straight into a memguard-backed enclave, the
+// length is read from there, and the enclave is destroyed on every exit path.
+// Only a count leaves this function. base32.DecodeString, which this replaces,
+// would instead hand back a plaintext key for the collector to keep.
+//
+// This narrows the deprecated string path; it does not close it.
+// Config.Secret is a Go string, resident and unzeroable for the
+// Authenticator's lifetime, and github.com/pquerna/otp decodes it again
+// internally on every operation. Config.SecretKey is the path that has neither
+// property, and is what a caller handling key material should use.
+func decodedSecretBits(base32Secret string) (int, error) {
+	// Go's unpadded decoder discards a trailing group too short to encode a
+	// whole byte rather than rejecting it, so "<secret>A" decodes to exactly
+	// the key "<secret>" does. A secret carrying a stray character would then
+	// be accepted here and produce codes the enrolled authenticator never
+	// agrees with — a failure at every login rather than at startup. The
+	// padded decoding this replaces rejected it; keep rejecting it.
+	if n := len(trimBase32(base32Secret)) % 8; n == 1 || n == 3 || n == 6 {
+		return 0, fmt.Errorf("%w: secret must be valid base32: it ends in %d "+
+			"characters that do not encode a whole byte", ErrInvalidConfig, n)
+	}
+
+	key, err := NewProtectedSecret(base32Secret)
+	if err != nil {
+		return 0, err
+	}
+	defer key.Destroy()
+
+	return key.Size() * 8, nil
 }
 
 // Authenticator validates OTP codes.
@@ -183,7 +237,7 @@ func NewAuthenticator(cfg Config) (*Authenticator, error) {
 		cfg.Period = 30
 	}
 	if cfg.Algorithm == "" {
-		cfg.Algorithm = AlgorithmSHA1
+		cfg.Algorithm = defaultAlgorithm
 	}
 	if cfg.Skew == 0 {
 		cfg.Skew = 1
@@ -248,12 +302,23 @@ func (a *Authenticator) Authenticate(ctx context.Context, code string) error {
 		return nil
 	}
 
-	// HOTP validation using configured counter
+	// HOTP validation using configured counter.
 	if a.key != nil {
 		return a.authenticateProtectedHOTP(code, a.cfg.Counter)
 	}
 
-	valid := hotp.Validate(code, a.cfg.Counter, a.cfg.Secret)
+	// hotp.Validate hardcodes 6 digits and SHA-1 regardless of how the
+	// authenticator was built, so a SHA-256/SHA-512 or 7/8-digit HOTP secret
+	// would never validate the codes Generate produced for it. Pass the
+	// configured options explicitly.
+	valid, err := hotp.ValidateCustom(code, a.cfg.Counter, a.cfg.Secret,
+		hotp.ValidateOpts{
+			Digits:    a.otpDigits,
+			Algorithm: a.otpAlgo,
+		})
+	if err != nil {
+		return fmt.Errorf("%w: validation failed: %v", ErrInvalidCode, err)
+	}
 	if !valid {
 		return ErrInvalidCode
 	}
@@ -292,7 +357,15 @@ func (a *Authenticator) ValidateCounter(ctx context.Context, code string, counte
 		return counter + 1, nil
 	}
 
-	valid := hotp.Validate(code, counter, a.cfg.Secret)
+	// Same as Authenticate: hotp.Validate would pin this to 6-digit SHA-1.
+	valid, err := hotp.ValidateCustom(code, counter, a.cfg.Secret,
+		hotp.ValidateOpts{
+			Digits:    a.otpDigits,
+			Algorithm: a.otpAlgo,
+		})
+	if err != nil {
+		return 0, fmt.Errorf("%w: validation failed: %v", ErrInvalidCode, err)
+	}
 	if !valid {
 		return 0, ErrInvalidCode
 	}

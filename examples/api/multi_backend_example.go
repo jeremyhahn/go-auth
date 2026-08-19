@@ -32,7 +32,7 @@ func otpExample(ctx context.Context) {
 	// Create OTP authenticator for TOTP
 	otpAuth, err := otp.NewAuthenticator(otp.Config{
 		Type:        otp.TypeTOTP,
-		Secret:      "JBSWY3DPEHPK3PXP",
+		Secret:      "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
 		Issuer:      "MyApp",
 		AccountName: "user@example.com",
 		Digits:      6,
@@ -98,7 +98,7 @@ func multiBackendExample(ctx context.Context) {
 	// Create OTP authenticator
 	otpAuth, err := otp.NewAuthenticator(otp.Config{
 		Type:        otp.TypeTOTP,
-		Secret:      "JBSWY3DPEHPK3PXP",
+		Secret:      "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
 		Issuer:      "MyApp",
 		AccountName: "user@example.com",
 	})
@@ -161,7 +161,7 @@ func targetedBackendExample(ctx context.Context) {
 	// Create HOTP authenticator (counter-based)
 	hotpAuth, err := otp.NewAuthenticator(otp.Config{
 		Type:        otp.TypeHOTP,
-		Secret:      "JBSWY3DPEHPK3PXP",
+		Secret:      "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
 		Issuer:      "MyApp",
 		AccountName: "user@example.com",
 		Counter:     0, // Initial counter value

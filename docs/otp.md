@@ -7,6 +7,15 @@ The `otp` package provides TOTP (Time-based One-Time Password) and HOTP (HMAC-ba
 - **TOTP Support**: Time-based codes that change every 30 seconds (configurable)
 - **HOTP Support**: Counter-based codes for hardware tokens
 - **Multiple Hash Algorithms**: SHA1, SHA256, SHA512
+
+> **FIPS 140-3 deployments must use SHA256 or SHA512.** `AlgorithmSHA1` — RFC
+> 6238's default and the only digest some authenticator apps implement —
+> cannot run under `GODEBUG=fips140=only`. In a `-tags fips140only` build
+> `NewAuthenticator` rejects it outright, and an omitted `Algorithm` defaults
+> to SHA256 rather than SHA1. Secrets shorter than 112 bits are rejected there
+> too, so users enrolled with an 80-bit secret need re-enrollment before a FIPS
+> build will serve them. The rest of the package is unaffected.
+> See [FIPS 140-3 compliance](fips.md).
 - **Flexible Digit Lengths**: 6, 7, or 8 digit codes
 - **Clock Skew Tolerance**: Configurable time window for TOTP validation
 - **Provisioning URIs**: Generate `otpauth://` URIs for QR codes
@@ -136,7 +145,7 @@ type Config struct {
 ```go
 config := otp.Config{
     Type:        otp.TypeTOTP,
-    Secret:      "JBSWY3DPEHPK3PXP",
+    Secret:      "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
     Issuer:      "MyApp",
     AccountName: "user@example.com",
     // Uses defaults: 6 digits, SHA1, 30s period, skew=1
@@ -148,7 +157,7 @@ config := otp.Config{
 ```go
 config := otp.Config{
     Type:        otp.TypeTOTP,
-    Secret:      "JBSWY3DPEHPK3PXP",
+    Secret:      "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
     Issuer:      "MyApp",
     AccountName: "user@example.com",
     Digits:      8,                    // 8-digit codes
@@ -163,7 +172,7 @@ config := otp.Config{
 ```go
 config := otp.Config{
     Type:        otp.TypeHOTP,
-    Secret:      "JBSWY3DPEHPK3PXP",
+    Secret:      "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
     Issuer:      "MyApp",
     AccountName: "user@example.com",
     Counter:     0,                    // Initial counter
@@ -260,7 +269,7 @@ func (a *Authenticator) GetProvisioningURI() string
 
 **Example URI:**
 ```
-otpauth://totp/MyApp:user@example.com?algorithm=SHA1&digits=6&issuer=MyApp&period=30&secret=JBSWY3DPEHPK3PXP
+otpauth://totp/MyApp:user@example.com?algorithm=SHA1&digits=6&issuer=MyApp&period=30&secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ
 ```
 
 ### GenerateSecret

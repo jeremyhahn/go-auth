@@ -12,7 +12,7 @@
 //
 //	config := otp.Config{
 //	    Type:        otp.TypeTOTP,
-//	    Secret:      "JBSWY3DPEHPK3PXP",
+//	    Secret:      "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
 //	    Issuer:      "MyApp",
 //	    AccountName: "user@example.com",
 //	    Digits:      6,
@@ -42,7 +42,7 @@
 //
 //	config := otp.Config{
 //	    Type:        otp.TypeHOTP,
-//	    Secret:      "JBSWY3DPEHPK3PXP",
+//	    Secret:      "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
 //	    Issuer:      "MyApp",
 //	    AccountName: "user@example.com",
 //	    Counter:     0,

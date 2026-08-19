@@ -11,6 +11,13 @@ RADIUS is a networking protocol that provides centralized authentication, author
 - **RadSec** - RADIUS over TLS for encrypted transport
 - **Standard RADIUS** - UDP-based transport (RFC 2865)
 
+> **Not available in FIPS 140-3 deployments.** Every RADIUS packet is
+> authenticated with MD5 (RFC 2865 §3) and the Message-Authenticator is
+> HMAC-MD5 (RFC 2869 §5.14), so this backend cannot run under
+> `GODEBUG=fips140=only` — RadSec included, since it tunnels the same
+> MD5-authenticated packet. Building with `-tags fips140only` excludes it.
+> See [FIPS 140-3 compliance](fips.md).
+
 ## Features
 
 - Multiple authentication methods (PAP, EAP-TLS)

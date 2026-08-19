@@ -1,3 +1,14 @@
+// TACACS+ is excluded from fips140only builds.
+//
+// RFC 8907 §4.5 obfuscates every packet body with an MD5-based keystream
+// (a chain of MD5(session_id || key || version || seq_no || prev_hash) blocks
+// XORed over the body). It is the only body encoding the protocol defines, so
+// a conforming TACACS+ client cannot avoid MD5. This backend is therefore kept
+// out of FIPS-140-only builds rather than shipped as one that panics on first
+// use. See docs/fips.md.
+
+//go:build !fips140only
+
 package tacacs
 
 import (

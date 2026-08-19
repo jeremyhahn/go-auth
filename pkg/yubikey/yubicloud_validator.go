@@ -1,3 +1,18 @@
+// The YubiCloud validator is excluded from fips140only builds.
+//
+// Yubico Validation Protocol 2.0 signs every request and response with
+// HMAC-SHA-1 over the sorted parameter list (computeSignature below), and the
+// service rejects any other digest. Go's fips140=only mode admits HMAC over
+// SHA-2 and SHA-3 only, so this validator panics the first time it is used.
+//
+// Excluding the file also removes the init() that installs it as the package
+// default, so under the tag NewAuthenticator(cfg, nil) fails fast with
+// errSystemValidatorUnavailable instead of panicking mid-request. The rest of
+// pkg/yubikey stays in the FIPS build: an injected OTPValidator that speaks to
+// an approved validation service works normally. See docs/fips.md.
+
+//go:build !fips140only
+
 package yubikey
 
 import (

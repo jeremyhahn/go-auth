@@ -1,4 +1,4 @@
-//go:build integration
+//go:build integration && !fips140only
 
 package tacacs_test
 

@@ -1,3 +1,16 @@
+// RADIUS is excluded from fips140only builds.
+//
+// Every RADIUS exchange is authenticated with MD5: RFC 2865 §3 defines the
+// Request/Response Authenticator as MD5(Code || ID || Length || RequestAuth ||
+// Attributes || Secret), and RFC 2869 §5.14 defines the Message-Authenticator
+// as HMAC-MD5. There is no conforming RADIUS without MD5, and RadSec (RFC 6614)
+// does not help — it wraps the same packet in TLS, and the inner authenticator
+// is still MD5. So this backend cannot be made FIPS-140-only compliant; it is
+// kept out of that build entirely rather than shipped as a backend that panics
+// on first use. See docs/fips.md.
+
+//go:build !fips140only
+
 package radius
 
 import (

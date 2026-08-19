@@ -12,6 +12,12 @@ TACACS+ is a Cisco-developed protocol that provides centralized authentication, 
 - Encrypted communication (all packet data encrypted)
 - Context-aware operation with timeout support
 
+> **Not available in FIPS 140-3 deployments.** TACACS+ obfuscates every packet
+> body with an MD5 keystream (RFC 8907 §4.5), the only body encoding the
+> protocol defines, so this backend cannot run under `GODEBUG=fips140=only`.
+> Building with `-tags fips140only` excludes it.
+> See [FIPS 140-3 compliance](fips.md).
+
 TACACS+ is commonly used for:
 - Network device administration (routers, switches, firewalls)
 - Privileged access management

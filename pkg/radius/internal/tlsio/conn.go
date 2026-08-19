@@ -1,3 +1,8 @@
+// Excluded from fips140only builds along with the rest of pkg/radius;
+// see pkg/radius/authenticator.go and docs/fips.md.
+
+//go:build !fips140only
+
 package tlsio
 
 import (

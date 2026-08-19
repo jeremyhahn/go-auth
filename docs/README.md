@@ -144,7 +144,7 @@ func main() {
     // Configure OTP authentication
     otpAuth, _ := otp.NewAuthenticator(otp.Config{
         Type:        otp.TypeTOTP,
-        Secret:      "JBSWY3DPEHPK3PXP",
+        Secret:      "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
         Issuer:      "MyApp",
         AccountName: "user@example.com",
     })
@@ -268,6 +268,12 @@ auth, _ := NewAuthenticator(config, mockValidator)
 ```
 
 ## Security Best Practices
+
+### FIPS 140-3
+
+See [FIPS 140-3 compliance](fips.md) for the `fips140only` build tag, the
+backends it excludes (RADIUS and TACACS+, whose wire protocols mandate MD5),
+and the OTP algorithm a FIPS deployment must provision.
 
 ### General Recommendations
 

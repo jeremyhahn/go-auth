@@ -10,8 +10,6 @@ import (
 	"github.com/jeremyhahn/go-auth/pkg/otp"
 	"github.com/jeremyhahn/go-auth/pkg/pam"
 	"github.com/jeremyhahn/go-auth/pkg/pkcs11"
-	"github.com/jeremyhahn/go-auth/pkg/radius"
-	"github.com/jeremyhahn/go-auth/pkg/tacacs"
 	"github.com/jeremyhahn/go-auth/pkg/tpm2"
 	"github.com/jeremyhahn/go-auth/pkg/yubikey"
 )
@@ -282,8 +280,6 @@ var (
 	_ passwordAuthenticator = (*ldapauth.Authenticator)(nil)
 	_ passwordAuthenticator = (*oauth.Authenticator)(nil)
 	_ passwordAuthenticator = (*pam.Authenticator)(nil)
-	_ passwordAuthenticator = (*radius.Authenticator)(nil)
-	_ passwordAuthenticator = (*tacacs.Authenticator)(nil)
 	_ pinAuthenticator      = (*pkcs11.Authenticator)(nil)
 	_ pinAuthenticator      = (*tpm2.Authenticator)(nil)
 	_ otpAuthenticator      = (*yubikey.Authenticator)(nil)

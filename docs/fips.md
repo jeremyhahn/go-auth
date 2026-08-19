@@ -1,0 +1,161 @@
+# FIPS 140-3 compliance
+
+go-auth's CI runs a FIPS job with `GOFIPS140=latest` and `GODEBUG=fips140=only`
+(company convention `configuration.md` §5).
+
+`fips140=only` is deliberately stricter than `fips140=on`. `on` loads the Go
+Cryptographic Module but still *permits* non-approved algorithms, so a test
+exercising MD5 or SHA-1 succeeds and the gate reports green while a regulated
+path uses prohibited cryptography. `only` makes non-approved operations panic,
+which is what a FedRAMP / PCI DSS / HIPAA gate has to do.
+
+## Building for a FIPS-140-only deployment
+
+```sh
+GOFIPS140=latest GODEBUG=fips140=only go build -tags fips140only ./...
+GOFIPS140=latest GODEBUG=fips140=only go test -count=1 -tags fips140only ./...
+```
+
+The `fips140only` build tag selects the subset of this library that can operate
+under `fips140=only`. It is not a "skip the awkward tests" switch: it removes
+code that is *incapable* of FIPS-140-only operation, so that a FIPS build
+cannot link it at all rather than shipping a backend that panics the first
+time it is used. Everything the tag removes is still built, linted, scanned by
+gosec and unit-tested by the non-FIPS CI jobs.
+
+Default builds (no tag) are unchanged and keep every backend.
+
+## Exemptions
+
+An exemption here means: an external format or protocol mandates a
+non-approved primitive, so its use is not a compliance defect — FedRAMP, PCI
+DSS and HIPAA govern the protection of regulated data, not every hash in the
+process. The primitive is nonetheless kept out of the FIPS-gated path.
+
+### RADIUS — `pkg/radius`, excluded by `fips140only`
+
+| | |
+|---|---|
+| Primitive | MD5, and HMAC-MD5 |
+| Mandated by | RFC 2865 §3 (Request/Response Authenticator = `MD5(Code \|\| ID \|\| Length \|\| RequestAuth \|\| Attributes \|\| Secret)`); RFC 2869 §5.14 and RFC 3579 §3.2 (Message-Authenticator = HMAC-MD5) |
+| Scope | The whole backend. Every RADIUS packet carries an MD5 authenticator, so no code path avoids it. |
+
+RadSec (RFC 6614) does not resolve this. It carries RADIUS inside TLS, but the
+inner packet's MD5 authenticator is still computed, so a RadSec client panics
+under `fips140=only` just as a UDP one does.
+
+Deployments subject to FIPS 140-3 must not use the RADIUS backend. Building
+with `-tags fips140only` enforces that at link time.
+
+### TACACS+ — `pkg/tacacs`, excluded by `fips140only`
+
+| | |
+|---|---|
+| Primitive | MD5 |
+| Mandated by | RFC 8907 §4.5 — the packet body is obfuscated with an MD5-based keystream (`MD5(session_id \|\| key \|\| version \|\| seq_no \|\| prev_hash)` chained and XORed over the body) |
+| Scope | The whole backend. It is the only body encoding the protocol defines. |
+
+Same conclusion: not available to FIPS 140-3 deployments, enforced by the tag.
+
+### YubiCloud — `pkg/yubikey/yubicloud_validator.go`, excluded by `fips140only`
+
+| | |
+|---|---|
+| Primitive | HMAC-SHA-1 |
+| Mandated by | Yubico Validation Protocol 2.0 — every request and response is signed with HMAC-SHA-1 over the sorted parameter list, and the service rejects any other digest |
+| Scope | The YubiCloud HTTP validator only, not the whole backend |
+
+`pkg/yubikey` stays in the FIPS build. Only the YubiCloud validator is
+excluded, and with it the `init()` that installed it as the package default —
+so under the tag `NewAuthenticator(cfg, nil)` fails fast with
+`errSystemValidatorUnavailable` rather than panicking mid-request. A caller
+that injects its own `OTPValidator`, pointed at a validation service that
+speaks an approved digest, keeps the full YubiKey authentication path.
+
+This one is worth calling out because it is the failure mode a FIPS gate is
+worst at catching on its own: every unit test injected a fake validator, so the
+HMAC-SHA-1 path was never executed and the job passed while the artifact still
+contained a backend that would panic on first real use.
+`TestYubiCloudUnreachableUnderFIPS` guards it by asserting that package
+initialization installs no default validator.
+
+### OTP — `pkg/otp`, partial
+
+| | |
+|---|---|
+| Primitive | HMAC-SHA-1 |
+| Mandated by | RFC 4226 §5.3 (HOTP is HMAC-SHA-1); RFC 6238 §1.2 (SHA-1 is TOTP's default and what mainstream authenticator apps implement) |
+| Scope | `Algorithm: AlgorithmSHA1`, and secrets below the 112-bit HMAC key floor |
+
+This package is **not** excluded from FIPS builds. RFC 6238 §1.2 also permits
+SHA-256 and SHA-512, `pkg/otp` supports both, and Go's `fips140=only` admits
+HMAC over SHA-2 and SHA-3 — so approved OTP works. Only `AlgorithmSHA1` is
+unusable.
+
+Under the tag the package fails closed rather than leaving that to the runtime:
+
+- `Algorithm: AlgorithmSHA1` is rejected by `NewAuthenticator` with an
+  `ErrInvalidConfig`-wrapped error naming the approved alternatives.
+- An omitted `Algorithm` defaults to SHA-256 instead of RFC 6238's SHA-1, and
+  `GetProvisioningURI` advertises SHA-256 so enrollment matches validation.
+- A secret that decodes to fewer than **112 bits** is rejected too. FIPS 140-3
+  sets that floor for HMAC keys; measured against the toolchain, 13 bytes
+  panics and 14 does not. This applies to both ways of supplying a secret:
+  `Config.SecretKey` is measured from the sealed enclave with `Size()`, and the
+  deprecated `Config.Secret` string is decoded *into* an enclave to be measured
+  and destroyed there, so establishing the key's strength never puts the key
+  itself in ordinary memory (see [secret.md](secret.md)).
+
+Both checks have to happen at construction. `crypto/hmac` does not return an
+error for SHA-1 or for a short key under `fips140=only` — it **panics**.
+Accepting either configuration would put that panic behind `Generate`,
+`Authenticate` and `ValidateCounter`, so an ordinary authentication attempt,
+which is attacker-reachable traffic, would crash the process instead of failing
+a login.
+
+The key-length rule has an operational consequence worth planning for: an
+application holding secrets enrolled from the 80-bit `JBSWY3DPEHPK3PXP` example
+(or any provisioning tool that emitted short secrets) must **re-enroll those
+users** before it can run under `fips140only`. Failing at construction is what
+surfaces that at startup rather than at a login attempt. Secrets this package
+issued are unaffected — `GenerateSecret` has always emitted 160 bits.
+
+A FIPS deployment must therefore enroll users with SHA-256 or SHA-512, and must
+accept that authenticator apps which only speak SHA-1 will not interoperate.
+
+The FIPS job runs the entire OTP suite — no test excluded — against SHA-256.
+The digest is chosen by `pkg/otp/algorithm_default_test.go` /
+`algorithm_fips140only_test.go`, so each test covers the same code path in both
+builds and only the digest differs.
+
+## Not exemptions — fixed in place
+
+Two problems the `fips140=only` gate surfaced were real defects, and were fixed
+rather than exempted.
+
+- **`pkg/otp` HOTP validation ignored the configured algorithm.** Both
+  validation entry points — `Authenticate` and `ValidateCounter` — called
+  `hotp.Validate`, which hardcodes 6 digits and SHA-1
+  regardless of how the authenticator was built, while `Generate` honoured the
+  configuration. A SHA-256 or 7/8-digit HOTP secret could therefore never
+  validate a code it had just generated. Both call sites now use
+  `hotp.ValidateCustom` with the configured options.
+- **The OTP test fixture used an 80-bit secret.** `JBSWY3DPEHPK3PXP` is the
+  widely copied Google Authenticator doc example; it base32-decodes to 10
+  bytes, below the 112-bit floor FIPS 140-3 sets for HMAC keys. Every fixture
+  the FIPS job runs now uses the RFC 4226 Appendix D reference seed (20 bytes /
+  160 bits), which is also what `GenerateSecret` emits. The algorithm was never
+  the problem, only the key length of the fixture.
+
+  The example is still used deliberately elsewhere, as a subject rather than a
+  convenience: `algorithm_fips140only_test.go` checks that a secret of that
+  length is *rejected* under the tag, and the `!fips140only` tests keep using
+  it because a default build has no key-length floor and must go on working for
+  callers who enrolled against it.
+
+## What is *not* an acceptable response to a red FIPS job
+
+Setting `GODEBUG` back to `fips140=on`, adding a tag that skips the job, or
+narrowing the test scope so a failing package is simply not covered. A gate
+that cannot fail on the thing it exists to catch is decoration. If a failure
+cannot be fixed or honestly exempted, it gets escalated, not silenced.
