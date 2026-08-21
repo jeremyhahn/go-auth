@@ -27,11 +27,25 @@ import (
 // all until something asks for one.
 //
 // Padding is optional and the input is upper-cased, matching what the string
-// path accepted and what provisioning tools emit.
+// path accepted and what provisioning tools emit. An unpadded final group that
+// is a valid partial group is accepted for the same reason; one too short to
+// encode a whole byte is not, and is the one case Go's unpadded decoder would
+// discard silently.
 func NewProtectedSecret(base32Secret string) (*secret.Secret, error) {
 	trimmed := trimBase32(base32Secret)
 	if trimmed == "" {
 		return nil, fmt.Errorf("%w: secret must not be empty", ErrInvalidConfig)
+	}
+
+	// Go's unpadded decoder discards a trailing group too short to encode a
+	// whole byte rather than rejecting it, so "<secret>A" decodes to exactly the
+	// key "<secret>" does. A secret carrying a stray character would then be
+	// accepted here and produce codes the enrolled authenticator never agrees
+	// with — a failure at every login, with nothing at construction to say why.
+	// The padded decoding this replaced rejected it; keep rejecting it.
+	if n := len(trimmed) % 8; n == 1 || n == 3 || n == 6 {
+		return nil, fmt.Errorf("%w: secret must be valid base32: it ends in %d "+
+			"characters that do not encode a whole byte", ErrInvalidConfig, n)
 	}
 
 	encoding := base32.StdEncoding.WithPadding(base32.NoPadding)

@@ -9,6 +9,7 @@
 package otp
 
 import (
+	"bytes"
 	"context"
 	"encoding/base32"
 	"errors"
@@ -478,6 +479,14 @@ func TestNewProtectedSecret(t *testing.T) {
 		{"lower case", "jbswy3dpehpk3pxp", "Hello!\xde\xad\xbe\xef"},
 		{"padded", base32.StdEncoding.EncodeToString([]byte("hello")), "hello"},
 		{"surrounding space", "  JBSWY3DPEHPK3PXP  ", "Hello!\xde\xad\xbe\xef"},
+		// The four unpadded final groups that do encode whole bytes. They are
+		// what provisioning tools emit, so rejecting a short trailing group
+		// must not catch them: 2, 4, 5 and 7 characters carry 1, 2, 3 and 4
+		// bytes respectively.
+		{"partial group of 2", base32Of("a"), "a"},
+		{"partial group of 4", base32Of("ab"), "ab"},
+		{"partial group of 5", base32Of("abc"), "abc"},
+		{"partial group of 7", base32Of("abcd"), "abcd"},
 	}
 
 	for _, tc := range cases {
@@ -502,14 +511,69 @@ func TestNewProtectedSecret(t *testing.T) {
 }
 
 func TestNewProtectedSecretRejects(t *testing.T) {
-	// '1' and '8' are outside the base32 alphabet; '=' alone normalizes to an
-	// empty secret. An unpadded input that is a valid partial group is not an
-	// error — it is what provisioning tools emit, and what the string path
-	// hands to github.com/pquerna/otp, which pads it before decoding.
-	for _, input := range []string{"", "   ", "=", "not base32!", "ABCDEF1H", "JBSWY3DPEHPK3P8"} {
-		if _, err := NewProtectedSecret(input); !errors.Is(err, ErrInvalidConfig) {
-			t.Errorf("NewProtectedSecret(%q) = %v, want ErrInvalidConfig", input, err)
-		}
+	cases := []struct {
+		name  string
+		input string
+	}{
+		// '1' and '8' are outside the base32 alphabet; '=' alone normalizes to
+		// an empty secret. An unpadded input that is a valid partial group is
+		// not an error — it is what provisioning tools emit, and what the
+		// string path hands to github.com/pquerna/otp, which pads it before
+		// decoding. TestNewProtectedSecret covers those.
+		{"empty", ""},
+		{"whitespace only", "   "},
+		{"padding only", "="},
+		{"not base32", "not base32!"},
+		{"digit outside the alphabet", "ABCDEF1H"},
+		{"digit outside the alphabet, unpadded length", "JBSWY3DPEHPK3P8"},
+		// Final groups of 1, 3 and 6 characters cannot encode a whole byte.
+		// Go's unpadded decoder drops them and returns no error, so
+		// "JBSWY3DPEHPK3PXP" and "JBSWY3DPEHPK3PXPA" would otherwise yield the
+		// same key and one stray character would silently enroll a different
+		// secret than the user scanned.
+		{"trailing group of 1", "JBSWY3DPEHPK3PXPA"},
+		{"trailing group of 3", "JBSWY3DPEHPK3PXPABC"},
+		{"trailing group of 6", "JBSWY3DPEHPK3PXPABCDEF"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := NewProtectedSecret(tc.input); !errors.Is(err, ErrInvalidConfig) {
+				t.Errorf("NewProtectedSecret(%q) = %v, want ErrInvalidConfig", tc.input, err)
+			}
+		})
+	}
+}
+
+// TestNewProtectedSecretTrailingGroupIsNotSilentlyDropped is the regression the
+// rejection exists for: without it Go's unpadded decoder returns the same key
+// for a secret and for that secret plus a stray character, so an enrollment
+// typo becomes a login failure with nothing at construction to explain it.
+func TestNewProtectedSecretTrailingGroupIsNotSilentlyDropped(t *testing.T) {
+	const valid = "JBSWY3DPEHPK3PXP"
+
+	good, err := NewProtectedSecret(valid)
+	if err != nil {
+		t.Fatalf("NewProtectedSecret(%q): %v", valid, err)
+	}
+	defer good.Destroy()
+
+	// Proof the underlying decoder really does drop it: same bytes, no error.
+	encoding := base32.StdEncoding.WithPadding(base32.NoPadding)
+	a, err := encoding.DecodeString(valid)
+	if err != nil {
+		t.Fatalf("decode %q: %v", valid, err)
+	}
+	b, err := encoding.DecodeString(valid + "A")
+	if err != nil {
+		t.Fatalf("decode %q: %v", valid+"A", err)
+	}
+	if !bytes.Equal(a, b) {
+		t.Fatalf("premise no longer holds: %q and %q decode differently", valid, valid+"A")
+	}
+
+	if _, err := NewProtectedSecret(valid + "A"); !errors.Is(err, ErrInvalidConfig) {
+		t.Errorf("NewProtectedSecret(%q) = %v, want ErrInvalidConfig", valid+"A", err)
 	}
 }
 

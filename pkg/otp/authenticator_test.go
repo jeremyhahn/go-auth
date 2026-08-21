@@ -1006,8 +1006,8 @@ func TestDecodedSecretBits(t *testing.T) {
 
 	// A trailing group of 1, 3 or 6 characters cannot encode a whole byte.
 	// Go's unpadded decoder drops it silently — "…QOJQA" decodes to the same
-	// key as "…QOJQ" — so these assert the guard in decodedSecretBits, not the
-	// decoder.
+	// key as "…QOJQ" — so these assert the guard in NewProtectedSecret, which
+	// decodedSecretBits decodes through, not the decoder.
 	malformed := map[string]string{
 		"illegal characters":    "INVALID@SECRET!",
 		"misplaced padding":     "MZ=XW6YTB",

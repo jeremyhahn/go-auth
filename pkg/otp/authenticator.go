@@ -188,17 +188,9 @@ func (c Config) validate() error {
 // internally on every operation. Config.SecretKey is the path that has neither
 // property, and is what a caller handling key material should use.
 func decodedSecretBits(base32Secret string) (int, error) {
-	// Go's unpadded decoder discards a trailing group too short to encode a
-	// whole byte rather than rejecting it, so "<secret>A" decodes to exactly
-	// the key "<secret>" does. A secret carrying a stray character would then
-	// be accepted here and produce codes the enrolled authenticator never
-	// agrees with — a failure at every login rather than at startup. The
-	// padded decoding this replaces rejected it; keep rejecting it.
-	if n := len(trimBase32(base32Secret)) % 8; n == 1 || n == 3 || n == 6 {
-		return 0, fmt.Errorf("%w: secret must be valid base32: it ends in %d "+
-			"characters that do not encode a whole byte", ErrInvalidConfig, n)
-	}
-
+	// Malformed input — including a trailing group too short to encode a whole
+	// byte, which Go's unpadded decoder would discard silently — is rejected by
+	// NewProtectedSecret itself. This function only measures.
 	key, err := NewProtectedSecret(base32Secret)
 	if err != nil {
 		return 0, err
