@@ -16,12 +16,12 @@
 # EAP-TLS interop defect that the unit suite could not see, because the unit
 # fake shared the client's own misreading of RFC 2869 §5.14.
 #
-# KNOWN FAILURE, not this module's: the LDAP suite's fixture server
-# (github.com/vjeantet/ldapserver v1.0.1, unmaintained) races its own shutdown
-# against a client disconnect and panics with "send on closed channel". It
-# passes on a workstation and panics on the runner. Replacing that fixture is
-# what closes this out; until then this workflow is expected to be red on the
-# LDAP leg and green on the other eight.
+# There is no expected-red leg. The LDAP fixture panic that this comment used
+# to record as a standing failure (github.com/vjeantet/ldapserver v1.0.1,
+# unmaintained, "send on closed channel" on shutdown) did not reproduce in run
+# 4380 — the LDAP suite passed and the run was red on the otp leg for an
+# unrelated build-flag defect (#16). #15 tracks the fixture itself; a red run
+# here means read the job log, not assume it is that.
 name: Integration
 
 on:
@@ -42,7 +42,7 @@ permissions:
   contents: read
 
 env:
-  GO_VERSION: "1.26.6"
+  GO_VERSION: "1.26.7"
 
 jobs:
   integration:

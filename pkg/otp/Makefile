@@ -6,15 +6,19 @@ REPO_ROOT := $(abspath $(MODULE_ROOT)/../..)
 .PHONY: test
 test: unit
 
+# CGO_ENABLED=0 matches the root Makefile's export and every other module: the
+# tree has to test on a machine without libpam0g-dev. The race detector needs
+# cgo, so it cannot run here — the root `test-race` target owns race coverage
+# for the whole module and is the one place that turns cgo on.
 .PHONY: unit
 unit:
 	@echo "==> Running OTP unit tests..."
-	$(GO) test -v -race ./...
+	CGO_ENABLED=0 $(GO) test -v -timeout=300s ./...
 
 .PHONY: integration-test
 integration-test:
 	@echo "==> Running OTP integration tests..."
-	$(GO) test -v -race -tags=integration $(REPO_ROOT)/test/integration/otp/...
+	CGO_ENABLED=0 $(GO) test -v -timeout=300s -tags=integration $(REPO_ROOT)/test/integration/otp/...
 
 .PHONY: all-tests
 all-tests: unit integration-test
