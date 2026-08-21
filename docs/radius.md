@@ -359,6 +359,26 @@ if err != nil {
 }
 ```
 
+### FIPS activation
+
+Both constructors return `radius.ErrFIPSUnsupported` — ahead of any argument
+check — when the process runs under `GODEBUG=fips140=only`. RFC 2865 §3
+authenticates every packet with MD5 and RFC 2869 §5.14 signs it with HMAC-MD5,
+so no configuration, transport or option makes this backend usable there;
+RadSec does not help, because the inner packet is unchanged.
+
+```go
+auth, err := radius.NewAuthenticator("server:1812", "secret")
+if errors.Is(err, radius.ErrFIPSUnsupported) {
+    // FIPS is activated in this deployment. Use a different backend;
+    // there is no RADIUS configuration that satisfies FIPS 140-3.
+}
+```
+
+The refusal is deliberate and final: without it the process would start and
+then panic inside `crypto/hmac` on the first Access-Request. See
+[fips.md](fips.md) for the full rationale and how activation is detected.
+
 ## Integration with go-auth API
 
 ```go

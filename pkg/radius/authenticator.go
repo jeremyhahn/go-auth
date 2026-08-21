@@ -164,11 +164,23 @@ type Authenticator struct {
 // the caller passed in cannot be wiped and stays resident until the collector
 // reclaims it.
 //
+// Under FIPS activation this returns ErrFIPSUnsupported ahead of every argument
+// check, whatever the arguments are, so startup code can branch on
+// errors.Is(err, ErrFIPSUnsupported) to learn the backend is unavailable.
+//
 // Deprecated: use NewAuthenticatorWithSecret, which takes the shared secret in
 // protected memory and never requires it to exist as a Go string. This
 // constructor is still supported and will be removed in the coordinated
 // breaking release.
 func NewAuthenticator(address, secret string, opts ...Option) (*Authenticator, error) {
+	// Ahead of the argument checks, and ahead of sealing: a FIPS-activated
+	// deployment must be told the backend is categorically unavailable, not
+	// that its arguments are wrong. NewAuthenticatorWithSecret carries the same
+	// gate; this one cannot defer to it, because the checks below would answer
+	// first. See fips.go.
+	if fips140OnlyActive() {
+		return nil, ErrFIPSUnsupported
+	}
 	if secret == "" {
 		return nil, errors.New("radius: secret must not be empty")
 	}
@@ -176,7 +188,16 @@ func NewAuthenticator(address, secret string, opts ...Option) (*Authenticator, e
 	if err != nil {
 		return nil, fmt.Errorf("radius: seal shared secret: %w", err)
 	}
-	return NewAuthenticatorWithSecret(address, sealed, opts...)
+	auth, err := NewAuthenticatorWithSecret(address, sealed, opts...)
+	if err != nil {
+		// This constructor created the enclave, so it owns it on the paths
+		// where no authenticator takes it over. Leaving it mapped would keep
+		// the shared secret resident for the life of the process after a
+		// construction that failed.
+		sealed.Destroy()
+		return nil, err
+	}
+	return auth, nil
 }
 
 // NewAuthenticatorWithSecret constructs a RADIUS authenticator whose shared
@@ -189,7 +210,16 @@ func NewAuthenticator(address, secret string, opts ...Option) (*Authenticator, e
 //
 // The authenticator borrows the secret and does not take ownership of it:
 // destroy it when the last component using it is done.
+//
+// Under FIPS activation this returns ErrFIPSUnsupported ahead of every argument
+// check, as NewAuthenticator does.
 func NewAuthenticatorWithSecret(address string, sharedSecret *secretpkg.Secret, opts ...Option) (*Authenticator, error) {
+	// Refuse to start under FIPS activation rather than panic on the first
+	// Access-Request. Both constructors reach this one, so this is the whole
+	// backend's entry point. See fips.go.
+	if fips140OnlyActive() {
+		return nil, ErrFIPSUnsupported
+	}
 	if address == "" {
 		return nil, errors.New("radius: address must not be empty")
 	}

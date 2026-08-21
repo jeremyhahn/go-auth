@@ -44,8 +44,45 @@ RadSec (RFC 6614) does not resolve this. It carries RADIUS inside TLS, but the
 inner packet's MD5 authenticator is still computed, so a RadSec client panics
 under `fips140=only` just as a UDP one does.
 
-Deployments subject to FIPS 140-3 must not use the RADIUS backend. Building
-with `-tags fips140only` enforces that at link time.
+Deployments subject to FIPS 140-3 must not use the RADIUS backend. Two
+independent mechanisms enforce that, for the two shapes of artifact:
+
+- **Link time** — building with `-tags fips140only` removes the package, so a
+  FIPS-only artifact cannot contain MD5 at all.
+- **Run time** — an ordinary build contains the backend, and
+  `NewAuthenticator` / `NewAuthenticatorWithSecret` return
+  `radius.ErrFIPSUnsupported` when FIPS is activated. This is the company FIPS
+  product ruling 7 case ("disabled with a clear typed error"), and it is what
+  serves boundary ruling 1's model of one FIPS-capable artifact activated at
+  deployment with `GODEBUG=fips140=only`. Configuring RADIUS in such a
+  deployment fails at startup instead of panicking inside `crypto/hmac` on the
+  first login.
+
+`pkg/radius/fips.go` detects activation by computing one HMAC-MD5 over a fixed
+non-secret input and observing whether the runtime refuses. That is not the
+obvious mechanism, so the reason is worth recording. `crypto/fips140.Enabled()`
+answers a different question — measured on go1.26.6:
+
+| build | `GODEBUG` | `fips140.Enabled()` | HMAC-MD5 |
+|---|---|---|---|
+| plain | *(none)* | false | ok |
+| plain | `fips140=on` | true | ok |
+| plain | `fips140=only` | true | panics |
+| `GOFIPS140=latest` | *(none)* | **true** | **ok** |
+| `GOFIPS140=latest` | `fips140=on` | true | ok |
+| `GOFIPS140=latest` | `fips140=only` | true | panics |
+
+`Enabled()` reports that the FIPS module is linked in, which under ruling 1 is
+true of every binary the company ships. Gating on it would disable RADIUS in
+every deployment, including the ones entitled to use it. Nothing exported
+distinguishes `only` from `on`, and reading `GODEBUG` from the environment
+would miss a `//go:debug fips140=only` directive compiled into the main
+package. Executing the primitive measures the condition the backend actually
+depends on, however it was set.
+
+`TestFIPSActivationRefusesRADIUS` proves it end to end by re-executing the test
+binary under `GODEBUG=fips140=only` — the plain unit-test job is enough, since
+`fips140=only` applies to an ordinary build.
 
 ### TACACS+ — `pkg/tacacs`, excluded by `fips140only`
 
