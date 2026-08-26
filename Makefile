@@ -93,7 +93,7 @@ GOSEC_EXTRA ?=
 gosec:
 	@GOSEC=$$(command -v gosec 2>/dev/null); \
 	if [ -n "$$GOSEC" ]; then \
-		\"$$GOSEC\" -concurrency 4 -exclude-generated -exclude-dir=examples -severity medium -confidence medium $(GOSEC_EXTRA) ./... || exit 1; \
+		"$$GOSEC" -concurrency 4 -exclude-generated -exclude-dir=examples -severity medium -confidence medium $(GOSEC_EXTRA) ./... || exit 1; \
 	else \
 		echo "gosec not installed, skipping"; \
 		echo "  Install: go install github.com/securego/gosec/v2/cmd/gosec@latest"; \
