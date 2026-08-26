@@ -34,7 +34,7 @@ var ErrVerifierConsumed = errors.New("oauth: pkce code verifier already consumed
 //
 // Whoever holds a verifier can redeem an intercepted authorization code, which
 // is the attack PKCE exists to stop, so a Verifier never yields its value by
-// return. The bytes live in a memguard enclave and are read only inside a call
+// return. The bytes live in a locked enclave and are read only inside a call
 // that this type controls the lifetime of.
 //
 // Single use is enforced, not documented: ExchangeAuthorizationCodePKCE takes
@@ -157,7 +157,7 @@ func (v *Verifier) GoString() string {
 // It is the replacement for BuildAuthURL(state, true, params). A code verifier
 // is a bearer credential for the length of the flow: whoever holds it can redeem
 // an intercepted authorization code, which is the entire attack PKCE exists to
-// stop. This constructor generates it inside a memguard enclave and derives the
+// stop. This constructor generates it inside a locked enclave and derives the
 // S256 challenge from the enclave, so the verifier has no plaintext form on the
 // Go heap at any point — unlike the string BuildAuthURL has to return.
 //

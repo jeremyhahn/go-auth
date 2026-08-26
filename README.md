@@ -22,7 +22,7 @@ The [api package](pkg/api/) contains a factory pattern for working with all of t
 
 ## Protected memory
 
-Keys, passwords, shared secrets and API keys are held in [protected memory](docs/secret.md) — a memguard enclave — for their whole lifetime, and are decrypted only for the moment they are used. The entry points that take a credential as a Go string still work and are deprecated; see the [changelog](CHANGELOG.md).
+Keys, passwords, shared secrets and API keys are held in [protected memory](docs/secret.md) — a [go-enclave](https://github.com/jeremyhahn/go-enclave) `MemoryEnclave`: locked, guard-paged, non-swappable, undumpable memory — for their whole lifetime, and are read only inside the call that uses them. The entry points that take a credential as a Go string still work and are deprecated; see the [changelog](CHANGELOG.md).
 
 
 ## Support

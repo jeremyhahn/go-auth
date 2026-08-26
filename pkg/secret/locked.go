@@ -4,7 +4,7 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/awnumar/memguard"
+	"github.com/jeremyhahn/go-enclave"
 )
 
 // ErrLockedDestroyed indicates the locked buffer was released by Destroy.
@@ -23,10 +23,12 @@ var ErrLockedDestroyed = errors.New("secret: locked buffer has been destroyed")
 //
 // The buffer is page-aligned and mlock(2)ed, so the kernel will not page it to
 // swap, is marked MADV_DONTDUMP so it is excluded from core dumps, and sits
-// between two inaccessible guard pages with a canary that memguard checks when
-// it is destroyed. It is not encrypted at rest the way a Secret is: the
-// plaintext is resident for the lifetime of the Locked, which is the price of
-// it being readable at a moment the holder does not choose.
+// between two inaccessible guard pages with a canary. It is not sealed the way
+// a Secret is: the plaintext is resident for the lifetime of the Locked, which
+// is the price of it being readable at a moment the holder does not choose. The
+// pages stay writable — as the memguard buffer this replaced did — so a stray
+// write through the exposed slice corrupts the material rather than faulting;
+// treat Bytes as read-only.
 //
 // Prefer Secret. Reach for Locked only where a dependency's lifetime makes
 // Secret unusable, and say in a comment which dependency and why.
@@ -34,8 +36,8 @@ var ErrLockedDestroyed = errors.New("secret: locked buffer has been destroyed")
 // A *Locked is safe for concurrent use; the bytes it exposes are as safe as
 // their reader makes them.
 type Locked struct {
-	mu  sync.RWMutex
-	buf *memguard.LockedBuffer
+	mu      sync.RWMutex
+	enclave *enclave.MemoryEnclave
 }
 
 // Lock copies the secret into a locked buffer and returns it.
@@ -51,9 +53,22 @@ func (s *Secret) Lock() (*Locked, error) {
 
 	var locked *Locked
 	err := s.Open(func(key []byte) error {
-		buf := memguard.NewBuffer(len(key))
-		buf.Copy(key)
-		locked = &Locked{buf: buf}
+		// A sized enclave is locked, writable memory; copy the secret's bytes
+		// into it in place so the plaintext never reaches ordinary heap. This
+		// borrow runs inside the Secret's own borrow, which go-enclave permits:
+		// the two enclaves have independent locks.
+		e, cerr := enclave.NewMemoryEnclaveSized(len(key))
+		if cerr != nil {
+			return cerr
+		}
+		if werr := e.WithBytes(func(dst []byte) error {
+			copy(dst, key)
+			return nil
+		}); werr != nil {
+			e.Destroy()
+			return werr
+		}
+		locked = &Locked{enclave: e}
 		return nil
 	})
 	if err != nil {
@@ -75,10 +90,18 @@ func (l *Locked) Bytes() []byte {
 	}
 	l.mu.RLock()
 	defer l.mu.RUnlock()
-	if l.buf == nil || !l.buf.IsAlive() {
+	if l.enclave == nil || !l.enclave.IsAlive() {
 		return nil
 	}
-	return l.buf.Bytes()
+	// Open hands back a view that aliases the locked pages and outlives the
+	// enclave's lock — exactly the long-lived readability Locked promises. It is
+	// safe here because only this Locked's Destroy unmaps these pages, and the
+	// library never calls the process-wide sweep that is Open's other hazard.
+	b, err := l.enclave.Open()
+	if err != nil {
+		return nil
+	}
+	return b
 }
 
 // Size reports the length of the value in bytes. A nil or destroyed Locked
@@ -89,10 +112,10 @@ func (l *Locked) Size() int {
 	}
 	l.mu.RLock()
 	defer l.mu.RUnlock()
-	if l.buf == nil || !l.buf.IsAlive() {
+	if l.enclave == nil {
 		return 0
 	}
-	return l.buf.Size()
+	return l.enclave.Size()
 }
 
 // Destroy wipes and unmaps the buffer. It is idempotent and safe to call on a
@@ -110,11 +133,9 @@ func (l *Locked) Destroy() {
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.buf == nil {
-		return
-	}
-	l.buf.Destroy()
-	l.buf = nil
+	// A nil *MemoryEnclave Destroys as a no-op, so the idempotent case is safe.
+	l.enclave.Destroy()
+	l.enclave = nil
 }
 
 // String renders a redaction rather than the value, so a stray %v or %s cannot

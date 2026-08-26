@@ -73,7 +73,7 @@ Comprehensive authentication library for Go with support for multiple authentica
 - **Use cases**: Two-factor authentication, MFA, passwordless login
 
 #### [Protected Memory](secret.md)
-- Credential material sealed in memguard enclaves
+- Credential material held in go-enclave locked-memory enclaves
 - Keys, passwords, shared secrets and tokens kept out of Go strings
 - Used by the OTP, RADIUS, TACACS+, LDAP and YubiKey backends
 - **Use cases**: every backend that holds a long-lived secret

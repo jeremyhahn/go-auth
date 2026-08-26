@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/awnumar/memguard"
+	"github.com/jeremyhahn/go-enclave"
 )
 
 // Errors returned by this package.
@@ -18,29 +18,34 @@ var (
 	// never sealed by a constructor.
 	ErrDestroyed = errors.New("secret: secret has been destroyed")
 	// ErrEmpty indicates an empty value was offered to a constructor. A
-	// zero-length secret is always a configuration mistake, and memguard
-	// cannot allocate a zero-length buffer for one either.
+	// zero-length secret is always a configuration mistake, and an enclave
+	// cannot hold a zero-length value either.
 	ErrEmpty = errors.New("secret: value must not be empty")
-	// ErrOpen indicates the sealed value could not be decrypted. It is
-	// returned after memguard's session key has been rotated by Purge, which
-	// invalidates every Secret created before the call.
-	ErrOpen = errors.New("secret: cannot open sealed value")
 )
 
 // Secret is credential material — a key, password, shared secret or token —
 // held in protected memory for its whole lifetime.
 //
-// The value is sealed in a memguard enclave: encrypted at rest under a session
-// key that itself lives in locked, guarded, non-swappable memory. It is
-// decrypted only for the duration of a single Open call, into a locked buffer
-// that is wiped and unmapped before Open returns. No method exposes the
-// plaintext by return value, so it cannot outlive the call that asked for it.
+// The value lives in a go-enclave MemoryEnclave: page-aligned, mlock(2)ed so it
+// is never paged to swap, marked MADV_DONTDUMP so it is excluded from core
+// dumps, and fenced between inaccessible guard pages with a canary. It is read
+// only through a borrow held under the enclave's own lock, and no method exposes
+// the plaintext by return value, so it cannot outlive the call that asked for
+// it.
+//
+// Unlike the memguard enclave this package used before, a MemoryEnclave holds
+// its locked region for its whole lifetime rather than decrypting into a fresh
+// locked buffer on every Open. A repeated or concurrent Open therefore allocates
+// no locked memory, and an mlock failure surfaces as a typed error from the
+// constructor — never as a process-wide purge that would destroy every other
+// secret in the process and panic the caller. That is what closes the
+// login-path memlock-exhaustion DoS (go-auth #21).
 //
 // The zero value is not usable; construct one with New, NewString, NewRandom
 // or NewWith. A *Secret is safe for concurrent use.
 type Secret struct {
 	mu      sync.RWMutex
-	enclave *memguard.Enclave
+	enclave *enclave.MemoryEnclave
 	size    int
 }
 
@@ -50,13 +55,22 @@ type Secret struct {
 // rather than sharing them, which is what keeps a second, unprotected copy
 // from surviving the call. Callers that still need the value afterwards must
 // open the returned Secret for it.
+//
+// It returns ErrEmpty for an empty value and, when the kernel refuses to lock
+// the pages, an error matching enclave.ErrLockedMemoryUnavailable — the caller
+// can test for it with errors.Is.
 func New(b []byte) (*Secret, error) {
 	if len(b) == 0 {
 		return nil, ErrEmpty
 	}
 	size := len(b)
-	// NewEnclave wipes the source slice as part of sealing it.
-	return &Secret{enclave: memguard.NewEnclave(b), size: size}, nil
+	// NewMemoryEnclave takes ownership of b and wipes it, including on the
+	// locked-memory-refusal path, so no unprotected copy survives this call.
+	e, err := enclave.NewMemoryEnclave(b)
+	if err != nil {
+		return nil, err
+	}
+	return &Secret{enclave: e, size: size}, nil
 }
 
 // NewString seals the bytes of s and returns them as a Secret.
@@ -106,23 +120,42 @@ func NewWith(size int, fill func(buf []byte) (n int, err error)) (*Secret, error
 		return nil, errors.New("secret: fill function must not be nil")
 	}
 
-	buf := memguard.NewBuffer(size)
-	defer buf.Destroy()
-
-	n, err := fill(buf.Bytes())
+	// A sized enclave is locked, writable memory the caller fills in place; the
+	// material never touches ordinary heap. It is scratch here: the sealed
+	// Secret is a second enclave holding exactly the n bytes fill produced, so
+	// a fill that wrote fewer than size bytes (base32 padding) does not leave
+	// trailing zeros in the secret.
+	scratch, err := enclave.NewMemoryEnclaveSized(size)
 	if err != nil {
 		return nil, err
 	}
-	if n < 1 {
-		return nil, ErrEmpty
-	}
-	if n > size {
-		return nil, fmt.Errorf("secret: fill wrote %d bytes into a %d byte buffer", n, size)
-	}
+	defer scratch.Destroy()
 
-	// NewEnclave copies out of the locked buffer and wipes what it copied;
-	// the deferred Destroy wipes and unmaps the rest.
-	return &Secret{enclave: memguard.NewEnclave(buf.Bytes()[:n]), size: n}, nil
+	var sealed *Secret
+	err = scratch.WithBytes(func(buf []byte) error {
+		n, ferr := fill(buf)
+		if ferr != nil {
+			return ferr
+		}
+		if n < 1 {
+			return ErrEmpty
+		}
+		if n > size {
+			return fmt.Errorf("secret: fill wrote %d bytes into a %d byte buffer", n, size)
+		}
+		// NewMemoryEnclave copies buf[:n] into its own locked region and wipes
+		// buf[:n] as it goes; scratch.Destroy wipes whatever is left.
+		e, cerr := enclave.NewMemoryEnclave(buf[:n])
+		if cerr != nil {
+			return cerr
+		}
+		sealed = &Secret{enclave: e, size: n}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return sealed, nil
 }
 
 // Scratch calls fn with a locked buffer of size bytes, wiped and unmapped
@@ -140,20 +173,26 @@ func Scratch(size int, fn func(buf []byte) error) error {
 		return errors.New("secret: scratch function must not be nil")
 	}
 
-	buf := memguard.NewBuffer(size)
-	defer buf.Destroy()
+	e, err := enclave.NewMemoryEnclaveSized(size)
+	if err != nil {
+		return err
+	}
+	defer e.Destroy()
 
-	return fn(buf.Bytes())
+	return e.WithBytes(fn)
 }
 
-// Open decrypts the secret into a locked buffer, calls fn with it, and
-// destroys the buffer before returning — including when fn panics or returns
-// an error.
+// Open calls fn with the sealed value and returns fn's error.
 //
-// The slice fn receives is valid only for the duration of the call. Retaining
-// it, or anything that aliases it, is a use-after-free of unmapped memory
-// rather than a stale read, so anything derived from the key that must outlive
-// fn has to be copied out deliberately — and is then the caller's to protect.
+// The slice fn receives is a borrow of the locked pages, valid only for the
+// duration of the call: the enclave holds its read lock across fn, so a
+// concurrent Destroy waits rather than unmapping the pages underneath it.
+// Retaining the slice, or anything that aliases it, is a use-after-free once
+// the borrow ends, so anything derived from the key that must outlive fn has to
+// be copied out deliberately — and is then the caller's to protect.
+//
+// Open allocates no locked memory: it borrows the region the secret already
+// holds. A destroyed or zero-value Secret returns ErrDestroyed.
 func (s *Secret) Open(fn func(key []byte) error) error {
 	if s == nil {
 		return ErrNilSecret
@@ -163,20 +202,34 @@ func (s *Secret) Open(fn func(key []byte) error) error {
 	}
 
 	s.mu.RLock()
-	enclave := s.enclave
+	e := s.enclave
 	s.mu.RUnlock()
 
-	if enclave == nil {
+	if e == nil {
 		return ErrDestroyed
 	}
 
-	buf, err := enclave.Open()
-	if err != nil {
-		return fmt.Errorf("%w: %v", ErrOpen, err)
+	// WithBytes returns fn's error unchanged, so an errors.Is check on its
+	// return cannot tell an enclave-destroyed REFUSAL (fn never ran) from a fn
+	// that itself returned enclave.ErrEnclaveDestroyed. Track whether fn ran:
+	// WithBytes calls fn only when the region is live, so ran==false is the
+	// only case that is genuinely a destroyed enclave — one that this Secret's
+	// snapshot missed because a concurrent Destroy raced in. When fn ran, its
+	// error is returned verbatim, whatever it is.
+	ran := false
+	var fnErr error
+	err := e.WithBytes(func(key []byte) error {
+		ran = true
+		fnErr = fn(key)
+		return fnErr
+	})
+	if !ran {
+		if errors.Is(err, enclave.ErrEnclaveDestroyed) {
+			return ErrDestroyed
+		}
+		return err
 	}
-	defer buf.Destroy()
-
-	return fn(buf.Bytes())
+	return fnErr
 }
 
 // OpenString calls fn with the secret as a Go string.
@@ -212,21 +265,30 @@ func (s *Secret) Size() int {
 	return s.size
 }
 
-// Destroy releases the secret. Subsequent calls to Open return ErrDestroyed,
-// and Size reports 0. It is idempotent and safe to call on a nil *Secret, so
-// it works as a defer next to construction.
+// Destroy releases the secret, wiping and unmapping its locked pages.
+// Subsequent calls to Open return ErrDestroyed, and Size reports 0. It is
+// idempotent and safe to call on a nil *Secret, so it works as a defer next to
+// construction.
 //
-// The plaintext is not waiting to be wiped by this call: it only ever exists
-// inside the locked buffer of an in-flight Open, which that Open destroys.
-// What Destroy drops is the sealed value and the ability to open it again. The
-// session key that the ciphertext was sealed under is wiped by Purge, which
-// belongs to the program's shutdown path.
+// Unlike the memguard-backed version this replaced, Destroy actually zeroizes:
+// a MemoryEnclave holds its plaintext for its whole lifetime, so dropping the
+// reference is not enough — Destroy wipes the pages and hands them back to the
+// kernel. Leaking the reference instead would keep the credential resident and
+// hold a locked-memory reservation for the life of the process.
 func (s *Secret) Destroy() {
 	if s == nil {
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Release the region BEFORE dropping the handle. MemoryEnclave.Destroy
+	// panics if it cannot unmap the pages, and deliberately keeps the mapping
+	// alive so the release can be retried; dropping the reference first would
+	// strand that locked, still-resident region for the life of the process.
+	// A nil *MemoryEnclave Destroys as a no-op, so the idempotent and
+	// never-sealed cases fall through safely. Only once Destroy returns do we
+	// detach.
+	s.enclave.Destroy()
 	s.enclave = nil
 	s.size = 0
 }
@@ -242,16 +304,4 @@ func (s *Secret) String() string {
 // field and would otherwise print the enclave's internals.
 func (s *Secret) GoString() string {
 	return "secret.Secret(redacted)"
-}
-
-// Purge wipes memguard's session key and every locked buffer in the process,
-// then installs a fresh key. It belongs in a program's shutdown path — after
-// it returns, every Secret created before the call fails to open with ErrOpen,
-// including secrets held by other libraries in the same process.
-//
-// This is deliberately not called by any authenticator in this module: which
-// goroutine owns process shutdown is the application's decision, not a
-// library's.
-func Purge() {
-	memguard.Purge()
 }

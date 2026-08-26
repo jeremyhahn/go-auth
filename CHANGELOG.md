@@ -6,6 +6,41 @@ the release versioning of the company conventions (`release-versioning.md`).
 
 ## [Unreleased]
 
+### Changed
+
+- `pkg/secret`: the protected-memory backing moved from
+  [memguard](https://github.com/awnumar/memguard) to
+  [go-enclave](https://github.com/jeremyhahn/go-enclave) `v0.3.0-alpha`
+  (`MemoryEnclave`), the portfolio's locked-memory primitive. A `Secret` now
+  holds one locked, guard-paged region for its whole lifetime and lends it under
+  a lock, instead of decrypting into a fresh `mlock`ed buffer on every `Open`.
+  A repeated or concurrent `Open` therefore allocates no locked memory, and an
+  `RLIMIT_MEMLOCK` exhaustion now returns a typed error matching
+  `enclave.ErrLockedMemoryUnavailable` from the constructor instead of purging
+  every protected buffer in the process and panicking — closing the login-path
+  memlock-exhaustion DoS ([#21]). `Destroy` now wipes and unmaps the region
+  rather than dropping the reference. The public constructors, `Open`,
+  `OpenString`, `Scratch`, `Lock`, `Size` and the redaction behaviour are
+  unchanged, so backends are unaffected.
+
+### Removed — BREAKING
+
+- **BREAKING — `pkg/secret`: `Purge` and `ErrOpen` are removed, with no
+  deprecated shim.** Both were specific to memguard's process-wide session
+  purge, which go-enclave does not have and which a library must never trigger.
+  A no-op shim keeping the name while dropping the guarantee would be a false
+  promise in the API's own vocabulary: a caller who invokes a security function
+  and gets silence is worse off than one that fails to compile, because the
+  compile error is found once at build time by the person who can fix it, while
+  the silent no-op is found after an incident, if ever. So callers of these two
+  symbols get a compile error. Verified zero consumers before removal — no
+  reference anywhere in go-auth (source or tests) and none in the three in-house
+  consumers (go-quicbaas, go-recountly, go-trusted-platform). Ordered shutdown
+  wiping, where a program wants it, is go-enclave's `WipeAll` and belongs to the
+  process owner, never to this library.
+
+[#21]: https://github.com/jeremyhahn/go-auth/issues/21
+
 ## [0.2.0-alpha] - 2026-08-19
 
 ### Added

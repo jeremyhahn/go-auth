@@ -187,9 +187,8 @@ func (a *Authenticator) authenticateProtectedHOTP(code string, counter uint64) e
 
 // provisioningSecret returns the base32 secret for the provisioning URI,
 // whichever path the authenticator was built on. A sealed key that cannot be
-// opened — because the caller destroyed it, or because memguard's session was
-// purged — is an error rather than an empty parameter: a URI without a usable
-// secret looks enrollable and is not.
+// opened — because the caller destroyed it — is an error rather than an empty
+// parameter: a URI without a usable secret looks enrollable and is not.
 func (a *Authenticator) provisioningSecret() (string, error) {
 	if a.key == nil {
 		return a.cfg.Secret, nil

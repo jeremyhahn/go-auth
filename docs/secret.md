@@ -15,11 +15,15 @@ A `string` cannot be wiped at all. A heap `[]byte` can be wiped only if every
 copy of it is accounted for, and it can be paged to swap or captured in a core
 dump before that happens.
 
-A `Secret` is a [memguard](https://github.com/awnumar/memguard) enclave: the
-value is encrypted at rest under a session key that itself lives in locked,
-guarded, non-swappable memory, and is decrypted only for the duration of one
-`Open` call, into a locked buffer that is wiped and unmapped before `Open`
-returns.
+A `Secret` is a [go-enclave](https://github.com/jeremyhahn/go-enclave)
+`MemoryEnclave`: the value lives in page-aligned, `mlock(2)`ed, non-swappable
+memory, fenced between inaccessible guard pages with a canary and marked
+`MADV_DONTDUMP` so it is excluded from core dumps. It is read only through a
+borrow held under the enclave's lock, for the duration of one `Open` call. The
+locked region is held for the secret's whole lifetime rather than re-mapped per
+`Open`, so a repeated or concurrent `Open` allocates no locked memory — the
+property that closes the login-path memlock-exhaustion DoS
+([#21](https://github.com/jeremyhahn/go-auth/issues/21)).
 
 ## Using it
 
@@ -61,11 +65,13 @@ be swapped, dumped and duplicated by the collector, and wiping that copy
 afterwards would race the reader.
 
 The buffer is `mlock(2)`ed, marked `MADV_DONTDUMP`, guard-paged and canaried,
-and never lives in the Go heap. What it does not have is a `Secret`'s
-encryption at rest: the plaintext is resident for the lifetime of the `Locked`,
-which is the price of being readable at a moment its holder does not choose.
-Prefer `Secret`; reach for `Locked` only where a dependency's lifetime makes
-`Secret` unusable, and say which dependency in a comment.
+and never lives in the Go heap. The difference from a `Secret` is only the
+window of exposure: a `Secret` is read under a borrow that ends with the `Open`
+call, while a `Locked` stays readable — resident in locked memory — for its
+whole lifetime, which is the price of being readable at a moment its holder does
+not choose. Neither is encrypted at rest; both hold the plaintext in locked,
+guarded pages. Prefer `Secret`; reach for `Locked` only where a dependency's
+lifetime makes `Secret` unusable, and say which dependency in a comment.
 
 `Secret` renders as `secret.Secret(redacted)` under every `fmt` verb, so a
 stray `%v` or a structured-log field cannot print a credential.
@@ -130,16 +136,21 @@ taken by code this library calls:
 
 ## Operational requirements
 
-memguard locks its pages with `mlock(2)`, which is bounded by
-`RLIMIT_MEMLOCK`. Exhausting that limit is fatal: memguard purges the session
-and panics rather than continuing with a page that could be swapped.
+An enclave locks its pages with `mlock(2)`, which is bounded by
+`RLIMIT_MEMLOCK`. Locked memory is allocated once, when a `Secret` is
+constructed, and released when it is destroyed — **not** per `Open`. The
+requirement therefore scales with the number of secrets held, a small and
+bounded figure, and not with the number of in-flight authentications: an
+authentication borrows the region the secret already holds and allocates
+nothing. Exhausting `RLIMIT_MEMLOCK` fails the allocating constructor with a
+typed error matching `enclave.ErrLockedMemoryUnavailable`, touching no other
+secret — never the process-wide purge-and-panic the memguard backing did, which
+was the login-path DoS in [#21](https://github.com/jeremyhahn/go-auth/issues/21).
 
-One locked allocation is made per concurrent `Open` and freed at the end of it,
-so the requirement scales with in-flight authentications, not with the number
-of secrets held. A container with the common 8 MiB default has room for roughly
-two thousand simultaneous opens. Deployments that authenticate concurrently
-should raise the limit — 64 MiB is generous — rather than discover it under
-load:
+A container with the common 8 MiB default holds far more small secrets than a
+process needs, but an image that drops the limit to a few pages can starve
+construction — which now fails closed with an error rather than crashing.
+Deployments should still raise the limit rather than discover it under load:
 
 ```yaml
 # docker-compose
@@ -155,16 +166,18 @@ ulimits:
 LimitMEMLOCK=64M
 ```
 
-`secret.Purge()` wraps memguard's session purge for a program's shutdown path.
-It wipes the session key, which invalidates every `Secret` in the process, so it
-belongs to the program that owns the process lifetime and never to a library —
-nothing in `go-auth` calls it.
+There is no process-wide purge, and `pkg/secret` exposes no `Purge`: wiping
+every enclave at shutdown is a deliberate, ordered act that belongs to the
+program owning the process lifetime (go-enclave's `WipeAll`), never to a
+library. This package destroys only the secrets it is handed, when their holders
+release them — `Destroy` wipes and unmaps that one region.
 
 ## FIPS 140-3
 
-memguard seals with BLAKE2b and NaCl secretbox from `golang.org/x/crypto`,
-outside the Go Cryptographic Module, so its own sealing neither participates in
-nor is restricted by `GODEBUG=fips140`. The credential itself is unaffected:
-what a FIPS build restricts is the primitive a backend keys with it.
-The package builds and its tests pass under `GOFIPS140=latest` with
-`fips140=only`.
+go-enclave holds the credential as plaintext in locked, guarded pages; it seals
+with no cipher at all, so — unlike the memguard backing this replaced, which
+sealed with BLAKE2b and NaCl secretbox from `golang.org/x/crypto` — nothing in
+the protected-memory layer touches a cryptographic primitive, approved or
+otherwise. What a FIPS build restricts is only the primitive a backend keys with
+the opened credential. The package builds and its tests pass under
+`GOFIPS140=latest` with `fips140=only`.

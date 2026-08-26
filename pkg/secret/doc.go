@@ -9,10 +9,13 @@
 // be wiped only if every copy of it is accounted for, and it can be paged to
 // swap or captured in a core dump before that happens.
 //
-// A Secret is a memguard enclave: the value is encrypted at rest under a
-// session key held in locked, guarded, non-swappable memory, and is decrypted
-// only for the duration of one Open call, into a locked buffer that is wiped
-// and unmapped before Open returns.
+// A Secret is a go-enclave MemoryEnclave: the value lives in page-aligned,
+// mlock(2)ed, non-swappable memory, fenced between inaccessible guard pages
+// with a canary and marked MADV_DONTDUMP so it is excluded from core dumps. It
+// is read only through a borrow held under the enclave's lock, for the duration
+// of one Open call. The region is held for the secret's whole lifetime rather
+// than re-mapped per Open, so a repeated or concurrent Open allocates no locked
+// memory.
 //
 //	sec, err := secret.NewString(os.Getenv("RADIUS_SECRET"))
 //	if err != nil {
@@ -57,16 +60,27 @@
 //
 // # Operational requirements
 //
-// memguard locks its pages with mlock(2), which is bounded by RLIMIT_MEMLOCK.
-// Exhausting that limit is fatal: memguard purges the session and panics
-// rather than continuing with a page that could be swapped. One locked
-// allocation is made per concurrent Open and freed at the end of it, so the
-// requirement scales with in-flight authentications, not with the number of
-// secrets held. Deployments that authenticate concurrently should raise the
-// limit — 64 MiB is generous — rather than discover it under load. A container
-// with the default 8 MiB has room for roughly two thousand simultaneous opens.
+// An enclave locks its pages with mlock(2), which is bounded by RLIMIT_MEMLOCK.
+// Locked memory is allocated once, when a Secret is constructed, and released
+// when it is destroyed — not per Open. The requirement therefore scales with
+// the number of secrets held, a small and bounded figure, and NOT with the
+// number of in-flight authentications: an authentication borrows the region the
+// secret already holds and allocates nothing. This is the difference that
+// closes the login-path memlock-exhaustion DoS (go-auth #21), where the
+// previous memguard backing mapped a fresh locked buffer on every Open and, on
+// exhausting the limit, purged every protected buffer in the process and
+// panicked. go-enclave instead returns a typed error matching
+// enclave.ErrLockedMemoryUnavailable from the constructor, touching no other
+// secret.
 //
-// Purge is exposed for the shutdown path. It wipes the session key, which
-// invalidates every Secret in the process, so it belongs to the program that
-// owns the process lifetime and never to a library.
+// Deployments should still raise RLIMIT_MEMLOCK above the kernel default rather
+// than discover it under load: size it for the credentials held plus headroom.
+// The default 8 MiB holds far more small secrets than a single process needs,
+// but a container image that drops the limit to a few pages can starve
+// construction, and that now fails closed with an error instead of crashing.
+//
+// There is no process-wide purge. Wiping every enclave at shutdown is a
+// deliberate, ordered act that belongs to the program owning the process
+// lifetime (go-enclave's WipeAll), never to a library; this package destroys
+// only the secrets it is handed, when their holders release them.
 package secret

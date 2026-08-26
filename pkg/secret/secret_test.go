@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/jeremyhahn/go-enclave"
 )
 
 func TestNewWipesTheCallersCopy(t *testing.T) {
@@ -29,33 +31,28 @@ func TestNewWipesTheCallersCopy(t *testing.T) {
 	assertOpens(t, sec, plaintext)
 }
 
-func TestOpenDestroysTheLockedBufferAfterUse(t *testing.T) {
-	// The egress half of the rule. The buffer the plaintext is decrypted into
-	// must not survive the call that asked for it, so this test drives the
-	// same enclave the way Open does and checks the buffer afterwards.
-	// Open's own callback cannot make this assertion: the slice it is handed
-	// is unmapped by the time the assertion could run, and reading it would
-	// fault rather than fail.
+func TestDestroyReleasesTheLockedRegion(t *testing.T) {
+	// The egress half of the rule, and the behavior the go-enclave backing
+	// changed. A MemoryEnclave holds its plaintext in a locked region for its
+	// whole lifetime, so dropping the reference is not enough: Destroy has to
+	// wipe and unmap that region, or the credential stays resident and the
+	// locked-memory reservation leaks for the life of the process. Capture the
+	// enclave before Destroy nils the pointer, and require it to have been
+	// released — not merely detached.
 	sec, err := NewString("shared-secret-value")
 	if err != nil {
 		t.Fatalf("NewString: %v", err)
 	}
-	defer sec.Destroy()
 
-	buf, err := sec.enclave.Open()
-	if err != nil {
-		t.Fatalf("enclave open: %v", err)
+	e := sec.enclave
+	if e == nil || !e.IsAlive() {
+		t.Fatal("enclave is not alive before Destroy")
 	}
-	if !buf.IsAlive() {
-		t.Fatal("buffer is not alive before destroy")
-	}
-	buf.Destroy()
 
-	if buf.IsAlive() {
-		t.Fatal("locked buffer still alive after destroy")
-	}
-	if got := buf.Bytes(); got != nil {
-		t.Fatalf("destroyed buffer still yields %d bytes", len(got))
+	sec.Destroy()
+
+	if e.IsAlive() {
+		t.Fatal("Destroy detached the enclave without wiping it; the credential is still resident in locked memory")
 	}
 }
 
@@ -97,7 +94,7 @@ func TestZeroValueAndNilReceiver(t *testing.T) {
 	nilSecret.Destroy() // must not panic
 }
 
-func TestOpenPropagatesAndDestroysOnError(t *testing.T) {
+func TestOpenPropagatesCallbackError(t *testing.T) {
 	sec, err := NewString("shared-secret-value")
 	if err != nil {
 		t.Fatalf("NewString: %v", err)
@@ -109,12 +106,44 @@ func TestOpenPropagatesAndDestroysOnError(t *testing.T) {
 		t.Fatalf("Open error = %v, want %v", err, sentinel)
 	}
 
-	// The secret is still usable: a failing callback releases the buffer, not
-	// the secret.
+	// The secret is still usable: a failing callback ends the borrow, not the
+	// secret.
 	assertOpens(t, sec, []byte("shared-secret-value"))
 }
 
-func TestOpenDestroysTheBufferOnPanic(t *testing.T) {
+func TestOpenReturnsCallbackErrorVerbatimEvenWhenItMatchesTheEnclaveSentinel(t *testing.T) {
+	// Open must return fn's error unchanged. The backing enclave signals its own
+	// destruction with enclave.ErrEnclaveDestroyed, and Open translates that to
+	// secret.ErrDestroyed — but only when it is the enclave refusing to run fn,
+	// never when fn itself returns (or wraps) that sentinel. Getting this wrong
+	// would tell a caller its live secret was destroyed and send it down the
+	// wrong recovery path.
+	sec, err := NewString("shared-secret-value")
+	if err != nil {
+		t.Fatalf("NewString: %v", err)
+	}
+	defer sec.Destroy()
+
+	// Bare sentinel.
+	if got := sec.Open(func([]byte) error { return enclave.ErrEnclaveDestroyed }); !errors.Is(got, enclave.ErrEnclaveDestroyed) {
+		t.Fatalf("Open returned %v, want the callback's enclave.ErrEnclaveDestroyed", got)
+	}
+	if got := sec.Open(func([]byte) error { return enclave.ErrEnclaveDestroyed }); errors.Is(got, ErrDestroyed) {
+		t.Fatal("Open reported a live secret as ErrDestroyed because the callback returned the enclave sentinel")
+	}
+
+	// Wrapped sentinel — errors.Is still matches, and it must still be treated
+	// as fn's error, not as destruction.
+	wrapped := fmt.Errorf("validate: %w", enclave.ErrEnclaveDestroyed)
+	if got := sec.Open(func([]byte) error { return wrapped }); !errors.Is(got, enclave.ErrEnclaveDestroyed) || errors.Is(got, ErrDestroyed) {
+		t.Fatalf("Open with a wrapped enclave sentinel returned %v, want the wrapped callback error", got)
+	}
+
+	// The secret is unharmed by any of the above.
+	assertOpens(t, sec, []byte("shared-secret-value"))
+}
+
+func TestOpenPropagatesPanic(t *testing.T) {
 	sec, err := NewString("shared-secret-value")
 	if err != nil {
 		t.Fatalf("NewString: %v", err)

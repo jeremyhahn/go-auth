@@ -177,7 +177,7 @@ func (c Config) validate() error {
 // secret, and reports an error if the encoding is malformed.
 //
 // The decoded bytes are the key itself, so they never reach ordinary memory:
-// NewProtectedSecret decodes straight into a memguard-backed enclave, the
+// NewProtectedSecret decodes straight into a locked enclave, the
 // length is read from there, and the enclave is destroyed on every exit path.
 // Only a count leaves this function. base32.DecodeString, which this replaces,
 // would instead hand back a plaintext key for the collector to keep.
@@ -417,7 +417,7 @@ func (a *Authenticator) Generate(counter ...uint64) (string, error) {
 //
 // It reports an error when the secret cannot be read: with Config.SecretKey
 // the key has to be opened to be encoded, and that fails if the caller has
-// destroyed it or memguard's session has been purged. A URI carrying no secret
+// destroyed it. A URI carrying no secret
 // would still look like an enrollment, which is the one thing it must not do.
 func (a *Authenticator) ProvisioningURI() (string, error) {
 	if a == nil {

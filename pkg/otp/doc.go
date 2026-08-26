@@ -76,8 +76,8 @@
 //
 // The shared secret is a long-lived key, and Config.Secret keeps it in a Go
 // string that cannot be wiped. Config.SecretKey is the replacement: the key is
-// held in a secret.Secret — a memguard enclave — and is decrypted only for the
-// moment a code is derived.
+// held in a secret.Secret — a locked, guard-paged enclave — and is read only
+// for the moment a code is derived.
 //
 //	key, err := otp.GenerateProtectedSecret() // or otp.NewProtectedSecret(base32)
 //	if err != nil {
