@@ -1034,3 +1034,50 @@ func TestDecodedSecretBits(t *testing.T) {
 		})
 	}
 }
+
+// TestSecretPathsAgreeOnTrailingGroup gives the same base32 secret to the
+// deprecated string path, Config.Secret, and to NewProtectedSecret, the
+// constructor for its replacement, over every final-group length. The two
+// must accept and reject the same inputs with the same class of error: a
+// trailing group of 1, 3 or 6 characters encodes no whole byte, and Go's
+// unpadded decoder would drop it silently, turning a corrupt stored secret
+// into a key that quietly derives the wrong codes.
+func TestSecretPathsAgreeOnTrailingGroup(t *testing.T) {
+	const suffix = "ABCDEFG"
+
+	for rem := 0; rem < 8; rem++ {
+		secretText := testSecret + suffix[:rem]
+		wantAccept := rem != 1 && rem != 3 && rem != 6
+
+		t.Run(fmt.Sprintf("len mod 8 = %d", rem), func(t *testing.T) {
+			if got := len(secretText) % 8; got != rem {
+				t.Fatalf("fixture %q has length mod 8 = %d, want %d", secretText, got, rem)
+			}
+
+			_, stringErr := NewAuthenticator(Config{Type: TypeTOTP, Secret: secretText})
+
+			key, protectedErr := NewProtectedSecret(secretText)
+			if protectedErr == nil {
+				defer key.Destroy()
+				_, protectedErr = NewAuthenticator(Config{Type: TypeTOTP, SecretKey: key})
+			}
+
+			if (stringErr == nil) != (protectedErr == nil) {
+				t.Fatalf("paths disagree on %q: string path %v, protected path %v",
+					secretText, stringErr, protectedErr)
+			}
+			if wantAccept {
+				if stringErr != nil {
+					t.Fatalf("%q rejected by both paths, want accepted: %v", secretText, stringErr)
+				}
+				return
+			}
+			if !errors.Is(stringErr, ErrInvalidConfig) {
+				t.Errorf("string path on %q = %v, want ErrInvalidConfig", secretText, stringErr)
+			}
+			if !errors.Is(protectedErr, ErrInvalidConfig) {
+				t.Errorf("protected path on %q = %v, want ErrInvalidConfig", secretText, protectedErr)
+			}
+		})
+	}
+}
