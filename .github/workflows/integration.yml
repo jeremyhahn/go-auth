@@ -16,12 +16,10 @@
 # EAP-TLS interop defect that the unit suite could not see, because the unit
 # fake shared the client's own misreading of RFC 2869 §5.14.
 #
-# There is no expected-red leg. The LDAP fixture panic that this comment used
-# to record as a standing failure (github.com/vjeantet/ldapserver v1.0.1,
-# unmaintained, "send on closed channel" on shutdown) did not reproduce in run
-# 4380 — the LDAP suite passed and the run was red on the otp leg for an
-# unrelated build-flag defect (#16). #15 tracks the fixture itself; a red run
-# here means read the job log, not assume it is that.
+# There is no expected-red leg. The LDAP suite's fixture is an in-process stub
+# server (test/integration/ldap/stub_server_test.go) that replaced the
+# unmaintained github.com/vjeantet/ldapserver and its shutdown race (#15); a red
+# run here means read the job log.
 name: Integration
 
 on:

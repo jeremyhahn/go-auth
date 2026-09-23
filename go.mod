@@ -4,6 +4,7 @@ go 1.27.0
 
 require (
 	github.com/MicahParks/keyfunc/v3 v3.7.0
+	github.com/go-asn1-ber/asn1-ber v1.5.8-0.20250403174932-29230038a667
 	github.com/go-ldap/ldap/v3 v3.4.12
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/go-tpm v0.9.8
@@ -12,7 +13,6 @@ require (
 	github.com/msteinert/pam/v2 v2.1.0
 	github.com/nwaples/tacplus v0.0.3
 	github.com/pquerna/otp v1.5.0
-	github.com/vjeantet/ldapserver v1.0.1
 	golang.org/x/oauth2 v0.36.0
 	golang.org/x/sys v0.47.0
 	gopkg.in/yaml.v3 v3.0.1
@@ -25,10 +25,8 @@ require (
 	github.com/awnumar/memcall v0.5.0 // indirect
 	github.com/boombuler/barcode v1.1.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
-	github.com/go-asn1-ber/asn1-ber v1.5.8-0.20250403174932-29230038a667 // indirect
 	github.com/google/go-tpm-tools v0.4.8 // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/lor00x/goldap v0.0.0-20180618054307-a546dffdd1a3 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/stretchr/testify v1.11.1 // indirect
 	golang.org/x/crypto v0.55.0 // indirect
