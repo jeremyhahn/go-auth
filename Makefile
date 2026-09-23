@@ -245,27 +245,90 @@ tpm2-test:
 tpm2-integration-test:
 	$(MAKE) -C $(MODULE_DIR_tpm2) integration-test
 
-SUBMODULE_TAGS := 
 # Builds never resolve through a workspace: modules come from Gitea tags
 # (dependency-resolution.md §2). Immunizes against stray go.work files.
 export GOWORK=off
 
 # ---- dependency-resolution.md targets (2026-08-13 cutover) ----
-# SUBMODULE_TAGS lists nested modules tagged in lockstep with the root
-# (release-versioning.md P2). deps-latest runs before compiling in a
-# consumer repo; release-alpha publishes this repo's next -alpha tag to dev.
-# deps-latest picks the highest tag INCLUDING -alpha prereleases — bare
-# 'go get @latest' ignores prereleases and would downgrade to legacy v0.0.0.
+# deps-latest runs before compiling in a consumer repo. It picks the highest
+# tag INCLUDING -alpha prereleases — bare 'go get @latest' ignores
+# prereleases and would downgrade to legacy v0.0.0.
 
-.PHONY: release-alpha deps-latest
+# ---- release-alpha: handbook template v2.3.9 (go-auth#22) ----
+# mk/release-alpha.mk is software/templates/make/release-alpha.mk from the
+# handbook, vendored UNMODIFIED with its regression harness
+# (mk/testdata/release-alpha-tests.sh); read its header before changing
+# anything here. Cut a release with an explicit version — the recipe refuses
+# to guess patch/minor/major (release-versioning.md):
+#   make release-alpha VERSION=vX.Y.Z-alpha
+# It first runs release-changelog (below), which folds changelog.d/ into
+# CHANGELOG.md and commits that, so the template's CHANGELOG guard finds the
+# section and the tag carries it.
+# Every git write goes through agent-git.sh (identity + signing as
+# agent-go-auth), the tag is annotated, and only that tag and the release
+# commit are pushed. go-auth is a single module, so there are no nested-module
+# lockstep tags. AGENT_GIT resolves from PATH — never bake an absolute path
+# (template v2.3.6); an unresolved value fails before VERSION is written.
+# It must be SIMPLY expanded: the template reads $(value AGENT_GIT), which
+# for a recursive `?=` is the unexpanded $(shell ...) text, not a path. A
+# bare `agent-git.sh` would not do either — `test -x` does not search PATH.
+ifeq ($(origin AGENT_GIT),undefined)
+AGENT_GIT := $(shell command -v agent-git.sh 2>/dev/null)
+endif
+REPO_NAME ?= go-auth
+RELEASE_REMOTE ?= origin
+include mk/release-alpha.mk
 
-release-alpha:
-	@V=$$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || echo v0.0.0-alpha); \
-	NEXT=$$(echo $$V | awk -F'[.-]' '{printf "v%s.%s.%d-alpha", substr($$1,2), $$2, $$3+1}'); \
-	echo $${NEXT#v} > VERSION && git add VERSION && git commit -q -m "chore(release): $$NEXT" || true; \
-	git tag $$NEXT; \
-	for s in $(SUBMODULE_TAGS); do git tag "$$s/$$NEXT"; done; \
-	git push dev HEAD --tags && echo "Tagged $$NEXT"
+# ---- release-changelog: fold changelog.d/ into CHANGELOG.md (go-auth#22) ----
+# release-versioning.md §5: a PR adds changelog.d/<issue>-<slug>.md and never
+# edits CHANGELOG.md; the release step assembles the fragments into the new
+# version's section, deletes them, and COMMITS that before tagging. This target
+# is a prerequisite of release-alpha, so the tagged commit always carries the
+# assembled section. It adds no prerequisite to the template itself, which
+# stays unmodified.
+#
+# It takes its inputs the same way the template does — `override export` of
+# $(value ...) with the public and internal names unexported — so it opens no
+# command-line injection path the template closed (see the template's v2.3.3,
+# v2.3.7 and v2.3.8 notes); the body references only $$REL_* shell
+# parameters. Every guard that can refuse the release without touching the
+# network or the tree runs here too, and the remote duplicate-tag check with
+# the same exit-code reading, so a release the template would refuse leaves no
+# local assembly commit behind. The remaining gap is the template's own: a
+# push that fails after the commit.
+#
+# With no fragments and an empty Unreleased section, or with the version's
+# section already present (a re-run), it changes and commits nothing, and the
+# template's CHANGELOG guard decides.
+.PHONY: release-changelog
+release-alpha: release-changelog
+release-changelog: override export REL_VERSION   := $(value VERSION)
+release-changelog: override export REL_REMOTE    := $(value RELEASE_REMOTE)
+release-changelog: override export REL_REPO      := $(value REPO_NAME)
+release-changelog: override export REL_AGENT_GIT := $(value AGENT_GIT)
+release-changelog:
+	@test -n "$$REL_VERSION" || { echo 'ERROR: state the version explicitly: make release-alpha VERSION=vX.Y.Z-alpha (release-versioning.md decides patch/minor/major — the recipe refuses to guess)'; exit 1; }
+	@printf '%s' "$$REL_VERSION" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-alpha$$' || { echo "ERROR: VERSION is not of the form vX.Y.Z-alpha (no leading zeroes): $$REL_VERSION"; exit 1; }
+	@test "$$(git rev-parse --abbrev-ref HEAD)" = main || { echo "ERROR: releases are cut from main; you are on $$(git rev-parse --abbrev-ref HEAD)."; exit 1; }
+	@test -n "$$REL_REPO" || { echo 'ERROR: REPO_NAME is empty — set it to the literal repo name in the Makefile'; exit 1; }
+	@test -x "$$REL_AGENT_GIT" || { echo 'ERROR: AGENT_GIT does not point at an executable agent-git.sh — every git write in this recipe signs through it, and a bad path must fail before CHANGELOG.md is assembled'; exit 1; }
+	@test -n "$$REL_REMOTE" || { echo 'ERROR: RELEASE_REMOTE is empty — set it to the Gitea remote'; exit 1; }
+	@git remote get-url "$$REL_REMOTE" >/dev/null 2>&1 || { echo "ERROR: no git remote named $$REL_REMOTE. Set RELEASE_REMOTE to the Gitea remote"; exit 1; }
+	@! git rev-parse -q --verify "refs/tags/$$REL_VERSION" >/dev/null || { echo "ERROR: tag $$REL_VERSION already exists locally"; exit 1; }
+	@rc=0; git ls-remote --exit-code --tags "$$REL_REMOTE" "refs/tags/$$REL_VERSION" >/dev/null 2>&1 || rc=$$?; \
+	case "$$rc" in \
+	  0) echo "ERROR: tag $$REL_VERSION already exists on $$REL_REMOTE"; exit 1 ;; \
+	  2) : ;; \
+	  *) echo "ERROR: could not reach $$REL_REMOTE to check whether tag $$REL_VERSION exists. Refusing to continue: an unreachable remote is not an absent tag"; exit 1 ;; \
+	esac
+	@test -z "$$(git status --porcelain)" || { echo 'ERROR: working tree not clean'; exit 1; }
+	@sh scripts/changelog-assemble.sh "$${REL_VERSION#v}"
+	@if [ -n "$$(git status --porcelain)" ]; then \
+	  "$$REL_AGENT_GIT" "$$REL_REPO" add -A -- CHANGELOG.md changelog.d && \
+	  "$$REL_AGENT_GIT" "$$REL_REPO" commit -m "docs(changelog): assemble $$REL_VERSION"; \
+	fi
+
+.PHONY: deps-latest
 
 deps-latest:
 	@GOWORK=off sh -c ' \
