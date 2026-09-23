@@ -33,6 +33,18 @@ the release versioning of the company conventions (`release-versioning.md`).
   `OpenString`, `Scratch`, `Lock`, `Size` and the redaction behaviour are
   unchanged, so backends are unaffected.
 
+### Fixed
+
+- CI: the `Integration Suites` leg was red on `main` from `2c0f220` because
+  that commit raised the `go` directive to `1.26.7` while all seven
+  integration images still built `FROM golang:1.26.6-bookworm`, and those
+  images run with `GOTOOLCHAIN=local`, so no Docker-backed suite could build
+  the module ([#25]). The Go 1.27.0 move put go.mod, the images and the
+  workflow back in step. `test/ci` now fails when any `golang:` base image
+  under `pkg/` or `integration.yml`'s `GO_VERSION` differs from the go
+  directive, so the per-push gate catches this drift instead of the nightly
+  integration run.
+
 ### Removed — BREAKING
 
 - **BREAKING — `pkg/secret`: `Purge` and `ErrOpen` are removed, with no
@@ -50,6 +62,7 @@ the release versioning of the company conventions (`release-versioning.md`).
   process owner, never to this library.
 
 [#21]: https://github.com/jeremyhahn/go-auth/issues/21
+[#25]: https://github.com/jeremyhahn/go-auth/issues/25
 [#26]: https://github.com/jeremyhahn/go-auth/issues/26
 
 ## [0.2.0-alpha] - 2026-08-19
