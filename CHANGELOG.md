@@ -8,6 +8,16 @@ the release versioning of the company conventions (`release-versioning.md`).
 
 ### Changed
 
+- The module's `go` directive is raised from `1.26.7` to `1.27.0`, the
+  portfolio toolchain (owner ruling 2026-09-01); consumers now need Go 1.27.
+  CI lints with golangci-lint `v2.13.2`, moved in the same change because
+  `v2.12.2` cannot lint Go 1.27, and on Gitea it uses the ci-runner image's
+  baked golangci-lint, gosec and govulncheck instead of installing over them,
+  failing if a tool is absent or golangci-lint is not the pinned version
+  ([#26]). The checks are `make verify-lint-tool` and
+  `make verify-security-tools` (`scripts/verify-ci-tools.sh`); the pin lives
+  in the Makefile, and `test/ci` covers the fail-closed paths and the
+  workflow's wiring.
 - `pkg/secret`: the protected-memory backing moved from
   [memguard](https://github.com/awnumar/memguard) to
   [go-enclave](https://github.com/jeremyhahn/go-enclave) `v0.3.0-alpha`
@@ -40,6 +50,7 @@ the release versioning of the company conventions (`release-versioning.md`).
   process owner, never to this library.
 
 [#21]: https://github.com/jeremyhahn/go-auth/issues/21
+[#26]: https://github.com/jeremyhahn/go-auth/issues/26
 
 ## [0.2.0-alpha] - 2026-08-19
 

@@ -1,6 +1,6 @@
 module github.com/jeremyhahn/go-auth
 
-go 1.26.7
+go 1.27.0
 
 require (
 	github.com/MicahParks/keyfunc/v3 v3.7.0
@@ -15,6 +15,7 @@ require (
 	github.com/vjeantet/ldapserver v1.0.1
 	golang.org/x/oauth2 v0.36.0
 	golang.org/x/sys v0.47.0
+	gopkg.in/yaml.v3 v3.0.1
 	layeh.com/radius v0.0.0-20231213012653-1006025d24f8
 )
 

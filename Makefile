@@ -82,7 +82,9 @@ test-race:
 #
 # The tools are not installed by these targets — devops.md §4 forbids a make
 # target mutating the developer's machine. A missing tool prints how to get it
-# and the target skips; CI installs all of them explicitly.
+# and the target skips. CI does not install them either: it uses the copies
+# baked into the ci-runner image and runs verify-security-tools first, which
+# fails when one is absent, so a skip cannot turn the gate green (go-auth#26).
 
 # CI passes GOSEC_EXTRA="-fmt=sarif -out=gosec.sarif" so the SARIF it uploads
 # to code scanning comes from the same flags a developer runs, not a second
@@ -125,6 +127,32 @@ trivy-fs:
 
 .PHONY: security
 security: gosec govulncheck mod-verify trivy-fs
+
+# ---- CI tool verification (go-auth#26) ----
+#
+# The golangci-lint this gate is judged by. It moves in the SAME change as the
+# go directive, never ahead of or behind it: v2.12.2 cannot lint Go 1.27, and
+# v2.13.x was measured to panic on Go 1.26 (nilness "unhandled builtin
+# recover"). Documented pin (devops.md §9, the "pin specifically documented,
+# in place, with the reason" clause). It must equal the version baked into the
+# ci-runner image; verify-lint-tool fails on any other version rather than
+# installing over it. test/ci checks this pin against go.mod.
+GOLANGCI_LINT_VERSION := 2.13.2
+
+.PHONY: print-golangci-lint-version
+print-golangci-lint-version:
+	@echo $(GOLANGCI_LINT_VERSION)
+
+# Fail closed if golangci-lint is absent or not the pinned version. Never
+# installs; see scripts/verify-ci-tools.sh.
+.PHONY: verify-lint-tool
+verify-lint-tool:
+	@$(SHELL) scripts/verify-ci-tools.sh lint $(GOLANGCI_LINT_VERSION)
+
+# Fail closed if gosec or govulncheck is absent, and log the versions that ran.
+.PHONY: verify-security-tools
+verify-security-tools:
+	@$(SHELL) scripts/verify-ci-tools.sh security
 
 # Everything a pull request must pass (devops.md §4). Includes security.
 .PHONY: ci

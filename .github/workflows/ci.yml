@@ -30,7 +30,7 @@ permissions:
   security-events: write
 
 env:
-  GO_VERSION: '1.26.7'
+  GO_VERSION: '1.27.0'
   # pkg/pam has a //go:build cgo file that needs libpam headers. Building with
   # cgo off keeps every job independent of the runner image's dev packages;
   # the unit-test job is the documented exception (see below).
@@ -48,9 +48,22 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache: true
 
-      # devops.md §9: tools installed in CI install @latest, never a pin.
-      - name: Install golangci-lint
-        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2  # PINNED (devops.md §9, documented): v2.13.0 (2026-08-19) ships honnef.co/go/tools v0.8.0-rc.1 whose nilness pass panics ("unhandled builtin recover", crashes on sentry-go) — red gate with zero findings. Unpin when golangci-lint ships a non-rc staticcheck that passes on main.
+      # The ci-runner image bakes golangci-lint, and that copy is the one used.
+      # Installing over it swapped the baked binary for whatever this file
+      # named at run time (go-auth#26), which is how a stale pin undid the
+      # image's Go 1.27 fix. No network fallback on Gitea: an absent or
+      # different binary means the image is wrong, and a fallback install would
+      # hide exactly that. github.com-hosted runners carry no baked image, so
+      # there, and only there, the pinned version is installed.
+      - name: Install golangci-lint (github.com only; Gitea uses the baked binary)
+        if: github.server_url == 'https://github.com'
+        run: go install "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v$(make -s print-golangci-lint-version)"
+
+      # Fails if golangci-lint is absent or not the Makefile's pinned version.
+      # Unconditional, on both hosts: test/ci asserts it runs before
+      # `make lint` and that no install step reaches a Gitea runner.
+      - name: Verify golangci-lint version
+        run: make verify-lint-tool
 
       # `make lint` is gofmt -l, go vet and the golangci-lint umbrella, which
       # is the same command a developer runs (devops.md §4). The security
@@ -140,11 +153,25 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache: true
 
-      - name: Install gosec
-        run: go install github.com/securego/gosec/v2/cmd/gosec@latest
+      # gosec and govulncheck are baked into the ci-runner image. Installing
+      # them here was a network dependency that could fail and leave the job
+      # red with no verdict on the code, and @latest scanned one commit with
+      # different analysers on different days (go-auth#26). On Gitea the baked
+      # binaries are required; github.com-hosted runners have no image, so
+      # they install there (devops.md §9: @latest, no pin).
+      - name: Install gosec and govulncheck (github.com only; Gitea uses the baked binaries)
+        if: github.server_url == 'https://github.com'
+        run: |
+          go install github.com/securego/gosec/v2/cmd/gosec@latest
+          go install golang.org/x/vuln/cmd/govulncheck@latest
 
-      - name: Install govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      # The Makefile targets print "not installed, skipping" and exit 0 when a
+      # tool is missing, which would turn this job green with nothing scanned,
+      # so presence is asserted first. `gosec --version` prints "dev" for any
+      # go-installed build; the target logs /etc/ci-runner-tools.txt, the
+      # image's record of what it baked, so the log says what actually ran.
+      - name: Verify security tools
+        run: make verify-security-tools
 
       # The Makefile carries the flags and the justification for every
       # suppression (devops.md §4/§8). GOSEC_EXTRA only adds the SARIF output
