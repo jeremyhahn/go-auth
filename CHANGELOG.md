@@ -6,6 +6,322 @@ the release versioning of the company conventions (`release-versioning.md`).
 
 ## [Unreleased]
 
+## [0.4.0-alpha] - 2026-10-01
+
+### Changed
+
+- **BREAKING — the `fips140only` build tag no longer exists for RADIUS,
+  TACACS+, the YubiCloud validator or `pkg/api` ([#20]).** FIPS boundary
+  ruling 1 mandates one FIPS-capable artifact: build with `GOFIPS140=latest`
+  and activate FIPS at deployment with `GODEBUG=fips140=only`. `pkg/radius`,
+  `pkg/tacacs`, the YubiCloud `HTTPValidator` and the RADIUS/TACACS+ assertions
+  in `pkg/api` are now in every build. Anyone building with
+  `-tags fips140only` gets these packages linked in, and must handle the
+  runtime refusal below instead of relying on their absence.
+
+  | Before | After |
+  |---|---|
+  | `go build -tags fips140only ./...` removed RADIUS/TACACS+ | `GOFIPS140=latest go build ./...`; constructors return `ErrFIPSUnsupported` under `GODEBUG=fips140=only` |
+  | `yubikey.NewAuthenticator(cfg, nil)` → `errSystemValidatorUnavailable` under the tag | → `yubikey.ErrFIPSUnsupported` under FIPS activation; the YubiCloud default is always installed by `init()` |
+  | absence of `pkg/radius` / `pkg/tacacs` at link time | `errors.Is(err, radius.ErrFIPSUnsupported)` / `errors.Is(err, tacacs.ErrFIPSUnsupported)` at startup |
+
+- `pkg/tacacs`: `NewAuthenticator` returns the
+  new typed `tacacs.ErrFIPSUnsupported` when FIPS is activated, ahead of every
+  argument check and before the shared secret is sealed or locked, and
+  `Authenticate` returns it before building a packet ([#20]). RFC 8907 §4.5
+  obfuscates every packet body with an MD5 keystream, so without the refusal a
+  FIPS-activated process panicked inside `crypto/md5` on the first login. Same
+  shape as `radius.ErrFIPSUnsupported`.
+- `pkg/yubikey`: new typed `yubikey.ErrFIPSUnsupported` ([#20]). Under FIPS
+  activation `NewAuthenticator` returns it — ahead of the configuration checks
+  — when the validator it would use is the YubiCloud `HTTPValidator`, passed
+  explicitly or as the package default, and `HTTPValidator.Validate`
+  returns it before any request is built. Yubico
+  Validation Protocol 2.0 signs with HMAC-SHA-1. An injected `OTPValidator`
+  for an approved service keeps working under FIPS activation.
+- CI's `fips` job no longer passes `-tags fips140only` ([#20]). It builds and
+  tests the whole module under `GOFIPS140=latest` and `GODEBUG=fips140=only`,
+  so it proves every backend either works or refuses with its typed error.
+- **BREAKING:** `pkg/otp`: the OTP seed lives only in a go-enclave
+  `*enclave.MemoryEnclave`, as `Config.Seed` ([#46], owner ruling go-auth#3,
+  2026-10-01). The plaintext `Config.Secret string` path is removed outright, as
+  is `Config.SecretKey *secret.Secret`; `pkg/otp` no longer imports
+  `pkg/secret`.
+- **BREAKING:** `pkg/otp`: `NewAuthenticator` takes ownership of `Config.Seed`
+  on every return path — it destroys the seed itself when the configuration is
+  refused — and the new `Authenticator.Close` destroys it otherwise. Callers
+  must not use or destroy a seed after handing it over, and two authenticators
+  over one key need two enclaves.
+- **BREAKING:** `pkg/otp`: `GenerateSecret` (string), `NewProtectedSecret` and
+  the deprecated `GetProvisioningURI` are removed. `DecodeSeed` replaces
+  `NewProtectedSecret`; `GenerateProtectedSecret` and `EncodeSecret` keep their
+  names and now return / take `*enclave.MemoryEnclave`.
+- **BREAKING:** `pkg/otp`: the `fips140only` build tag is gone from the package
+  (go-auth#20). FIPS 140-only mode is detected at runtime by probing
+  HMAC-SHA-1, as `pkg/radius` does; under it `Config.Algorithm` must be set
+  explicitly to SHA-256 or SHA-512 — `NewAuthenticator` refuses SHA-1, an
+  omitted algorithm, and seeds under 112 bits with the new typed
+  `ErrFIPSUnsupported` (also matching `ErrInvalidConfig`). An omitted
+  algorithm is refused rather than defaulted so that activating FIPS cannot
+  silently change the digest existing enrollments are validated with. Outside
+  FIPS the RFC 6238 default, SHA-1, is unchanged. The same binary serves both
+  deployments.
+- `pkg/otp`: `Generate` on an HOTP authenticator without a counter now returns
+  the sentinel `ErrCounterRequired`.
+- `github.com/pquerna/otp` is removed from the module, and
+  `github.com/boombuler/barcode` with it. HOTP (RFC 4226) and TOTP (RFC 6238),
+  including the `otpauth://` Key URI, are implemented in-repo and checked
+  against the RFC 4226 Appendix D and RFC 6238 Appendix B vectors.
+
+Migration (go-quicbaas and other `pkg/otp` consumers):
+
+| Before | After |
+|---|---|
+| `otp.Config{Secret: base32}` | `seed, err := otp.DecodeSeed(base32)`; `otp.Config{Seed: seed}` |
+| `otp.Config{SecretKey: s}` (`*secret.Secret`) | `otp.Config{Seed: seed}` (`*enclave.MemoryEnclave`) |
+| `otp.GenerateSecret()` → `string` | `otp.GenerateProtectedSecret()` → `*enclave.MemoryEnclave` |
+| `otp.GenerateProtectedSecret()` → `*secret.Secret` | same name → `*enclave.MemoryEnclave` |
+| `otp.NewProtectedSecret(base32)` | `otp.DecodeSeed(base32)` |
+| `otp.EncodeSecret(*secret.Secret)` | `otp.EncodeSecret(*enclave.MemoryEnclave)` |
+| `defer key.Destroy()` after `NewAuthenticator` | `defer auth.Close()` — the authenticator owns the seed |
+| `auth.GetProvisioningURI()` → `string` | `auth.ProvisioningURI()` → `(string, error)` |
+| `-tags fips140only` build of `pkg/otp` (omitted algorithm → SHA-256) | no tag; activate with `GODEBUG=fips140=only`; set `Algorithm: otp.AlgorithmSHA256` or `AlgorithmSHA512` explicitly; handle `otp.ErrFIPSUnsupported` |
+| `otp.Algorithm*`, `otp.TypeTOTP`, `otp.TypeHOTP` | unchanged |
+- **BREAKING:** `pkg/oauth`: `Config.ClientSecret` is a go-enclave
+  `*enclave.MemoryEnclave`; the `string` field is removed ([#47]).
+  `NewAuthenticator` takes ownership of it on every return path — it destroys
+  the enclave itself before returning an error — and `Authenticator.Close`
+  destroys it. Requests made after `Close` fail with the new
+  `ErrCredentialUnavailable` instead of going out without the secret.
+- **BREAKING:** `pkg/oauth`: `Token.AccessToken`, `Token.RefreshToken` and
+  `Token.IDToken` are no longer `string` fields. They are accessor methods
+  returning the `*enclave.MemoryEnclave` the `Token` owns (nil when the provider
+  issued none), and `Token.Destroy()` wipes all three. `TokenType`, `Expiry`
+  and `Scopes` stay plain fields ([#47]).
+- **BREAKING:** `pkg/oauth`: every method that took a token or password as a
+  `string` takes a borrowed `*enclave.MemoryEnclave` and never destroys it:
+  `RefreshToken(ctx, refreshToken)`, `ValidateToken(ctx, token)`,
+  `AuthenticatePassword(ctx, username, password)`,
+  `ValidateIDToken(ctx, idToken, nonce, accessToken)` and
+  `GetUserInfo(ctx, accessToken)` ([#47]).
+- **BREAKING:** `pkg/oauth`: the string PKCE path is removed.
+  `BuildAuthURL(state, additionalParams)` builds a URL without PKCE and returns
+  no verifier; `ExchangeAuthorizationCode(ctx, code)` exchanges without one.
+  PKCE is `BuildAuthURLPKCE` / `ExchangeAuthorizationCodePKCE`, unchanged.
+  `NewVerifier` takes an `*enclave.MemoryEnclave` (and owns it) instead of a
+  `string` ([#47]).
+- **BREAKING:** `pkg/oauth`: `TokenCache.Set` returns an `error` — the claims
+  could not be sealed into locked memory — and `ValidateToken` fails rather
+  than caching them in the clear ([#47]). Both caches are closed for good by
+  `Close`: an insert after it — including one from a `ValidateToken` or
+  `GetUserInfo` that was in flight across `Close` — allocates nothing and
+  fails with the new `ErrCacheClosed`. Expired entries are reclaimed before a
+  new entry is allocated, and a read that finds an expired entry destroys it,
+  so a locked-memory budget filled with dead entries cannot wedge either cache.
+  Both caches also evict their least-recently-used entry for capacity before
+  allocating, not after, and if locked memory is still refused they evict one
+  more entry and retry once before failing closed, so a budget full of live
+  entries does not make `ValidateToken` reject valid tokens.
+- `pkg/oauth`: the UserInfo cache is bounded. It was an unbounded map, so it
+  could grow locked memory without limit for anyone able to present distinct
+  access tokens. New `UserInfoConfig.CacheMaxSize` (default 1000, set by
+  `Config.Validate` and `DefaultOIDCConfig`) caps it with LRU eviction. The
+  claims cache and the UserInfo cache now share one implementation, so they
+  share every lifecycle rule above ([#47]).
+- `pkg/oauth` no longer imports `pkg/secret` or `golang.org/x/oauth2`; the
+  PKCE verifier is generated with go-enclave directly (`NewMemoryEnclaveSized`
+  filled from `crypto/rand` inside `WithBytes`, then frozen), and the unused
+  `x/oauth2` config is gone, so the module drops that dependency ([#47]).
+  `Authenticator.Authenticate(ctx, username, token string)`, the `pkg/api`
+  adapter, keeps its signature and seals the token on arrival.
+
+Migration for a consumer of the client-credentials / authorization-code /
+refresh surface (go-recountly `pkg/qbo/oauth.go`):
+
+| Before | After |
+|---|---|
+| `oauth.Config{ClientSecret: cfg.ClientSecret}` | `secret, err := enclave.NewMemoryEnclaveFromString(cfg.ClientSecret)` (or `enclave.NewMemoryEnclave(b)` from a `[]byte`, which wipes `b`), then `oauth.Config{ClientSecret: secret}` — do not destroy or reuse `secret` afterwards |
+| `oauth.NewAuthenticator(cfg)` | unchanged; now owns `cfg.ClientSecret`, also on error |
+| `(*oauth.Authenticator).Close()` | unchanged; now also destroys the client secret and both caches |
+| `auth.RefreshToken(ctx, refreshToken)` with a `string` | `auth.RefreshToken(ctx, rt)` with `rt *enclave.MemoryEnclave` — pass `tok.RefreshToken()` directly, or seal a stored value with `enclave.NewMemoryEnclaveFromString`; it is borrowed, destroy it yourself |
+| `token.AccessToken` (`string`) | `token.AccessToken().WithBytes(func(b []byte) error { … })`; `OpenString()` only at a boundary that demands a string |
+| `token.RefreshToken` (`string`) | `token.RefreshToken()` (nil if none issued); read it inside `WithBytes` to persist it |
+| `*oauth.Token` | add `defer token.Destroy()` once its credentials are used or copied out |
+| `oauth.CustomProvider`, `oauth.ProviderConfig` | unchanged |
+| `oauth.FlowAuthorizationCode`, `oauth.FlowClientCredentials` | unchanged |
+- **BREAKING:** one credential type across the library: every password, PIN,
+  one-time password, shared secret, service-account password and API key is a
+  go-enclave `*enclave.MemoryEnclave` ([#48], owner ruling on go-auth#3,
+  2026-10-01). Every plaintext-`string` credential path is removed, with no
+  deprecated shims. Usernames, DNs and client IDs stay `string`.
+- **BREAKING:** the common authenticator interface is
+  `Authenticate(ctx, username string, password *enclave.MemoryEnclave) error`
+  in `pkg/pam`, `pkg/ldap`, `pkg/radius`, `pkg/tacacs` and the `pkg/oauth`
+  adapter; `pkg/pkcs11`, `pkg/tpm2`, `pkg/yubikey` and `pkg/otp` take their
+  single credential as `*enclave.MemoryEnclave`. Per-call credentials are
+  **borrowed**: the callee reads them inside `WithBytes` and never destroys
+  them. A nil credential fails with the package's typed sentinel; a destroyed
+  one fails with that sentinel joined with `enclave.ErrEnclaveDestroyed` ([#48]).
+- **BREAKING:** `pkg/api`: `Handler.Authenticate` and `HandlerFunc` take
+  `(ctx, username string, password, otp *enclave.MemoryEnclave)`;
+  `LoginRequest.Password` and `LoginRequest.OTP` are `*enclave.MemoryEnclave`.
+  `Service.Login` **takes ownership** of both and destroys them when the
+  attempt completes — on success, on failure and on every refusal
+  (`ErrNoBackends`, `ErrMissingCredentials`, `ErrBackendNotFound`, a canceled
+  context) ([#48]).
+- **BREAKING:** shared and service secrets are enclave-only and **owned** by
+  the authenticator: `radius.NewAuthenticator`, `tacacs.NewAuthenticator`,
+  `ldapauth.WithServiceAccount` and `yubikey.Config.APIKey` take an
+  `*enclave.MemoryEnclave`, the constructor destroys it on every return path
+  (including `ErrFIPSUnsupported` and argument refusals), and the new `Close()
+  error` on each authenticator destroys it once every in-flight call has
+  returned — a YubiCloud response that arrives after `Close` was called is
+  still verified with the API key; use after `Close` fails with the package's
+  new `ErrClosed` ([#48]).
+- **BREAKING:** `pkg/yubikey`: `OTPValidator.Validate` is
+  `Validate(ctx, clientID string, apiKey, otp *enclave.MemoryEnclave) error`;
+  `ProtectedOTPValidator` and `HTTPValidator.ValidateProtected` are removed
+  ([#48]).
+- **BREAKING:** collaborator interfaces carry enclaves:
+  `pam.Session.Authenticate(ctx, password *enclave.MemoryEnclave)`,
+  `pkcs11.Session.Login(ctx, pin *enclave.MemoryEnclave)`, and
+  `tpm2.TPMSession.Unseal(ctx, handle, password *enclave.MemoryEnclave)
+  (*enclave.MemoryEnclave, error)` — the unsealed data now comes back in an
+  enclave, which `tpm2.Authenticator.Authenticate` destroys before returning,
+  on every path ([#48]).
+- **BREAKING:** `pkg/secret` is deleted, with `docs/secret.md`. go-enclave is
+  the portfolio's single implementation ([#48]); see `docs/credentials.md`.
+- `pkg/tacacs` now has a release point for its shared secret. tacplus v0.0.3
+  reads `ConnConfig.Secret` only on the goroutine that calls `SendAuthenStart`
+  / `Continue`, so the authenticator lends it the locked pages for one
+  `Authenticate` and `Close` destroys them; the never-released locked copy is
+  gone ([#48]).
+- New typed sentinels replace ad-hoc errors on the touched paths:
+  `ldapauth.ErrEmptyURL`, `ErrMissingCredentials`, `ErrServicePasswordRequired`,
+  `ErrClosed`; `radius.ErrEmptyAddress`, `ErrMissingSharedSecret`,
+  `ErrMissingUsername`, `ErrMissingPassword`, `ErrClosed`; the same five in
+  `pkg/tacacs`; `pam.ErrEmptyServiceName`, `ErrMissingUsername`,
+  `ErrMissingPassword`; `pkcs11.ErrNilAuthenticator`, `ErrMissingPIN`,
+  `ErrMissingModulePath`, `ErrMissingTokenSelector`;
+  `yubikey.ErrNilAuthenticator`, `ErrMissingClientID`, `ErrMissingAPIKey`,
+  `ErrMissingOTP`, `ErrClosed`, `ErrResponseNonceMismatch`,
+  `ErrResponseOTPMismatch`, `ErrResponseSignatureInvalid`; `otp.ErrMissingCode`
+  (joined with `ErrInvalidCode`) ([#48]).
+
+Migration:
+
+| Before | After |
+|---|---|
+| `api.LoginRequest{Password: "pw", OTP: "123456"}` | `api.LoginRequest{Password: pw, OTP: code}` with `*enclave.MemoryEnclave`s; `Login` destroys them — build fresh ones per request |
+| `api.HandlerFunc(func(ctx, user, password, otp string) error)` | `api.HandlerFunc(func(ctx context.Context, user string, password, otp *enclave.MemoryEnclave) error)` |
+| `pam.(*Authenticator).Authenticate(ctx, user, "pw")` | `Authenticate(ctx, user, pw)` — `pw` borrowed |
+| `pam.Session.Authenticate(ctx, password string)` | `Authenticate(ctx, password *enclave.MemoryEnclave)` |
+| `ldapauth.WithServiceAccount(dn, "pw")` | `ldapauth.WithServiceAccount(dn, pw)` — the authenticator owns `pw`; `defer auth.Close()` |
+| `ldapauth.WithProtectedServiceAccount(dn, *secret.Secret)` | `ldapauth.WithServiceAccount(dn, *enclave.MemoryEnclave)` |
+| `ldapauth.(*Authenticator).Authenticate(ctx, user, "pw")` | `Authenticate(ctx, user, pw)` |
+| `radius.NewAuthenticator(addr, "secret", opts...)` | `radius.NewAuthenticator(addr, secret, opts...)` with `secret *enclave.MemoryEnclave`, owned; `defer auth.Close()` |
+| `radius.NewAuthenticatorWithSecret(addr, *secret.Secret, opts...)` | `radius.NewAuthenticator(addr, *enclave.MemoryEnclave, opts...)` |
+| `radius.(*Authenticator).Authenticate(ctx, user, "pw")` | `Authenticate(ctx, user, pw)`; nil `pw` with EAP-TLS |
+| `tacacs.NewAuthenticator(addr, "secret", opts...)` | `tacacs.NewAuthenticator(addr, secret, opts...)`, owned; `defer auth.Close()` |
+| `tacacs.NewAuthenticatorWithSecret(addr, *secret.Secret, opts...)` | `tacacs.NewAuthenticator(addr, *enclave.MemoryEnclave, opts...)` |
+| `tacacs.(*Authenticator).Authenticate(ctx, user, "pw")` | `Authenticate(ctx, user, pw)` |
+| `pkcs11.(*Authenticator).Authenticate(ctx, "1234")` | `Authenticate(ctx, pin)` |
+| `pkcs11.Session.Login(ctx, pin string)` | `Login(ctx, pin *enclave.MemoryEnclave)` |
+| `tpm2.(*Authenticator).Authenticate(ctx, "pw")` | `Authenticate(ctx, pw)` |
+| `tpm2.TPMSession.Unseal(ctx, h, password string) ([]byte, error)` | `Unseal(ctx, h, password *enclave.MemoryEnclave) (*enclave.MemoryEnclave, error)` — return `enclave.NewMemoryEnclave(rsp.OutData.Buffer)` |
+| `yubikey.Config{APIKey: "key"}` / `Config{ProtectedAPIKey: *secret.Secret}` | `yubikey.Config{APIKey: key}` with `key *enclave.MemoryEnclave`, owned; `defer auth.Close()` |
+| `yubikey.OTPValidator.Validate(ctx, clientID, apiKey, otp string)` | `Validate(ctx, clientID string, apiKey, otp *enclave.MemoryEnclave)` |
+| `yubikey.ProtectedOTPValidator`, `HTTPValidator.ValidateProtected` | removed — `OTPValidator` / `HTTPValidator.Validate` |
+| `yubikey.(*Authenticator).Authenticate(ctx, "otp")` | `Authenticate(ctx, otp)` |
+| `otp.(*Authenticator).Authenticate(ctx, "123456")` | `Authenticate(ctx, code)` |
+| `otp.(*Authenticator).ValidateCounter(ctx, "123456", n)` | `ValidateCounter(ctx, code, n)` |
+| `oauth.(*Authenticator).Authenticate(ctx, user, token string)` | `Authenticate(ctx, user string, token *enclave.MemoryEnclave)` |
+| `secret.New(b)` / `secret.NewString(s)` / `secret.NewRandom(n)` | `enclave.NewMemoryEnclave(b)` / `enclave.NewMemoryEnclaveFromString(s)` / `enclave.NewMemoryEnclaveSized(n)` filled inside `WithBytes`, then `Freeze` |
+| `(*secret.Secret).Open(fn)` / `OpenString(fn)` | `(*enclave.MemoryEnclave).WithBytes(fn)` |
+| `secret.Scratch(n, fn)` | `enclave.NewMemoryEnclaveSized(n)` + `WithBytes` + `Destroy` |
+| `(*secret.Secret).Lock()` / `secret.Locked` | removed — no remaining user |
+| `secret.ErrDestroyed` | `enclave.ErrEnclaveDestroyed` |
+
+### Security
+
+- `pkg/otp`: the OTP seed now has no plaintext form outside locked memory for
+  its whole lifetime. It is generated or decoded straight into locked pages,
+  borrowed through `WithBytes` for exactly one HMAC per code, and wiped by
+  `Close`. Codes are compared in constant time, and a TOTP check evaluates
+  every step in its window. The remaining residues are the documented ones:
+  `ProvisioningURI` and `EncodeSecret` return the seed as a string because QR
+  rendering and storage need it, and `DecodeSeed`'s input is a string the
+  caller already holds ([#46]).
+- `pkg/otp`: a FIPS-activated process can no longer be made to panic in
+  `crypto/hmac` by an OTP configuration. SHA-1, an omitted algorithm and short
+  seeds are refused at construction, and the derivation re-checks before every
+  HMAC ([#46]).
+- `pkg/oauth` holds no OAuth credential as a plaintext `string` ([#47]): the
+  client secret, the access, refresh and ID tokens, a validated bearer token,
+  a password, the PKCE verifier, and the validated-claims and UserInfo caches
+  all live in go-enclave locked memory. Cache entries are destroyed on
+  eviction, expiry, overwrite, `ClearCache` and `Close`; the UserInfo cache is
+  now keyed by the access token's SHA-256 fingerprint rather than the token.
+  Token request bodies are assembled in a locked scratch enclave and token
+  responses are decoded straight into enclaves.
+  `enclave.ErrLockedMemoryUnavailable` propagates; nothing falls back to
+  ordinary memory. What remains is documented at each site: residue R5
+  (`net/http` / `crypto/tls` internal copies, and the Basic and Bearer
+  `Authorization` header strings), the golang-jwt parse boundary, and the
+  `pkg/api` string boundary that #48 removes.
+- `pkg/oauth`: OIDC ID-token validation no longer fails open ([#47]):
+  - `at_hash` is checked whenever an access token is supplied. Only a nil
+    enclave means "not supplied"; a destroyed one is rejected instead of
+    silently skipping the check.
+  - An `at_hash` that cannot be checked rejects the token. The error is
+    `ErrOIDCInvalidAtHash` joined with the new
+    `ErrOIDCUnsupportedAtHashAlgorithm`; the check is never skipped.
+  - The `at_hash` hash follows the verified token's JWS `alg`, as OIDC Core
+    §3.1.3.6 requires: SHA-256/384/512 for the RS/ES/PS families, SHA-512 for
+    EdDSA. Before, SHA-256 was always used, so correct RS384/RS512/ES384/ES512
+    tokens were rejected and wrong SHA-256 `at_hash` values on them accepted.
+  - ID tokens are parsed with the same asymmetric algorithm allowlist as
+    access tokens (one shared list), so `none` and HMAC-signed ID tokens are
+    refused (alg confusion).
+- No credential in go-auth is a plaintext Go `string` any more ([#48]). The
+  places where a third-party API still forces plaintext out of locked memory
+  are finite and enumerated in `docs/security/credential-residues.md` (R1
+  go-ldap bind, R2 layeh MD5/HMAC-MD5 state, R3 tacplus, R5 `net/http` /
+  `crypto/tls` / golang-jwt, R6 msteinert/pam and miekg/pkcs11 cgo copies, R7
+  configuration origin, R8 OTP enrollment text and codes; R4 closed by #46).
+  Where a dependency demands a `string`, go-auth lends one backed by a buffer
+  it zeroes as soon as the dependency returns, instead of an immutable copy.
+- CI gate: `test/ci/credential_residue_test.go` enumerates every
+  `WithBytes` / `OpenString` / `Open` call and every
+  `credential.WithTransientString` call in `pkg/` — cgo files included — and
+  fails on any site not listed in `test/ci/testdata/credential-residues.allow`
+  with a residue ID, or listed but gone ([#48]).
+- RADIUS PAP passwords are obfuscated straight out of their borrow
+  (`rfc2865.UserPassword_Set`); no plaintext copy of the password is made.
+- TPM 2.0 unsealed material no longer reaches the garbage-collected heap
+  through go-auth: it comes back in an enclave and is destroyed before
+  `Authenticate` returns ([#48]).
+- `MemoryEnclave` is locked-only (mlock, guard pages, canary, wipe — no
+  cryptography) and fails closed with `enclave.ErrLockedMemoryUnavailable`; no
+  path falls back to ordinary memory.
+
+### Fixed
+
+- `pkg/radius`: a RADIUS/TLS exchange cancelled by its caller now always
+  returns `context.Canceled` (or the deadline error) instead of sometimes
+  `io.EOF` ([#53]). `context` closes a parent's `Done` channel before it
+  cancels the children, so a peer that closed the connection in reaction to
+  the caller's cancellation could fail the read while the exchange's derived
+  context still read as live. The read error is now judged against the
+  caller's context. A deterministic regression test reproduces the losing
+  order with a parent context that withholds propagation.
+
+[#20]: https://github.com/jeremyhahn/go-auth/issues/20
+[#46]: https://github.com/jeremyhahn/go-auth/issues/46
+[#47]: https://github.com/jeremyhahn/go-auth/issues/47
+[#48]: https://github.com/jeremyhahn/go-auth/issues/48
+[#53]: https://github.com/jeremyhahn/go-auth/issues/53
+
 ## [0.3.0-alpha] - 2026-10-01
 
 ### Changed
