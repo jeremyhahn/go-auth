@@ -30,7 +30,7 @@ permissions:
   security-events: write
 
 env:
-  GO_VERSION: '1.27.0'
+  GO_VERSION: '1.27.1'
   # pkg/pam has a //go:build cgo file that needs libpam headers. Building with
   # cgo off keeps every job independent of the runner image's dev packages;
   # the unit-test job is the documented exception (see below).
