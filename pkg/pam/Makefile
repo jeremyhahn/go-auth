@@ -20,7 +20,7 @@ coverage:
 
 .PHONY: docker-build-integration
 docker-build-integration:
-	$(DOCKER) build -f $(MODULE_ROOT)Dockerfile -t $(INTEGRATION_IMAGE) $(REPO_ROOT)
+	DOCKER=$(DOCKER) $(SHELL) $(REPO_ROOT)/scripts/docker-build-integration.sh $(MODULE_ROOT)Dockerfile $(INTEGRATION_IMAGE) $(REPO_ROOT)
 
 .PHONY: integration-test
 integration-test: docker-build-integration
