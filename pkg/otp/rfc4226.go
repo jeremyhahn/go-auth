@@ -107,11 +107,12 @@ func deriveCode(key []byte, counter uint64, digits uint, algo Algorithm) (string
 // Lengths are compared first because ConstantTimeCompare returns 0 for a
 // length mismatch without looking at the contents, which would leak nothing
 // but is worth being explicit about.
-func codesMatch(derived, submitted string) bool {
+// The submitted code is borrowed from its enclave.
+func codesMatch(derived string, submitted []byte) bool {
 	if len(derived) != len(submitted) {
 		return false
 	}
-	return subtle.ConstantTimeCompare([]byte(derived), []byte(submitted)) == 1
+	return subtle.ConstantTimeCompare([]byte(derived), submitted) == 1
 }
 
 // totpCounter converts a time to the TOTP time-step counter of RFC 6238 §4.2,
@@ -153,7 +154,7 @@ const maxSkew = 10
 // the work done is the same whether the code was right, wrong, or right at the
 // edge of the window. That keeps the response time from reporting which step
 // matched, which is a small amount of information about the client's clock.
-func validateTOTP(key []byte, code string, t time.Time, period, skew, digits uint, algo Algorithm) (bool, error) {
+func validateTOTP(key, code []byte, t time.Time, period, skew, digits uint, algo Algorithm) (bool, error) {
 	// Config.validate rejects anything above maxSkew, so this clamp is for the
 	// callers that do not go through it — and so that no arithmetic below
 	// depends on a bound established somewhere else.

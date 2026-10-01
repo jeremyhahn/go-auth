@@ -33,12 +33,12 @@ func (f *fakeExchanger) exchange(ctx context.Context, packet *radiuslib.Packet, 
 
 func TestNewAuthenticatorValidatesInputs(t *testing.T) {
 	skipUnderFIPSActivation(t)
-	_, err := NewAuthenticator("", "secret")
+	_, err := NewAuthenticator("", sealed(t, "secret"))
 	if err == nil {
 		t.Fatalf("expected error for empty address")
 	}
 
-	_, err = NewAuthenticator("127.0.0.1:1812", "")
+	_, err = NewAuthenticator("127.0.0.1:1812", sealed(t, ""))
 	if err == nil {
 		t.Fatalf("expected error for empty secret")
 	}
@@ -46,7 +46,7 @@ func TestNewAuthenticatorValidatesInputs(t *testing.T) {
 
 func TestNewAuthenticatorUsesDefaultClient(t *testing.T) {
 	skipUnderFIPSActivation(t)
-	auth, err := NewAuthenticator("127.0.0.1:1812", "secret")
+	auth, err := NewAuthenticator("127.0.0.1:1812", sealed(t, "secret"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestNewAuthenticatorAppliesClientOptions(t *testing.T) {
 	dialTimeout := 42 * time.Second
 	auth, err := NewAuthenticator(
 		"127.0.0.1:1812",
-		"secret",
+		sealed(t, "secret"),
 		WithNetwork("tcp"),
 		WithRetry(retry),
 		WithMaxPacketErrors(7),
@@ -141,12 +141,12 @@ func TestAuthenticateSuccess(t *testing.T) {
 	skipUnderFIPSActivation(t)
 	response := radiuslib.New(radiuslib.CodeAccessAccept, []byte("secret"))
 	ex := &fakeExchanger{resp: response}
-	auth, err := NewAuthenticator("127.0.0.1:1812", "secret", WithPacketExchanger(ex))
+	auth, err := NewAuthenticator("127.0.0.1:1812", sealed(t, "secret"), WithPacketExchanger(ex))
 	if err != nil {
 		t.Fatalf("unexpected error creating authenticator: %v", err)
 	}
 
-	if err := auth.Authenticate(context.Background(), "jane", "password"); err != nil {
+	if err := auth.Authenticate(context.Background(), "jane", sealed(t, "password")); err != nil {
 		t.Fatalf("unexpected authenticate error: %v", err)
 	}
 	if ex.callCount != 1 {
@@ -159,7 +159,7 @@ func TestAuthenticateSuccess(t *testing.T) {
 
 func TestAuthenticateRejectsEmptyCredentials(t *testing.T) {
 	skipUnderFIPSActivation(t)
-	auth, err := NewAuthenticator("127.0.0.1:1812", "secret", WithPacketExchanger(&fakeExchanger{}))
+	auth, err := NewAuthenticator("127.0.0.1:1812", sealed(t, "secret"), WithPacketExchanger(&fakeExchanger{}))
 	if err != nil {
 		t.Fatalf("unexpected error creating authenticator: %v", err)
 	}
@@ -175,7 +175,7 @@ func TestAuthenticateRejectsEmptyCredentials(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := auth.Authenticate(context.Background(), tc.user, tc.password)
+			err := auth.Authenticate(context.Background(), tc.user, sealed(t, tc.password))
 			if err == nil {
 				t.Fatalf("expected error for invalid inputs")
 			}
@@ -186,12 +186,12 @@ func TestAuthenticateRejectsEmptyCredentials(t *testing.T) {
 func TestAuthenticatePropagatesExchangeError(t *testing.T) {
 	skipUnderFIPSActivation(t)
 	ex := &fakeExchanger{err: errors.New("boom")}
-	auth, err := NewAuthenticator("127.0.0.1:1812", "secret", WithPacketExchanger(ex))
+	auth, err := NewAuthenticator("127.0.0.1:1812", sealed(t, "secret"), WithPacketExchanger(ex))
 	if err != nil {
 		t.Fatalf("unexpected error creating authenticator: %v", err)
 	}
 
-	err = auth.Authenticate(context.Background(), "jane", "password")
+	err = auth.Authenticate(context.Background(), "jane", sealed(t, "password"))
 	if !errors.Is(err, ex.err) {
 		t.Fatalf("expected exchange error, got %v", err)
 	}
@@ -201,12 +201,12 @@ func TestAuthenticateRejectResponse(t *testing.T) {
 	skipUnderFIPSActivation(t)
 	response := radiuslib.New(radiuslib.CodeAccessReject, []byte("secret"))
 	ex := &fakeExchanger{resp: response}
-	auth, err := NewAuthenticator("127.0.0.1:1812", "secret", WithPacketExchanger(ex))
+	auth, err := NewAuthenticator("127.0.0.1:1812", sealed(t, "secret"), WithPacketExchanger(ex))
 	if err != nil {
 		t.Fatalf("unexpected error creating authenticator: %v", err)
 	}
 
-	err = auth.Authenticate(context.Background(), "jane", "password")
+	err = auth.Authenticate(context.Background(), "jane", sealed(t, "password"))
 	if !errors.Is(err, ErrRejected) {
 		t.Fatalf("expected ErrRejected, got %v", err)
 	}
@@ -216,12 +216,12 @@ func TestAuthenticateUnexpectedCode(t *testing.T) {
 	skipUnderFIPSActivation(t)
 	response := radiuslib.New(radiuslib.CodeAccountingResponse, []byte("secret"))
 	ex := &fakeExchanger{resp: response}
-	auth, err := NewAuthenticator("127.0.0.1:1812", "secret", WithPacketExchanger(ex))
+	auth, err := NewAuthenticator("127.0.0.1:1812", sealed(t, "secret"), WithPacketExchanger(ex))
 	if err != nil {
 		t.Fatalf("unexpected error creating authenticator: %v", err)
 	}
 
-	err = auth.Authenticate(context.Background(), "jane", "password")
+	err = auth.Authenticate(context.Background(), "jane", sealed(t, "password"))
 	if err == nil {
 		t.Fatalf("expected error for unexpected response code")
 	}
@@ -230,7 +230,7 @@ func TestAuthenticateUnexpectedCode(t *testing.T) {
 func TestAuthenticateHonorsContextCancellation(t *testing.T) {
 	skipUnderFIPSActivation(t)
 	ex := &fakeExchanger{}
-	auth, err := NewAuthenticator("127.0.0.1:1812", "secret", WithPacketExchanger(ex))
+	auth, err := NewAuthenticator("127.0.0.1:1812", sealed(t, "secret"), WithPacketExchanger(ex))
 	if err != nil {
 		t.Fatalf("unexpected error creating authenticator: %v", err)
 	}
@@ -238,7 +238,7 @@ func TestAuthenticateHonorsContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err = auth.Authenticate(ctx, "jane", "password")
+	err = auth.Authenticate(ctx, "jane", sealed(t, "password"))
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context canceled, got %v", err)
 	}
@@ -251,19 +251,19 @@ func TestAuthenticateAllowsNilContext(t *testing.T) {
 	skipUnderFIPSActivation(t)
 	response := radiuslib.New(radiuslib.CodeAccessAccept, []byte("secret"))
 	ex := &fakeExchanger{resp: response}
-	auth, err := NewAuthenticator("127.0.0.1:1812", "secret", WithPacketExchanger(ex))
+	auth, err := NewAuthenticator("127.0.0.1:1812", sealed(t, "secret"), WithPacketExchanger(ex))
 	if err != nil {
 		t.Fatalf("unexpected error creating authenticator: %v", err)
 	}
 
-	if err := auth.Authenticate(nil, "jane", "password"); err != nil {
+	if err := auth.Authenticate(nil, "jane", sealed(t, "password")); err != nil {
 		t.Fatalf("unexpected authenticate error: %v", err)
 	}
 }
 
 func TestNewAuthenticatorWithTLSConfigRequiresConfig(t *testing.T) {
 	skipUnderFIPSActivation(t)
-	_, err := NewAuthenticator("127.0.0.1:1812", "secret", WithTLSConfig(nil))
+	_, err := NewAuthenticator("127.0.0.1:1812", sealed(t, "secret"), WithTLSConfig(nil))
 	if err == nil {
 		t.Fatalf("expected error when TLS config is nil")
 	}
@@ -274,12 +274,12 @@ func TestNewAuthenticatorWithTLSAndCustomExchanger(t *testing.T) {
 	response := radiuslib.New(radiuslib.CodeAccessAccept, []byte("secret"))
 	ex := &fakeExchanger{resp: response}
 	tlsConfig := &tls.Config{InsecureSkipVerify: true}
-	auth, err := NewAuthenticator("127.0.0.1:1812", "secret", WithTLSConfig(tlsConfig), WithPacketExchanger(ex))
+	auth, err := NewAuthenticator("127.0.0.1:1812", sealed(t, "secret"), WithTLSConfig(tlsConfig), WithPacketExchanger(ex))
 	if err != nil {
 		t.Fatalf("unexpected error creating authenticator: %v", err)
 	}
 
-	if err := auth.Authenticate(context.Background(), "jane", "password"); err != nil {
+	if err := auth.Authenticate(context.Background(), "jane", sealed(t, "password")); err != nil {
 		t.Fatalf("unexpected authenticate error: %v", err)
 	}
 	if ex.callCount != 1 {
@@ -311,7 +311,7 @@ func TestTLSPacketExchangerSuccess(t *testing.T) {
 	dialer := &fakeTLSDialer{secret: []byte(secret), responseCode: radiuslib.CodeAccessAccept}
 	auth, err := NewAuthenticator(
 		"127.0.0.1:2083",
-		secret,
+		sealed(t, secret),
 		WithTLSConfig(&tls.Config{}),
 		WithTLSDialer(dialer),
 	)
@@ -319,7 +319,7 @@ func TestTLSPacketExchangerSuccess(t *testing.T) {
 		t.Fatalf("unexpected error creating authenticator: %v", err)
 	}
 
-	if err := auth.Authenticate(context.Background(), "user", "password"); err != nil {
+	if err := auth.Authenticate(context.Background(), "user", sealed(t, "password")); err != nil {
 		t.Fatalf("expected success, got %v", err)
 	}
 }
@@ -330,7 +330,7 @@ func TestTLSPacketExchangerReject(t *testing.T) {
 	dialer := &fakeTLSDialer{secret: []byte(secret), responseCode: radiuslib.CodeAccessReject}
 	auth, err := NewAuthenticator(
 		"127.0.0.1:2083",
-		secret,
+		sealed(t, secret),
 		WithTLSConfig(&tls.Config{}),
 		WithTLSDialer(dialer),
 	)
@@ -338,7 +338,7 @@ func TestTLSPacketExchangerReject(t *testing.T) {
 		t.Fatalf("unexpected error creating authenticator: %v", err)
 	}
 
-	err = auth.Authenticate(context.Background(), "user", "password")
+	err = auth.Authenticate(context.Background(), "user", sealed(t, "password"))
 	if !errors.Is(err, ErrRejected) {
 		t.Fatalf("expected ErrRejected, got %v", err)
 	}
@@ -350,7 +350,7 @@ func TestTLSPacketExchangerNonAuthenticResponse(t *testing.T) {
 	dialer := &fakeTLSDialer{secret: []byte(secret), responseCode: radiuslib.CodeAccessAccept, tamper: true}
 	auth, err := NewAuthenticator(
 		"127.0.0.1:2083",
-		secret,
+		sealed(t, secret),
 		WithTLSConfig(&tls.Config{}),
 		WithTLSDialer(dialer),
 		WithMaxPacketErrors(1),
@@ -359,7 +359,7 @@ func TestTLSPacketExchangerNonAuthenticResponse(t *testing.T) {
 		t.Fatalf("unexpected error creating authenticator: %v", err)
 	}
 
-	err = auth.Authenticate(context.Background(), "user", "password")
+	err = auth.Authenticate(context.Background(), "user", sealed(t, "password"))
 	var nonAuthErr *radiuslib.NonAuthenticResponseError
 	if !errors.As(err, &nonAuthErr) {
 		t.Fatalf("expected NonAuthenticResponseError, got %v", err)
@@ -372,7 +372,7 @@ func TestTLSPacketExchangerParseError(t *testing.T) {
 	dialer := &fakeTLSDialer{secret: []byte(secret), responseCode: radiuslib.CodeAccessAccept, malformed: true}
 	auth, err := NewAuthenticator(
 		"127.0.0.1:2083",
-		secret,
+		sealed(t, secret),
 		WithTLSConfig(&tls.Config{}),
 		WithTLSDialer(dialer),
 		WithMaxPacketErrors(1),
@@ -381,7 +381,7 @@ func TestTLSPacketExchangerParseError(t *testing.T) {
 		t.Fatalf("unexpected error creating authenticator: %v", err)
 	}
 
-	err = auth.Authenticate(context.Background(), "user", "password")
+	err = auth.Authenticate(context.Background(), "user", sealed(t, "password"))
 	if err == nil {
 		t.Fatalf("expected parse error")
 	}
@@ -393,7 +393,7 @@ func TestTLSPacketExchangerDialError(t *testing.T) {
 	dialer := &fakeTLSDialer{secret: []byte(secret), dialErr: errors.New("dial failure")}
 	auth, err := NewAuthenticator(
 		"127.0.0.1:2083",
-		secret,
+		sealed(t, secret),
 		WithTLSConfig(&tls.Config{}),
 		WithTLSDialer(dialer),
 	)
@@ -401,7 +401,7 @@ func TestTLSPacketExchangerDialError(t *testing.T) {
 		t.Fatalf("unexpected error creating authenticator: %v", err)
 	}
 
-	err = auth.Authenticate(context.Background(), "user", "password")
+	err = auth.Authenticate(context.Background(), "user", sealed(t, "password"))
 	if !errors.Is(err, dialer.dialErr) {
 		t.Fatalf("expected dial error, got %v", err)
 	}
@@ -413,7 +413,7 @@ func TestTLSPacketExchangerReadError(t *testing.T) {
 	dialer := &fakeTLSDialer{secret: []byte(secret), closeWithoutResponse: true}
 	auth, err := NewAuthenticator(
 		"127.0.0.1:2083",
-		secret,
+		sealed(t, secret),
 		WithTLSConfig(&tls.Config{}),
 		WithTLSDialer(dialer),
 	)
@@ -421,7 +421,7 @@ func TestTLSPacketExchangerReadError(t *testing.T) {
 		t.Fatalf("unexpected error creating authenticator: %v", err)
 	}
 
-	err = auth.Authenticate(context.Background(), "user", "password")
+	err = auth.Authenticate(context.Background(), "user", sealed(t, "password"))
 	if !errors.Is(err, io.EOF) {
 		t.Fatalf("expected EOF, got %v", err)
 	}
@@ -433,7 +433,7 @@ func TestTLSPacketExchangerContextCancel(t *testing.T) {
 	dialer := &fakeTLSDialer{secret: []byte(secret), responseDelay: 200 * time.Millisecond}
 	auth, err := NewAuthenticator(
 		"127.0.0.1:2083",
-		secret,
+		sealed(t, secret),
 		WithTLSConfig(&tls.Config{}),
 		WithTLSDialer(dialer),
 	)
@@ -443,7 +443,7 @@ func TestTLSPacketExchangerContextCancel(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	time.AfterFunc(10*time.Millisecond, cancel)
-	err = auth.Authenticate(ctx, "user", "password")
+	err = auth.Authenticate(ctx, "user", sealed(t, "password"))
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context canceled, got %v", err)
 	}
@@ -455,7 +455,7 @@ func TestTLSPacketExchangerRetry(t *testing.T) {
 	dialer := &fakeTLSDialer{secret: []byte(secret), responseCode: radiuslib.CodeAccessAccept, responseDelay: 30 * time.Millisecond}
 	auth, err := NewAuthenticator(
 		"127.0.0.1:2083",
-		secret,
+		sealed(t, secret),
 		WithTLSConfig(&tls.Config{}),
 		WithTLSDialer(dialer),
 		WithRetry(5*time.Millisecond),
@@ -464,7 +464,7 @@ func TestTLSPacketExchangerRetry(t *testing.T) {
 		t.Fatalf("unexpected error creating authenticator: %v", err)
 	}
 
-	if err := auth.Authenticate(context.Background(), "user", "password"); err != nil {
+	if err := auth.Authenticate(context.Background(), "user", sealed(t, "password")); err != nil {
 		t.Fatalf("expected success with retry, got %v", err)
 	}
 }

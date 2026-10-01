@@ -194,7 +194,7 @@ func TestClosedAuthenticatorFailsClosed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
-	if err := auth.Authenticate(context.Background(), code); err != nil {
+	if err := auth.Authenticate(context.Background(), codeOf(t, code)); err != nil {
 		t.Fatalf("Authenticate: %v", err)
 	}
 
@@ -213,11 +213,11 @@ func TestClosedAuthenticatorFailsClosed(t *testing.T) {
 	if _, err := auth.Generate(1); !errors.Is(err, enclave.ErrEnclaveDestroyed) {
 		t.Errorf("Generate after Close = %v, want ErrEnclaveDestroyed", err)
 	}
-	err = auth.Authenticate(context.Background(), code)
+	err = auth.Authenticate(context.Background(), codeOf(t, code))
 	if !errors.Is(err, ErrInvalidCode) || !errors.Is(err, enclave.ErrEnclaveDestroyed) {
 		t.Errorf("Authenticate after Close = %v, want ErrInvalidCode and ErrEnclaveDestroyed", err)
 	}
-	if _, err := auth.ValidateCounter(context.Background(), code, 1); !errors.Is(err, ErrInvalidCode) {
+	if _, err := auth.ValidateCounter(context.Background(), codeOf(t, code), 1); !errors.Is(err, ErrInvalidCode) {
 		t.Errorf("ValidateCounter after Close = %v, want ErrInvalidCode", err)
 	}
 	if uri, err := auth.ProvisioningURI(); !errors.Is(err, enclave.ErrEnclaveDestroyed) || uri != "" {
@@ -249,7 +249,7 @@ func TestCloseDuringAuthentication(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			err := auth.Authenticate(context.Background(), code)
+			err := auth.Authenticate(context.Background(), codeOf(t, code))
 			if err != nil && !errors.Is(err, enclave.ErrEnclaveDestroyed) {
 				errs <- err
 			}
@@ -299,7 +299,7 @@ func TestAuthenticateTOTP(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := auth.Authenticate(tt.ctx, tt.code) //nolint:staticcheck // nil context is part of the contract under test
+			err := auth.Authenticate(tt.ctx, codeOf(t, tt.code)) //nolint:staticcheck // nil context is part of the contract under test
 			if tt.wantErr != nil {
 				if !errors.Is(err, tt.wantErr) {
 					t.Fatalf("expected error %v, got %v", tt.wantErr, err)
@@ -339,11 +339,11 @@ func TestAuthenticateHOTP(t *testing.T) {
 		t.Fatalf("failed to generate code: %v", err)
 	}
 
-	if err := auth.Authenticate(context.Background(), code); err != nil {
+	if err := auth.Authenticate(context.Background(), codeOf(t, code)); err != nil {
 		t.Errorf("Authenticate at the configured counter: %v", err)
 	}
 
-	newCounter, err := auth.ValidateCounter(context.Background(), code, 0)
+	newCounter, err := auth.ValidateCounter(context.Background(), codeOf(t, code), 0)
 	if err != nil {
 		t.Errorf("failed to validate counter: %v", err)
 	}
@@ -351,7 +351,7 @@ func TestAuthenticateHOTP(t *testing.T) {
 		t.Errorf("expected new counter 1, got %d", newCounter)
 	}
 
-	if _, err = auth.ValidateCounter(context.Background(), code, 5); !errors.Is(err, ErrInvalidCode) {
+	if _, err = auth.ValidateCounter(context.Background(), codeOf(t, code), 5); !errors.Is(err, ErrInvalidCode) {
 		t.Errorf("ValidateCounter at the wrong counter = %v, want ErrInvalidCode", err)
 	}
 }
@@ -370,7 +370,7 @@ func TestValidateCounter(t *testing.T) {
 			if err != nil {
 				t.Fatalf("failed to generate code: %v", err)
 			}
-			next, err := auth.ValidateCounter(context.Background(), code, counter)
+			next, err := auth.ValidateCounter(context.Background(), codeOf(t, code), counter)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -381,7 +381,7 @@ func TestValidateCounter(t *testing.T) {
 	}
 
 	t.Run("empty code", func(t *testing.T) {
-		if _, err := auth.ValidateCounter(context.Background(), "", 0); !errors.Is(err, ErrInvalidCode) {
+		if _, err := auth.ValidateCounter(context.Background(), codeOf(t, ""), 0); !errors.Is(err, ErrInvalidCode) {
 			t.Errorf("expected ErrInvalidCode, got %v", err)
 		}
 	})
@@ -392,7 +392,7 @@ func TestValidateCounter(t *testing.T) {
 			t.Fatalf("Generate: %v", err)
 		}
 		//nolint:staticcheck // nil context is part of the contract under test
-		if next, err := auth.ValidateCounter(nil, code, 0); err != nil || next != 1 {
+		if next, err := auth.ValidateCounter(nil, codeOf(t, code), 0); err != nil || next != 1 {
 			t.Errorf("ValidateCounter(nil ctx) = %d, %v; want 1, nil", next, err)
 		}
 	})
@@ -400,7 +400,7 @@ func TestValidateCounter(t *testing.T) {
 	t.Run("canceled context", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-		if _, err := auth.ValidateCounter(ctx, "123456", 0); !errors.Is(err, context.Canceled) {
+		if _, err := auth.ValidateCounter(ctx, codeOf(t, "123456"), 0); !errors.Is(err, context.Canceled) {
 			t.Errorf("expected context.Canceled, got %v", err)
 		}
 	})
@@ -414,7 +414,7 @@ func TestTOTPValidateCounterError(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = auth.Close() })
 
-	if _, err := auth.ValidateCounter(context.Background(), "123456", 0); !errors.Is(err, ErrInvalidConfig) {
+	if _, err := auth.ValidateCounter(context.Background(), codeOf(t, "123456"), 0); !errors.Is(err, ErrInvalidConfig) {
 		t.Errorf("expected ErrInvalidConfig, got %v", err)
 	}
 }
@@ -545,14 +545,14 @@ func TestContextCancellation(t *testing.T) {
 
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := auth.Authenticate(canceled, code); !errors.Is(err, context.Canceled) {
+	if err := auth.Authenticate(canceled, codeOf(t, code)); !errors.Is(err, context.Canceled) {
 		t.Errorf("expected context.Canceled, got %v", err)
 	}
 
 	// A deadline already in the past has expired by construction; no waiting.
 	expired, cancelExpired := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer cancelExpired()
-	if err := auth.Authenticate(expired, code); !errors.Is(err, context.DeadlineExceeded) {
+	if err := auth.Authenticate(expired, codeOf(t, code)); !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("expected context.DeadlineExceeded, got %v", err)
 	}
 }
@@ -561,10 +561,10 @@ func TestContextCancellation(t *testing.T) {
 func TestNilAuthenticator(t *testing.T) {
 	var auth *Authenticator
 
-	if err := auth.Authenticate(context.Background(), "123456"); !errors.Is(err, ErrNilAuthenticator) {
+	if err := auth.Authenticate(context.Background(), codeOf(t, "123456")); !errors.Is(err, ErrNilAuthenticator) {
 		t.Errorf("Authenticate: expected ErrNilAuthenticator, got %v", err)
 	}
-	if _, err := auth.ValidateCounter(context.Background(), "123456", 0); !errors.Is(err, ErrNilAuthenticator) {
+	if _, err := auth.ValidateCounter(context.Background(), codeOf(t, "123456"), 0); !errors.Is(err, ErrNilAuthenticator) {
 		t.Errorf("ValidateCounter: expected ErrNilAuthenticator, got %v", err)
 	}
 	if _, err := auth.Generate(); !errors.Is(err, ErrNilAuthenticator) {
@@ -586,7 +586,7 @@ func TestAlgorithms(t *testing.T) {
 			if err != nil {
 				t.Fatalf("failed to generate code: %v", err)
 			}
-			if err := auth.Authenticate(context.Background(), code); err != nil {
+			if err := auth.Authenticate(context.Background(), codeOf(t, code)); err != nil {
 				t.Errorf("failed to authenticate: %v", err)
 			}
 		})
@@ -617,10 +617,10 @@ func TestHOTPRoundTripHonoursConfig(t *testing.T) {
 				if uint(len(code)) != digits {
 					t.Fatalf("expected %d digit code, got %d", digits, len(code))
 				}
-				if err := auth.Authenticate(context.Background(), code); err != nil {
+				if err := auth.Authenticate(context.Background(), codeOf(t, code)); err != nil {
 					t.Errorf("Authenticate rejected a code it generated: %v", err)
 				}
-				next, err := auth.ValidateCounter(context.Background(), code, counter)
+				next, err := auth.ValidateCounter(context.Background(), codeOf(t, code), counter)
 				if err != nil {
 					t.Errorf("ValidateCounter rejected a code it generated: %v", err)
 				}
@@ -656,7 +656,7 @@ func TestDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to generate code: %v", err)
 	}
-	if err := auth.Authenticate(context.Background(), code); err != nil {
+	if err := auth.Authenticate(context.Background(), codeOf(t, code)); err != nil {
 		t.Errorf("failed to authenticate with defaults: %v", err)
 	}
 }
@@ -690,12 +690,58 @@ func TestTOTPSkewThroughAuthenticator(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Generate: %v", err)
 		}
-		err = totp.Authenticate(context.Background(), code)
+		err = totp.Authenticate(context.Background(), codeOf(t, code))
 		if tc.accept && err != nil {
 			t.Errorf("step %+d rejected inside skew 2: %v", tc.offset, err)
 		}
 		if !tc.accept && !errors.Is(err, ErrInvalidCode) {
 			t.Errorf("step %+d = %v outside skew 2, want ErrInvalidCode", tc.offset, err)
+		}
+	}
+}
+
+// TestSubmittedCodeIsBorrowed: the caller's code enclave is compared from
+// inside its borrow and left alive, on a match and on a mismatch, for both
+// validation entry points.
+func TestSubmittedCodeIsBorrowed(t *testing.T) {
+	auth, err := NewAuthenticator(Config{Type: TypeHOTP, Seed: testSeed(t), Algorithm: testAlgorithm()})
+	if err != nil {
+		t.Fatalf("NewAuthenticator: %v", err)
+	}
+	t.Cleanup(func() { _ = auth.Close() })
+
+	good, err := auth.Generate(0)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	for _, submitted := range []string{good, wrongCode(good)} {
+		code := codeOf(t, submitted)
+		_ = auth.Authenticate(context.Background(), code)
+		_, _ = auth.ValidateCounter(context.Background(), code, 0)
+		if !code.IsAlive() {
+			t.Fatalf("a submitted code was destroyed by the authenticator")
+		}
+	}
+}
+
+func TestDestroyedCodeIsRefused(t *testing.T) {
+	auth, err := NewAuthenticator(Config{Type: TypeHOTP, Seed: testSeed(t), Algorithm: testAlgorithm()})
+	if err != nil {
+		t.Fatalf("NewAuthenticator: %v", err)
+	}
+	t.Cleanup(func() { _ = auth.Close() })
+
+	code := codeOf(t, "123456")
+	code.Destroy()
+	for name, err := range map[string]error{
+		"Authenticate": auth.Authenticate(context.Background(), code),
+		"ValidateCounter": func() error {
+			_, err := auth.ValidateCounter(context.Background(), code, 0)
+			return err
+		}(),
+	} {
+		if !errors.Is(err, ErrInvalidCode) || !errors.Is(err, ErrMissingCode) || !errors.Is(err, enclave.ErrEnclaveDestroyed) {
+			t.Errorf("%s: err = %v, want ErrInvalidCode, ErrMissingCode and ErrEnclaveDestroyed", name, err)
 		}
 	}
 }

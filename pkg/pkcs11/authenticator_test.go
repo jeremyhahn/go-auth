@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"testing"
+
+	enclave "github.com/jeremyhahn/go-enclave"
 )
 
 type fakeSessionProvider struct {
@@ -28,9 +30,14 @@ type fakeSession struct {
 	lastPIN   string
 }
 
-func (f *fakeSession) Login(ctx context.Context, pin string) error {
+func (f *fakeSession) Login(ctx context.Context, pin *enclave.MemoryEnclave) error {
 	f.logins++
-	f.lastPIN = pin
+	// A copy taken during the call: the PIN is only borrowed.
+	value, err := pin.OpenString()
+	if err != nil {
+		return err
+	}
+	f.lastPIN = value
 	return f.loginErr
 }
 
@@ -94,7 +101,7 @@ func TestAuthenticateSuccess(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if err := auth.Authenticate(context.Background(), "1234"); err != nil {
+	if err := auth.Authenticate(context.Background(), sealed(t, "1234")); err != nil {
 		t.Fatalf("expected success, got %v", err)
 	}
 	if provider.calls != 1 {
@@ -119,7 +126,7 @@ func TestAuthenticatePropagatesLoginError(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if err := auth.Authenticate(context.Background(), "1234"); !errors.Is(err, want) {
+	if err := auth.Authenticate(context.Background(), sealed(t, "1234")); !errors.Is(err, want) {
 		t.Fatalf("expected %v, got %v", want, err)
 	}
 }
@@ -136,7 +143,7 @@ func TestAuthenticateIncludesLogoutError(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	err = auth.Authenticate(context.Background(), "1234")
+	err = auth.Authenticate(context.Background(), sealed(t, "1234"))
 	if !errors.Is(err, loginErr) {
 		t.Fatalf("expected login error, got %v", err)
 	}
@@ -152,7 +159,7 @@ func TestAuthenticateRejectsEmptyPIN(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if err := auth.Authenticate(context.Background(), ""); err == nil {
+	if err := auth.Authenticate(context.Background(), nil); err == nil {
 		t.Fatalf("expected error for empty pin")
 	}
 }
@@ -166,7 +173,48 @@ func TestAuthenticateRespectsContextCancel(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := auth.Authenticate(ctx, "1234"); !errors.Is(err, context.Canceled) {
+	if err := auth.Authenticate(ctx, sealed(t, "1234")); !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context canceled, got %v", err)
+	}
+}
+
+// TestAuthenticateBorrowsThePIN: the PIN stays the caller's, alive, whether
+// the token accepts it or not.
+func TestAuthenticateBorrowsThePIN(t *testing.T) {
+	for _, loginErr := range []error{nil, errors.New("bad pin")} {
+		provider := &fakeSessionProvider{session: &fakeSession{loginErr: loginErr}}
+		auth, err := NewAuthenticator(Config{ModulePath: "mod.so", TokenLabel: "token"}, provider)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		pin := sealed(t, "1234")
+		_ = auth.Authenticate(context.Background(), pin)
+		if !pin.IsAlive() {
+			t.Fatalf("loginErr=%v: Authenticate destroyed a borrowed PIN", loginErr)
+		}
+	}
+}
+
+func TestAuthenticateRejectsDestroyedPIN(t *testing.T) {
+	provider := &fakeSessionProvider{session: &fakeSession{}}
+	auth, err := NewAuthenticator(Config{ModulePath: "mod.so", TokenLabel: "token"}, provider)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	pin := sealed(t, "1234")
+	pin.Destroy()
+	err = auth.Authenticate(context.Background(), pin)
+	if !errors.Is(err, ErrMissingPIN) || !errors.Is(err, enclave.ErrEnclaveDestroyed) {
+		t.Fatalf("err = %v, want ErrMissingPIN joined with ErrEnclaveDestroyed", err)
+	}
+	if provider.calls != 0 {
+		t.Fatalf("a session was opened %d times for a destroyed PIN", provider.calls)
+	}
+}
+
+func TestAuthenticateNilAuthenticator(t *testing.T) {
+	var auth *Authenticator
+	if err := auth.Authenticate(context.Background(), sealed(t, "1234")); !errors.Is(err, ErrNilAuthenticator) {
+		t.Fatalf("err = %v, want ErrNilAuthenticator", err)
 	}
 }

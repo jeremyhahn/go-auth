@@ -4,6 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+
+	enclave "github.com/jeremyhahn/go-enclave"
+
+	"github.com/jeremyhahn/go-auth/pkg/internal/credential"
 )
 
 // Handle represents a TPM object handle for sealed data.
@@ -13,7 +17,14 @@ type Handle uint32
 type TPMSession interface {
 	// Unseal attempts to unseal data from the TPM using the provided handle and password.
 	// The TPM will automatically verify PCR policy during the unseal operation.
-	Unseal(ctx context.Context, handle Handle, password string) ([]byte, error)
+	//
+	// The password is BORROWED: read it through WithBytes, do not retain it,
+	// do not destroy it. The unsealed data is returned in an enclave that the
+	// CALLER owns; move the TPM's response into it with
+	// enclave.NewMemoryEnclave, which wipes the response buffer, so the
+	// plaintext never stays on the heap. The authenticator destroys whatever
+	// is returned, including an enclave returned alongside an error.
+	Unseal(ctx context.Context, handle Handle, password *enclave.MemoryEnclave) (*enclave.MemoryEnclave, error)
 	// Close terminates the TPM session.
 	Close(ctx context.Context) error
 }
@@ -34,7 +45,9 @@ var (
 	ErrPCRMismatch = errors.New("tpm2: pcr policy validation failed")
 	// ErrNilAuthenticator indicates a nil authenticator was used.
 	ErrNilAuthenticator = errors.New("tpm2: authenticator is nil")
-	// ErrEmptyPassword indicates an empty password was provided.
+	// ErrEmptyPassword indicates Authenticate was called without a live
+	// password enclave. A destroyed one also matches
+	// enclave.ErrEnclaveDestroyed.
 	ErrEmptyPassword = errors.New("tpm2: password must not be empty")
 	// ErrInvalidHandle indicates an invalid sealed object handle.
 	ErrInvalidHandle = errors.New("tpm2: invalid sealed object handle")
@@ -132,12 +145,16 @@ func NewAuthenticator(cfg Config, provider TPMProvider) (*Authenticator, error) 
 //
 // Returns ErrPCRMismatch if the current PCR values don't match the sealed policy,
 // ErrInvalidPassword if the password is incorrect, or other errors for TPM failures.
-func (a *Authenticator) Authenticate(ctx context.Context, password string) (err error) {
+//
+// The password is BORROWED and never destroyed here. The unsealed data is only
+// the proof that unsealing succeeded; it is destroyed before Authenticate
+// returns, on every path.
+func (a *Authenticator) Authenticate(ctx context.Context, password *enclave.MemoryEnclave) (err error) {
 	if a == nil {
 		return ErrNilAuthenticator
 	}
-	if password == "" {
-		return ErrEmptyPassword
+	if err := credential.Require(password, ErrEmptyPassword); err != nil {
+		return err
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -164,6 +181,9 @@ func (a *Authenticator) Authenticate(ctx context.Context, password string) (err 
 	// Attempt to unseal the data. The TPM will automatically verify:
 	// 1. The password/authorization value is correct
 	// 2. The PCR values match the sealed policy
-	_, err = session.Unseal(ctx, a.cfg.SealedHandle, password)
+	unsealed, err := session.Unseal(ctx, a.cfg.SealedHandle, password)
+	// Destroy is nil-safe, and runs on the error path too: a session that
+	// returns material alongside an error must not leave it alive.
+	unsealed.Destroy()
 	return err
 }

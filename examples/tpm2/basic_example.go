@@ -19,6 +19,8 @@ import (
 	"log"
 	"time"
 
+	enclave "github.com/jeremyhahn/go-enclave"
+
 	"github.com/jeremyhahn/go-auth/pkg/tpm2"
 )
 
@@ -65,8 +67,15 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Password used when the data was sealed
-	password := "my-secret-password"
+	// Password used when the data was sealed. It travels in go-enclave
+	// locked memory; in production build it with enclave.NewMemoryEnclave
+	// over a []byte the reader fills, which wipes that slice.
+	password, err := enclave.NewMemoryEnclaveFromString("my-secret-password")
+	if err != nil {
+		log.Fatalf("Failed to seal the password: %v", err)
+	}
+	// Authenticate borrows it; the caller destroys it.
+	defer password.Destroy()
 
 	fmt.Println("Attempting to unseal data from TPM...")
 	fmt.Printf("Device: %s\n", cfg.DevicePath)

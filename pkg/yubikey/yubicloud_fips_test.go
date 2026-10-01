@@ -11,8 +11,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-
-	secretpkg "github.com/jeremyhahn/go-auth/pkg/secret"
 )
 
 // subprocessEnvKey marks the re-executed child of
@@ -88,21 +86,27 @@ func TestNewAuthenticatorRefusesYubiCloudWhenFIPSIsActive(t *testing.T) {
 
 	cases := []struct {
 		name      string
-		cfg       Config
+		clientID  string
+		apiKey    string
 		validator OTPValidator
 	}{
-		{"package default", Config{ClientID: "id", APIKey: "key"}, nil},
-		{"explicit HTTPValidator", Config{ClientID: "id", APIKey: "key"}, NewHTTPValidator(nil, "")},
-		{"package default, invalid config", Config{}, nil},
+		{"package default", "id", "key", nil},
+		{"explicit HTTPValidator", "id", "key", NewHTTPValidator(nil, "")},
+		{"package default, invalid config", "", "", nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			auth, err := NewAuthenticator(tc.cfg, tc.validator)
+			key := sealed(t, tc.apiKey)
+			auth, err := NewAuthenticator(Config{ClientID: tc.clientID, APIKey: key}, tc.validator)
 			if !errors.Is(err, ErrFIPSUnsupported) {
 				t.Fatalf("err = %v, want ErrFIPSUnsupported", err)
 			}
 			if auth != nil {
 				t.Error("an authenticator was returned alongside the refusal")
+			}
+			// The refusal is a return path on which NewAuthenticator owns the key.
+			if key.IsAlive() {
+				t.Error("the refusal left the API key alive")
 			}
 		})
 	}
@@ -123,22 +127,16 @@ func TestHTTPValidatorRefusesWhenFIPSIsActive(t *testing.T) {
 	}))
 	defer server.Close()
 
-	sealed, err := secretpkg.NewString("a2V5")
-	if err != nil {
-		t.Fatalf("NewString: %v", err)
-	}
-	defer sealed.Destroy()
+	key := sealed(t, "a2V5")
+	otp := sealed(t, "ccccccbdefgh")
 
 	validator := NewHTTPValidator(server.Client(), server.URL)
 	entryPoints := map[string]func() error{
-		"ValidateProtected": func() error {
-			return validator.ValidateProtected(context.Background(), "id", sealed, "ccccccbdefgh")
-		},
 		"Validate": func() error {
-			return validator.Validate(context.Background(), "id", "a2V5", "ccccccbdefgh")
+			return validator.Validate(context.Background(), "id", key, otp)
 		},
 		"computeSignature": func() error {
-			_, err := computeSignature(url.Values{"id": {"id"}}, sealed)
+			_, err := computeSignature(url.Values{"id": {"id"}}, key)
 			return err
 		},
 	}
@@ -162,11 +160,12 @@ func TestInjectedValidatorStillWorksUnderFIPS(t *testing.T) {
 	substituteFIPSActivation(t)
 
 	validator := &fakeValidator{}
-	auth, err := NewAuthenticator(Config{ClientID: "id", APIKey: "secret"}, validator)
+	auth, err := NewAuthenticator(Config{ClientID: "id", APIKey: sealed(t, "secret")}, validator)
 	if err != nil {
 		t.Fatalf("failed to construct with an injected validator: %v", err)
 	}
-	if err := auth.Authenticate(context.Background(), "ccccccbchvth"); err != nil {
+	defer auth.Close()
+	if err := auth.Authenticate(context.Background(), sealed(t, "ccccccbchvth")); err != nil {
 		t.Fatalf("authenticate with injected validator: %v", err)
 	}
 	if validator.calls != 1 {
@@ -208,7 +207,7 @@ func fipsActivatedChild(t *testing.T) {
 		t.Fatal("fips140OnlyActive() = false under GODEBUG=fips140=only")
 	}
 
-	auth, err := NewAuthenticator(Config{ClientID: "id", APIKey: "key"}, nil)
+	auth, err := NewAuthenticator(Config{ClientID: "id", APIKey: sealed(t, "key")}, nil)
 	if !errors.Is(err, ErrFIPSUnsupported) {
 		t.Errorf("NewAuthenticator with the default validator: err = %v, want ErrFIPSUnsupported", err)
 	}
@@ -216,7 +215,7 @@ func fipsActivatedChild(t *testing.T) {
 		t.Error("an authenticator was returned under FIPS activation")
 	}
 
-	err = NewHTTPValidator(nil, "http://127.0.0.1:0").Validate(context.Background(), "id", "a2V5", "ccccccbdefgh")
+	err = NewHTTPValidator(nil, "http://127.0.0.1:0").Validate(context.Background(), "id", sealed(t, "a2V5"), sealed(t, "ccccccbdefgh"))
 	if !errors.Is(err, ErrFIPSUnsupported) {
 		t.Errorf("HTTPValidator.Validate: err = %v, want ErrFIPSUnsupported", err)
 	}

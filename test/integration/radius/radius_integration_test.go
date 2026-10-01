@@ -23,20 +23,22 @@ const (
 
 func newAuthenticator(t *testing.T) *radiuslib.Authenticator {
 	t.Helper()
-	auth, err := radiuslib.NewAuthenticator(testAddr, testSecret)
+	auth, err := radiuslib.NewAuthenticator(testAddr, sealed(t, testSecret))
 	if err != nil {
 		t.Fatalf("failed to create authenticator: %v", err)
 	}
+	t.Cleanup(func() { _ = auth.Close() })
 	return auth
 }
 
 func newTLSAuthenticator(t *testing.T) *radiuslib.Authenticator {
 	t.Helper()
 	tlsCfg := loadTLSConfig(t)
-	auth, err := radiuslib.NewAuthenticator(testTLSAddr, testSecret, radiuslib.WithTLSConfig(tlsCfg))
+	auth, err := radiuslib.NewAuthenticator(testTLSAddr, sealed(t, testSecret), radiuslib.WithTLSConfig(tlsCfg))
 	if err != nil {
 		t.Fatalf("failed to create TLS authenticator: %v", err)
 	}
+	t.Cleanup(func() { _ = auth.Close() })
 	return auth
 }
 
@@ -49,10 +51,11 @@ func newEAPTLSAuthenticator(t *testing.T) *radiuslib.Authenticator {
 		OuterIdentity: "radius-client",
 		FragmentSize:  1600,
 	}
-	auth, err := radiuslib.NewAuthenticator(testAddr, testSecret, radiuslib.WithEAPTLS(config))
+	auth, err := radiuslib.NewAuthenticator(testAddr, sealed(t, testSecret), radiuslib.WithEAPTLS(config))
 	if err != nil {
 		t.Fatalf("failed to create EAP-TLS authenticator: %v", err)
 	}
+	t.Cleanup(func() { _ = auth.Close() })
 	return auth
 }
 
@@ -93,7 +96,7 @@ func TestAuthenticateSuccess(t *testing.T) {
 	ctx, cancel := withTimeout(t)
 	defer cancel()
 
-	if err := auth.Authenticate(ctx, "radiususer", "radiuspass"); err != nil {
+	if err := auth.Authenticate(ctx, "radiususer", sealed(t, "radiuspass")); err != nil {
 		t.Fatalf("expected success, got error: %v", err)
 	}
 }
@@ -104,7 +107,7 @@ func TestAuthenticateRejectsWrongPassword(t *testing.T) {
 	ctx, cancel := withTimeout(t)
 	defer cancel()
 
-	err := auth.Authenticate(ctx, "radiususer", "wrongpass")
+	err := auth.Authenticate(ctx, "radiususer", sealed(t, "wrongpass"))
 	if err == nil {
 		t.Fatal("expected failure for wrong password")
 	}
@@ -119,7 +122,7 @@ func TestAuthenticateRejectsUnknownUser(t *testing.T) {
 	ctx, cancel := withTimeout(t)
 	defer cancel()
 
-	err := auth.Authenticate(ctx, "unknown", "radiuspass")
+	err := auth.Authenticate(ctx, "unknown", sealed(t, "radiuspass"))
 	if err == nil {
 		t.Fatal("expected failure for unknown user")
 	}
@@ -134,7 +137,7 @@ func TestAuthenticateSuccessTLS(t *testing.T) {
 	ctx, cancel := withTimeout(t)
 	defer cancel()
 
-	if err := auth.Authenticate(ctx, "radiususer", "radiuspass"); err != nil {
+	if err := auth.Authenticate(ctx, "radiususer", sealed(t, "radiuspass")); err != nil {
 		t.Fatalf("expected success, got error: %v", err)
 	}
 }
@@ -145,7 +148,7 @@ func TestAuthenticateRejectsWrongPasswordTLS(t *testing.T) {
 	ctx, cancel := withTimeout(t)
 	defer cancel()
 
-	err := auth.Authenticate(ctx, "radiususer", "wrongpass")
+	err := auth.Authenticate(ctx, "radiususer", sealed(t, "wrongpass"))
 	if err == nil {
 		t.Fatal("expected failure for wrong password")
 	}
@@ -160,7 +163,7 @@ func TestAuthenticateRejectsUnknownUserTLS(t *testing.T) {
 	ctx, cancel := withTimeout(t)
 	defer cancel()
 
-	err := auth.Authenticate(ctx, "unknown", "radiuspass")
+	err := auth.Authenticate(ctx, "unknown", sealed(t, "radiuspass"))
 	if err == nil {
 		t.Fatal("expected failure for unknown user")
 	}
@@ -175,7 +178,7 @@ func TestAuthenticateEAPTLSSuccess(t *testing.T) {
 	ctx, cancel := withTimeout(t)
 	defer cancel()
 
-	if err := auth.Authenticate(ctx, "radius-client", ""); err != nil {
+	if err := auth.Authenticate(ctx, "radius-client", sealed(t, "")); err != nil {
 		t.Fatalf("expected EAP-TLS success, got error: %v", err)
 	}
 }

@@ -155,12 +155,17 @@ func apiIntegrationExample() {
 
 	ctx := context.Background()
 
-	// Authenticate using the service
-	// The token is passed in the Password field
+	// Authenticate using the service. The bearer token is passed in the
+	// Password field, in locked memory; Login takes ownership of it and
+	// destroys it when the attempt completes.
+	bearer, err := enclave.NewMemoryEnclaveFromString("oauth-access-token")
+	if err != nil {
+		log.Fatalf("Failed to seal the token: %v", err)
+	}
 	err = service.Login(ctx, api.LoginRequest{
 		Backend:  api.BackendOAuth,
-		Username: "",                   // Ignored for OAuth
-		Password: "oauth-access-token", // Token passed as password
+		Username: "oauth-user", // Required by Login, ignored by the OAuth backend
+		Password: bearer,       // Token passed as password
 	})
 
 	if err != nil {

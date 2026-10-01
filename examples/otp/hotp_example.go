@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log"
 
+	"github.com/jeremyhahn/go-enclave"
+
 	"github.com/jeremyhahn/go-auth/pkg/otp"
 )
 
@@ -59,7 +61,9 @@ func main() {
 		fmt.Printf("  Generated code: %s\n", code)
 
 		// Validate and get new counter
-		newCounter, err := auth.ValidateCounter(ctx, code, currentCounter)
+		submitted := sealCode(code)
+		newCounter, err := auth.ValidateCounter(ctx, submitted, currentCounter)
+		submitted.Destroy()
 		if err != nil {
 			log.Fatalf("  Authentication failed: %v", err)
 		}
@@ -74,7 +78,9 @@ func main() {
 	oldCode, _ := auth.Generate(0)
 	fmt.Printf("  Code for counter=0: %s\n", oldCode)
 
-	_, err = auth.ValidateCounter(ctx, oldCode, currentCounter)
+	submitted := sealCode(oldCode)
+	_, err = auth.ValidateCounter(ctx, submitted, currentCounter)
+	submitted.Destroy()
 	if err != nil {
 		fmt.Printf("  ✓ Old code correctly rejected: %v\n", err)
 	} else {
@@ -86,9 +92,22 @@ func main() {
 	currentCode, _ := auth.Generate(currentCounter)
 	fmt.Printf("  Code for counter=%d: %s\n", currentCounter, currentCode)
 
-	newCounter, err := auth.ValidateCounter(ctx, currentCode, currentCounter)
+	submitted = sealCode(currentCode)
+	newCounter, err := auth.ValidateCounter(ctx, submitted, currentCounter)
+	submitted.Destroy()
 	if err != nil {
 		log.Fatalf("  Current code authentication failed: %v", err)
 	}
 	fmt.Printf("  ✓ Current code authenticated! New counter: %d\n", newCounter)
+}
+
+// sealCode puts a submitted code into locked memory, the way a server would
+// on receipt. Authenticate and ValidateCounter only borrow it; the caller
+// destroys it once it has been checked.
+func sealCode(code string) *enclave.MemoryEnclave {
+	e, err := enclave.NewMemoryEnclaveFromString(code)
+	if err != nil {
+		log.Fatalf("Failed to seal code: %v", err)
+	}
+	return e
 }

@@ -21,7 +21,9 @@ type bindCall struct {
 }
 
 func (f *fakeConn) Bind(username, password string) error {
-	f.binds = append(f.binds, bindCall{username, password})
+	// The password is lent through a buffer that is wiped when Bind returns,
+	// so the fake keeps its own copy for the assertions.
+	f.binds = append(f.binds, bindCall{username, strings.Clone(password)})
 	if len(f.bindErrs) == 0 {
 		return nil
 	}
@@ -46,7 +48,7 @@ func TestAuthenticateSuccess(t *testing.T) {
 		t.Fatalf("NewAuthenticator error: %v", err)
 	}
 
-	if err := auth.Authenticate(context.Background(), "alice", "password"); err != nil {
+	if err := auth.Authenticate(context.Background(), "alice", pw(t, "password")); err != nil {
 		t.Fatalf("expected success, got %v", err)
 	}
 
@@ -65,13 +67,13 @@ func TestAuthenticateWithServiceAccount(t *testing.T) {
 	conn := &fakeConn{}
 	auth, err := NewAuthenticator("ldap://example.com:389",
 		WithUserDNTemplate("uid=%s,ou=people,dc=example,dc=com"),
-		WithServiceAccount("cn=admin,dc=example,dc=com", "secret"),
+		WithServiceAccount("cn=admin,dc=example,dc=com", pw(t, "secret")),
 		WithDialContext(func(ctx context.Context) (ldapConn, error) { return conn, nil }))
 	if err != nil {
 		t.Fatalf("NewAuthenticator error: %v", err)
 	}
 
-	if err := auth.Authenticate(context.Background(), "bob", "pass"); err != nil {
+	if err := auth.Authenticate(context.Background(), "bob", pw(t, "pass")); err != nil {
 		t.Fatalf("expected success, got %v", err)
 	}
 
@@ -96,7 +98,7 @@ func TestAuthenticateStartTLS(t *testing.T) {
 		t.Fatalf("NewAuthenticator error: %v", err)
 	}
 
-	if err := auth.Authenticate(context.Background(), "alice", "pass"); err != nil {
+	if err := auth.Authenticate(context.Background(), "alice", pw(t, "pass")); err != nil {
 		t.Fatalf("expected success, got %v", err)
 	}
 
@@ -112,7 +114,7 @@ func TestDialError(t *testing.T) {
 		t.Fatalf("NewAuthenticator error: %v", err)
 	}
 
-	err = auth.Authenticate(context.Background(), "user", "pass")
+	err = auth.Authenticate(context.Background(), "user", pw(t, "pass"))
 	if err == nil || !strings.Contains(err.Error(), "dial failed") {
 		t.Fatalf("expected dial failed, got %v", err)
 	}
@@ -125,7 +127,7 @@ func TestBindError(t *testing.T) {
 		t.Fatalf("NewAuthenticator error: %v", err)
 	}
 
-	err = auth.Authenticate(context.Background(), "user", "pass")
+	err = auth.Authenticate(context.Background(), "user", pw(t, "pass"))
 	if err == nil || !strings.Contains(err.Error(), "user bind failed") {
 		t.Fatalf("expected user bind failure, got %v", err)
 	}
@@ -137,16 +139,16 @@ func TestInputValidation(t *testing.T) {
 		t.Fatalf("NewAuthenticator error: %v", err)
 	}
 
-	if err := auth.Authenticate(context.Background(), "user", "pass"); !errors.Is(err, ErrMissingTemplate) {
+	if err := auth.Authenticate(context.Background(), "user", pw(t, "pass")); !errors.Is(err, ErrMissingTemplate) {
 		t.Fatalf("expected ErrMissingTemplate, got %v", err)
 	}
 
 	auth.userDNTemplate = "cn=%s,dc=example,dc=com"
-	if err := auth.Authenticate(context.Background(), "", "pass"); err == nil {
+	if err := auth.Authenticate(context.Background(), "", pw(t, "pass")); err == nil {
 		t.Fatalf("expected error for empty username")
 	}
 
-	if err := auth.Authenticate(context.Background(), "user", ""); err == nil {
+	if err := auth.Authenticate(context.Background(), "user", nil); err == nil {
 		t.Fatalf("expected error for empty password")
 	}
 }
@@ -164,7 +166,7 @@ func TestContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	if err := auth.Authenticate(ctx, "user", "pass"); err != context.Canceled {
+	if err := auth.Authenticate(ctx, "user", pw(t, "pass")); err != context.Canceled {
 		t.Fatalf("expected context.Canceled, got %v", err)
 	}
 	if dialInvoked {

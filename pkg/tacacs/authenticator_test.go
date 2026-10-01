@@ -145,12 +145,12 @@ func TestAuthenticateSuccess(t *testing.T) {
 	addr, cleanup := startTestServer(t, simpleHandler{creds: map[string]string{"user": "pass"}})
 	defer cleanup()
 
-	auth, err := NewAuthenticator(addr, testSecret)
+	auth, err := NewAuthenticator(addr, sealed(t, testSecret))
 	if err != nil {
 		t.Fatalf("NewAuthenticator error: %v", err)
 	}
 
-	if err := auth.Authenticate(context.Background(), "user", "pass"); err != nil {
+	if err := auth.Authenticate(context.Background(), "user", sealed(t, "pass")); err != nil {
 		t.Fatalf("expected success, got error: %v", err)
 	}
 }
@@ -160,12 +160,12 @@ func TestAuthenticateInvalidCredentials(t *testing.T) {
 	addr, cleanup := startTestServer(t, simpleHandler{creds: map[string]string{"user": "pass"}})
 	defer cleanup()
 
-	auth, err := NewAuthenticator(addr, testSecret)
+	auth, err := NewAuthenticator(addr, sealed(t, testSecret))
 	if err != nil {
 		t.Fatalf("NewAuthenticator error: %v", err)
 	}
 
-	err = auth.Authenticate(context.Background(), "user", "wrong")
+	err = auth.Authenticate(context.Background(), "user", sealed(t, "wrong"))
 	if !errors.Is(err, ErrAuthenticationFailed) {
 		t.Fatalf("expected ErrAuthenticationFailed, got %v", err)
 	}
@@ -178,12 +178,12 @@ func TestAuthenticateServerError(t *testing.T) {
 	}))
 	defer cleanup()
 
-	auth, err := NewAuthenticator(addr, testSecret)
+	auth, err := NewAuthenticator(addr, sealed(t, testSecret))
 	if err != nil {
 		t.Fatalf("NewAuthenticator error: %v", err)
 	}
 
-	err = auth.Authenticate(context.Background(), "user", "pass")
+	err = auth.Authenticate(context.Background(), "user", sealed(t, "pass"))
 	if err == nil || !strings.Contains(err.Error(), "boom") {
 		t.Fatalf("expected server error, got %v", err)
 	}
@@ -194,7 +194,7 @@ func TestAuthenticateContextDeadline(t *testing.T) {
 	addr, cleanup := startTestServer(t, simpleHandler{creds: map[string]string{"user": "pass"}, delay: 200 * time.Millisecond})
 	defer cleanup()
 
-	auth, err := NewAuthenticator(addr, testSecret, WithTimeout(50*time.Millisecond))
+	auth, err := NewAuthenticator(addr, sealed(t, testSecret), WithTimeout(50*time.Millisecond))
 	if err != nil {
 		t.Fatalf("NewAuthenticator error: %v", err)
 	}
@@ -202,23 +202,23 @@ func TestAuthenticateContextDeadline(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 75*time.Millisecond)
 	defer cancel()
 
-	if err := auth.Authenticate(ctx, "user", "pass"); err == nil {
+	if err := auth.Authenticate(ctx, "user", sealed(t, "pass")); err == nil {
 		t.Fatalf("expected timeout error")
 	}
 }
 
 func TestAuthenticateInputValidation(t *testing.T) {
 	skipUnderFIPSActivation(t)
-	auth, err := NewAuthenticator("127.0.0.1:49", testSecret)
+	auth, err := NewAuthenticator("127.0.0.1:49", sealed(t, testSecret))
 	if err != nil {
 		t.Fatalf("NewAuthenticator error: %v", err)
 	}
 
-	if err := auth.Authenticate(context.Background(), "", "pass"); err == nil {
+	if err := auth.Authenticate(context.Background(), "", sealed(t, "pass")); err == nil {
 		t.Fatalf("expected error for empty username")
 	}
 
-	if err := auth.Authenticate(context.Background(), "user", ""); err == nil {
+	if err := auth.Authenticate(context.Background(), "user", sealed(t, "")); err == nil {
 		t.Fatalf("expected error for empty password")
 	}
 }
@@ -228,12 +228,12 @@ func TestAuthenticateWithAdditionalData(t *testing.T) {
 	addr, cleanup := startTestServer(t, tokenHandler{})
 	defer cleanup()
 
-	auth, err := NewAuthenticator(addr, testSecret)
+	auth, err := NewAuthenticator(addr, sealed(t, testSecret))
 	if err != nil {
 		t.Fatalf("NewAuthenticator error: %v", err)
 	}
 
-	if err := auth.Authenticate(context.Background(), "user", "token"); err != nil {
+	if err := auth.Authenticate(context.Background(), "user", sealed(t, "token")); err != nil {
 		t.Fatalf("expected success, got error: %v", err)
 	}
 }
@@ -276,7 +276,7 @@ func TestAuthenticatorOptions(t *testing.T) {
 	defer cleanup()
 
 	dialCount := 0
-	auth, err := NewAuthenticator(addr, testSecret, WithPrivLevel(15), WithDialContext(func(ctx context.Context, network, address string) (net.Conn, error) {
+	auth, err := NewAuthenticator(addr, sealed(t, testSecret), WithPrivLevel(15), WithDialContext(func(ctx context.Context, network, address string) (net.Conn, error) {
 		dialCount++
 		var d net.Dialer
 		return d.DialContext(ctx, network, address)
@@ -285,7 +285,7 @@ func TestAuthenticatorOptions(t *testing.T) {
 		t.Fatalf("NewAuthenticator error: %v", err)
 	}
 
-	err = auth.Authenticate(context.Background(), "user", "pass")
+	err = auth.Authenticate(context.Background(), "user", sealed(t, "pass"))
 	if !errors.Is(err, ErrAuthenticationFailed) {
 		t.Fatalf("expected ErrAuthenticationFailed, got %v", err)
 	}
@@ -299,12 +299,12 @@ func TestAuthenticatorOptions(t *testing.T) {
 
 func TestHandleReplyNilSession(t *testing.T) {
 	skipUnderFIPSActivation(t)
-	auth, err := NewAuthenticator("127.0.0.1:0", testSecret)
+	auth, err := NewAuthenticator("127.0.0.1:0", sealed(t, testSecret))
 	if err != nil {
 		t.Fatalf("NewAuthenticator error: %v", err)
 	}
 
-	err = auth.handleReply(context.Background(), nil, &tacplus.AuthenReply{Status: tacplus.AuthenStatusGetPass}, "user", "pass")
+	err = auth.handleReply(context.Background(), nil, &tacplus.AuthenReply{Status: tacplus.AuthenStatusGetPass}, "user", sealed(t, "pass"))
 	if err == nil {
 		t.Fatalf("expected error when session is nil")
 	}
@@ -312,12 +312,12 @@ func TestHandleReplyNilSession(t *testing.T) {
 
 func TestHandleReplyUnknownStatus(t *testing.T) {
 	skipUnderFIPSActivation(t)
-	auth, err := NewAuthenticator("127.0.0.1:0", testSecret)
+	auth, err := NewAuthenticator("127.0.0.1:0", sealed(t, testSecret))
 	if err != nil {
 		t.Fatalf("NewAuthenticator error: %v", err)
 	}
 
-	err = auth.handleReply(context.Background(), nil, &tacplus.AuthenReply{Status: 0xff}, "user", "pass")
+	err = auth.handleReply(context.Background(), nil, &tacplus.AuthenReply{Status: 0xff}, "user", sealed(t, "pass"))
 	if err == nil {
 		t.Fatalf("expected error for unsupported status")
 	}
@@ -325,12 +325,12 @@ func TestHandleReplyUnknownStatus(t *testing.T) {
 
 func TestHandleReplyRestartNilSession(t *testing.T) {
 	skipUnderFIPSActivation(t)
-	auth, err := NewAuthenticator("127.0.0.1:0", testSecret)
+	auth, err := NewAuthenticator("127.0.0.1:0", sealed(t, testSecret))
 	if err != nil {
 		t.Fatalf("NewAuthenticator error: %v", err)
 	}
 
-	err = auth.handleReply(context.Background(), nil, &tacplus.AuthenReply{Status: tacplus.AuthenStatusRestart}, "user", "pass")
+	err = auth.handleReply(context.Background(), nil, &tacplus.AuthenReply{Status: tacplus.AuthenStatusRestart}, "user", sealed(t, "pass"))
 	if err == nil {
 		t.Fatalf("expected error when restart requested without session")
 	}
@@ -338,12 +338,12 @@ func TestHandleReplyRestartNilSession(t *testing.T) {
 
 func TestHandleReplyErrorWithoutMessage(t *testing.T) {
 	skipUnderFIPSActivation(t)
-	auth, err := NewAuthenticator("127.0.0.1:0", testSecret)
+	auth, err := NewAuthenticator("127.0.0.1:0", sealed(t, testSecret))
 	if err != nil {
 		t.Fatalf("NewAuthenticator error: %v", err)
 	}
 
-	err = auth.handleReply(context.Background(), nil, &tacplus.AuthenReply{Status: tacplus.AuthenStatusError}, "user", "pass")
+	err = auth.handleReply(context.Background(), nil, &tacplus.AuthenReply{Status: tacplus.AuthenStatusError}, "user", sealed(t, "pass"))
 	if err == nil {
 		t.Fatalf("expected authentication error without message")
 	}

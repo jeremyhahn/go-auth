@@ -32,6 +32,13 @@ Common use cases:
 
 ## Quick Start
 
+Credentials are go-enclave `*enclave.MemoryEnclave` values, never strings
+(see [Credentials](credentials.md)). In the snippets after the first,
+`password` is a `*enclave.MemoryEnclave` the caller owns: `Authenticate`
+borrows it and never destroys it. `servicePassword` is one handed to
+`WithServiceAccount`, which **takes ownership** — the authenticator destroys
+it in `Close`, or in `NewAuthenticator` if construction fails.
+
 ### Basic LDAP Authentication
 
 ```go
@@ -40,6 +47,8 @@ package main
 import (
     "context"
     "log"
+
+    enclave "github.com/jeremyhahn/go-enclave"
 
     "github.com/jeremyhahn/go-auth/pkg/ldap"
 )
@@ -53,10 +62,20 @@ func main() {
     if err != nil {
         log.Fatal(err)
     }
+    defer auth.Close()
+
+    // The password travels in go-enclave locked memory. Build it with
+    // enclave.NewMemoryEnclave from the bytes you read (that wipes them);
+    // NewMemoryEnclaveFromString is for values that only exist as strings.
+    password, err := enclave.NewMemoryEnclaveFromString("password")
+    if err != nil {
+        log.Fatal(err) // enclave.ErrLockedMemoryUnavailable: fail closed
+    }
+    defer password.Destroy() // Authenticate only borrows it
 
     // Authenticate user
     ctx := context.Background()
-    err = auth.Authenticate(ctx, "jdoe", "password")
+    err = auth.Authenticate(ctx, "jdoe", password)
     if err != nil {
         log.Printf("Authentication failed: %v", err)
         return
@@ -78,7 +97,7 @@ if err != nil {
     log.Fatal(err)
 }
 
-err = auth.Authenticate(ctx, "username", "password")
+err = auth.Authenticate(ctx, "username", password)
 ```
 
 ### LDAP with StartTLS
@@ -94,7 +113,7 @@ if err != nil {
     log.Fatal(err)
 }
 
-err = auth.Authenticate(ctx, "username", "password")
+err = auth.Authenticate(ctx, "username", password)
 ```
 
 ### With Service Account
@@ -107,14 +126,14 @@ auth, err := ldap.NewAuthenticator(
     ldap.WithUserDNTemplate("cn=%s,ou=users,dc=example,dc=com"),
     ldap.WithServiceAccount(
         "cn=service,dc=example,dc=com",
-        "service-password",
+        servicePassword, // *enclave.MemoryEnclave; the authenticator owns it
     ),
 )
 if err != nil {
     log.Fatal(err)
 }
 
-err = auth.Authenticate(ctx, "username", "password")
+err = auth.Authenticate(ctx, "username", password)
 ```
 
 ## Configuration
@@ -174,7 +193,7 @@ auth, err := ldap.NewAuthenticator(
     ldap.WithUserDNTemplate("cn=%s,ou=users,dc=example,dc=com"),
     ldap.WithServiceAccount(
         "cn=readonly,dc=example,dc=com",  // Service account DN
-        "service-password",                // Service account password
+        servicePassword, // *enclave.MemoryEnclave; the authenticator owns it
     ),
 )
 ```
@@ -274,7 +293,7 @@ Timeout applies to:
 ## Error Handling
 
 ```go
-err := auth.Authenticate(ctx, "username", "password")
+err := auth.Authenticate(ctx, "username", password)
 
 switch {
 case err == nil:
@@ -316,15 +335,19 @@ auth, err := ldap.NewAuthenticator("")
 
 // Missing template
 auth, err := ldap.NewAuthenticator("ldap://server")
-err = auth.Authenticate(ctx, "user", "pass")
+err = auth.Authenticate(ctx, "user", password)
 // Error: "ldap: user DN template must be configured"
 
-// Empty credentials
-err := auth.Authenticate(ctx, "", "password")
+// Empty credentials: errors.Is(err, ldap.ErrMissingCredentials)
+err := auth.Authenticate(ctx, "", password)
 // Error: "ldap: username and password must not be empty"
 
-err := auth.Authenticate(ctx, "user", "")
+err := auth.Authenticate(ctx, "user", nil)
 // Error: "ldap: username and password must not be empty"
+
+// A destroyed password also matches enclave.ErrEnclaveDestroyed
+password.Destroy()
+err = auth.Authenticate(ctx, "user", password)
 ```
 
 ## Active Directory Integration
@@ -341,7 +364,7 @@ if err != nil {
     log.Fatal(err)
 }
 
-err = auth.Authenticate(ctx, "jdoe", "password")
+err = auth.Authenticate(ctx, "jdoe", password)
 ```
 
 ### AD with Service Account
@@ -352,7 +375,7 @@ auth, err := ldap.NewAuthenticator(
     ldap.WithUserDNTemplate("cn=%s,cn=users,dc=example,dc=com"),
     ldap.WithServiceAccount(
         "cn=service,cn=users,dc=example,dc=com",
-        "service-pass",
+        servicePassword, // *enclave.MemoryEnclave; the authenticator owns it
     ),
 )
 ```
@@ -408,10 +431,12 @@ service, _ := api.NewService(api.Config{
     },
 })
 
+// Login takes ownership of the request's enclaves and destroys them when
+// the attempt completes.
 err := service.Login(ctx, api.LoginRequest{
     Backend:  api.BackendLDAP,
     Username: "user",
-    Password: "pass",
+    Password: password, // *enclave.MemoryEnclave
 })
 ```
 
@@ -478,7 +503,7 @@ for _, server := range servers {
     }
 
     ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-    err = auth.Authenticate(ctx, "username", "password")
+    err = auth.Authenticate(ctx, "username", password)
     cancel()
 
     if err == nil {
@@ -501,43 +526,47 @@ import "time"
 ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 defer cancel()
 
-err := auth.Authenticate(ctx, "username", "password")
+err := auth.Authenticate(ctx, "username", password)
 if err == context.DeadlineExceeded {
     log.Println("LDAP authentication timed out")
 }
 ```
 
-## Protected Memory
+## Credentials in Locked Memory
 
-The service account's bind password is long-lived, so it is held in protected
-memory for the lifetime of the authenticator and opened only for the service
-bind — see [Protected Memory](secret.md).
+Both passwords LDAP handles are go-enclave `*enclave.MemoryEnclave` values —
+see [Credentials](credentials.md) for the model and the ownership rules.
+
+- The **service-account password** is long-lived. `WithServiceAccount` hands
+  it to the authenticator, which owns it from then on: `NewAuthenticator`
+  destroys it if construction fails, and `Close` destroys it otherwise.
+  Applying the option twice destroys the first password. A DN with a nil or
+  destroyed password is refused with `ErrServicePasswordRequired`.
+- The **user's password** is an argument to `Authenticate` and is borrowed.
 
 ```go
-import "github.com/jeremyhahn/go-auth/pkg/secret"
-
-servicePassword, err := secret.NewString(os.Getenv("LDAP_SERVICE_PASSWORD"))
+raw, err := os.ReadFile("/run/secrets/ldap-service-password")
 if err != nil {
     log.Fatal(err)
 }
-defer servicePassword.Destroy()
+servicePassword, err := enclave.NewMemoryEnclave(bytes.TrimSpace(raw)) // wipes raw's bytes
+if err != nil {
+    log.Fatal(err)
+}
 
 auth, err := ldap.NewAuthenticator("ldaps://ldap.example.com:636",
     ldap.WithUserDNTemplate("uid=%s,ou=people,dc=example,dc=com"),
-    ldap.WithProtectedServiceAccount("cn=admin,dc=example,dc=com", servicePassword))
+    ldap.WithServiceAccount("cn=admin,dc=example,dc=com", servicePassword))
+if err != nil {
+    log.Fatal(err) // servicePassword has already been destroyed
+}
+defer auth.Close() // destroys servicePassword
 ```
 
-`ldap.WithServiceAccount`, which takes the password as a `string`, is
-deprecated. It still works, and it now seals the password before the
-authenticator is returned, but the caller's string cannot be wiped. An empty
-password has nothing to seal, so that case binds exactly as it did before —
-`go-ldap` refuses an empty simple bind locally in any case, unless the
-connection is one the caller injected.
-
-`go-ldap`'s `Bind` takes the password as a `string`, so one immutable copy is
-made for each service bind and is unreachable once the bind returns. The user's
-own password is not covered by this at all: it arrives as a `string` parameter
-of `Authenticate` and is passed straight through.
+`go-ldap`'s `Bind` accepts the password only as a `string`. go-auth lends it
+one backed by a buffer that is zeroed as soon as `Bind` returns; go-ldap's own
+BER packet keeps a copy until it is collected. That is residue **R1** in the
+[credential residue register](security/credential-residues.md).
 
 ## Security Considerations
 
@@ -566,7 +595,7 @@ of `Authenticate` and is passed straight through.
 
 1. **Service account credentials**
    - Use read-only service accounts
-   - Store credentials securely (environment variables, secret managers)
+   - Store credentials securely (secret managers, files read into `[]byte`)
    - Rotate credentials regularly
    - Limit service account permissions
 
@@ -748,7 +777,7 @@ func TestAuthentication(t *testing.T) {
         t.Fatal(err)
     }
 
-    err = auth.Authenticate(context.Background(), "user", "pass")
+    err = auth.Authenticate(context.Background(), "user", password)
     // ... assertions
 }
 ```

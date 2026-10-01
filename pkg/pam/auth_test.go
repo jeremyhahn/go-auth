@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"testing"
+
+	enclave "github.com/jeremyhahn/go-enclave"
 )
 
 func TestNewAuthenticatorValidatesServiceName(t *testing.T) {
@@ -34,12 +36,14 @@ type fakeSession struct {
 	closeErr        error
 	authenticated   bool
 	closed          bool
+	borrowed        *enclave.MemoryEnclave
 }
 
-func (f *fakeSession) Authenticate(_ context.Context, password string) error {
-	if password == "" {
+func (f *fakeSession) Authenticate(_ context.Context, password *enclave.MemoryEnclave) error {
+	if !password.IsAlive() {
 		return errors.New("password must not be empty")
 	}
+	f.borrowed = password
 	if f.authenticateErr != nil {
 		return f.authenticateErr
 	}
@@ -78,7 +82,7 @@ func TestAuthenticateSuccess(t *testing.T) {
 		t.Fatalf("unexpected error creating authenticator: %v", err)
 	}
 
-	err = auth.Authenticate(context.Background(), "jane", "s3cret")
+	err = auth.Authenticate(context.Background(), "jane", sealed(t, "s3cret"))
 	if err != nil {
 		t.Fatalf("unexpected authentication error: %v", err)
 	}
@@ -112,7 +116,7 @@ func TestAuthenticateValidatesInputs(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := auth.Authenticate(context.Background(), tc.username, tc.password)
+			err := auth.Authenticate(context.Background(), tc.username, sealed(t, tc.password))
 			if err == nil {
 				t.Fatalf("expected error for invalid input")
 			}
@@ -130,7 +134,7 @@ func TestAuthenticatePropagatesSessionOpenError(t *testing.T) {
 		t.Fatalf("unexpected error creating authenticator: %v", err)
 	}
 
-	err = auth.Authenticate(context.Background(), "jane", "pw")
+	err = auth.Authenticate(context.Background(), "jane", sealed(t, "pw"))
 	if !errors.Is(err, opener.openErr) {
 		t.Fatalf("expected open error, got %v", err)
 	}
@@ -144,7 +148,7 @@ func TestAuthenticatePropagatesSessionAuthenticateError(t *testing.T) {
 		t.Fatalf("unexpected error creating authenticator: %v", err)
 	}
 
-	err = auth.Authenticate(context.Background(), "jane", "pw")
+	err = auth.Authenticate(context.Background(), "jane", sealed(t, "pw"))
 	if !errors.Is(err, fakeSess.authenticateErr) {
 		t.Fatalf("expected authenticate error, got %v", err)
 	}
@@ -163,7 +167,7 @@ func TestAuthenticateJoinsErrorsWhenCloseFailsAfterAuthError(t *testing.T) {
 		t.Fatalf("unexpected error creating authenticator: %v", err)
 	}
 
-	err = auth.Authenticate(context.Background(), "jane", "pw")
+	err = auth.Authenticate(context.Background(), "jane", sealed(t, "pw"))
 	if !errors.Is(err, authErr) {
 		t.Fatalf("expected authenticate error to be present, got %v", err)
 	}
@@ -183,7 +187,7 @@ func TestAuthenticateClosesSessionOnCloseFailure(t *testing.T) {
 		t.Fatalf("unexpected error creating authenticator: %v", err)
 	}
 
-	err = auth.Authenticate(context.Background(), "jane", "pw")
+	err = auth.Authenticate(context.Background(), "jane", sealed(t, "pw"))
 	if err == nil {
 		t.Fatalf("expected error when close fails")
 	}
@@ -202,7 +206,7 @@ func TestAuthenticateHonorsCanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err = auth.Authenticate(ctx, "jane", "pw")
+	err = auth.Authenticate(ctx, "jane", sealed(t, "pw"))
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context canceled error, got %v", err)
 	}
@@ -220,7 +224,7 @@ func TestAuthenticateHonorsContextCanceledAfterOpen(t *testing.T) {
 		t.Fatalf("unexpected error creating authenticator: %v", err)
 	}
 
-	err = auth.Authenticate(ctx, "jane", "pw")
+	err = auth.Authenticate(ctx, "jane", sealed(t, "pw"))
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context canceled error, got %v", err)
 	}
@@ -240,7 +244,7 @@ func TestAuthenticateAllowsNilContext(t *testing.T) {
 		t.Fatalf("unexpected error creating authenticator: %v", err)
 	}
 
-	if err := auth.Authenticate(nil, "jane", "pw"); err != nil {
+	if err := auth.Authenticate(nil, "jane", sealed(t, "pw")); err != nil {
 		t.Fatalf("unexpected authentication error: %v", err)
 	}
 	if !fakeSess.authenticated {
@@ -256,7 +260,7 @@ type idleSession struct {
 	closed             bool
 }
 
-func (s *idleSession) Authenticate(_ context.Context, _ string) error {
+func (s *idleSession) Authenticate(_ context.Context, _ *enclave.MemoryEnclave) error {
 	s.authenticateCalled = true
 	return nil
 }
@@ -278,4 +282,42 @@ func (o *cancelingSessionOpener) Open(ctx context.Context, service, username str
 		o.cancel()
 	}
 	return o.session, nil
+}
+
+// TestAuthenticateLendsAndKeepsThePassword: the session is handed the caller's
+// enclave itself, not a copy, and it is still alive afterwards — Authenticate
+// borrows it.
+func TestAuthenticateLendsAndKeepsThePassword(t *testing.T) {
+	fakeSess := &fakeSession{}
+	auth, err := NewAuthenticator("login", &fakeSessionOpener{session: fakeSess})
+	if err != nil {
+		t.Fatalf("unexpected error creating authenticator: %v", err)
+	}
+	password := sealed(t, "s3cret")
+	if err := auth.Authenticate(context.Background(), "jane", password); err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	if fakeSess.borrowed != password {
+		t.Fatal("the session was not lent the caller's enclave")
+	}
+	if !password.IsAlive() {
+		t.Fatal("Authenticate destroyed a borrowed password")
+	}
+}
+
+func TestAuthenticateRejectsDestroyedPassword(t *testing.T) {
+	opener := &fakeSessionOpener{session: &fakeSession{}}
+	auth, err := NewAuthenticator("login", opener)
+	if err != nil {
+		t.Fatalf("unexpected error creating authenticator: %v", err)
+	}
+	password := sealed(t, "s3cret")
+	password.Destroy()
+	err = auth.Authenticate(context.Background(), "jane", password)
+	if !errors.Is(err, ErrMissingPassword) || !errors.Is(err, enclave.ErrEnclaveDestroyed) {
+		t.Fatalf("err = %v, want ErrMissingPassword joined with ErrEnclaveDestroyed", err)
+	}
+	if opener.openCallCount != 0 {
+		t.Fatal("a PAM transaction was started for a destroyed password")
+	}
 }

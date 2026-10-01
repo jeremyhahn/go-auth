@@ -125,7 +125,7 @@ func TestIntegration_TOTP_EndToEnd(t *testing.T) {
 			if len(code) != int(tt.digits) {
 				t.Errorf("Expected %d digit code, got %d digits: %s", tt.digits, len(code), code)
 			}
-			if err := auth.Authenticate(context.Background(), code); err != nil {
+			if err := auth.Authenticate(context.Background(), sealed(t, code)); err != nil {
 				t.Errorf("Failed to validate generated code: %v", err)
 			}
 		})
@@ -158,7 +158,7 @@ func TestIntegration_TOTP_TimeSkew(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Generate: %v", err)
 		}
-		err = totp.Authenticate(context.Background(), code)
+		err = totp.Authenticate(context.Background(), sealed(t, code))
 		if tc.accept && err != nil {
 			t.Errorf("step %+d should be inside the skew window: %v", tc.offset, err)
 		}
@@ -188,7 +188,7 @@ func TestIntegration_HOTP_EndToEnd(t *testing.T) {
 				t.Fatalf("Failed to generate code for counter %d: %v", counter, err)
 			}
 
-			newCounter, err := auth.ValidateCounter(ctx, code, counter)
+			newCounter, err := auth.ValidateCounter(ctx, sealed(t, code), counter)
 			if err != nil {
 				t.Errorf("Failed to validate code for counter %d: %v", counter, err)
 			}
@@ -198,11 +198,11 @@ func TestIntegration_HOTP_EndToEnd(t *testing.T) {
 
 			// The code is still mathematically valid for its counter; replay
 			// prevention is the application's, by persisting the counter.
-			if _, err := auth.ValidateCounter(ctx, code, counter); err != nil {
+			if _, err := auth.ValidateCounter(ctx, sealed(t, code), counter); err != nil {
 				t.Errorf("Code should still be valid for counter %d: %v", counter, err)
 			}
 
-			if _, err := auth.ValidateCounter(ctx, code, counter+2); err == nil {
+			if _, err := auth.ValidateCounter(ctx, sealed(t, code), counter+2); err == nil {
 				t.Error("Code should not be valid for wrong counter")
 			}
 		})
@@ -233,17 +233,17 @@ func TestIntegration_MultiUser(t *testing.T) {
 		t.Fatalf("Failed to generate code for user2: %v", err)
 	}
 
-	if err := user1Auth.Authenticate(ctx, code1); err != nil {
+	if err := user1Auth.Authenticate(ctx, sealed(t, code1)); err != nil {
 		t.Errorf("User1 code should validate for user1: %v", err)
 	}
-	if err := user2Auth.Authenticate(ctx, code2); err != nil {
+	if err := user2Auth.Authenticate(ctx, sealed(t, code2)); err != nil {
 		t.Errorf("User2 code should validate for user2: %v", err)
 	}
 	if code1 != code2 {
-		if err := user1Auth.Authenticate(ctx, code2); err == nil {
+		if err := user1Auth.Authenticate(ctx, sealed(t, code2)); err == nil {
 			t.Error("User2 code should not validate for user1")
 		}
-		if err := user2Auth.Authenticate(ctx, code1); err == nil {
+		if err := user2Auth.Authenticate(ctx, sealed(t, code1)); err == nil {
 			t.Error("User1 code should not validate for user2")
 		}
 	}
@@ -267,10 +267,10 @@ func TestIntegration_MultiUser(t *testing.T) {
 		t.Fatalf("Generate: %v", err)
 	}
 
-	if _, err := hotpUser1.ValidateCounter(ctx, hotpCode1, 0); err != nil {
+	if _, err := hotpUser1.ValidateCounter(ctx, sealed(t, hotpCode1), 0); err != nil {
 		t.Errorf("HOTP user1 should validate: %v", err)
 	}
-	if _, err := hotpUser2.ValidateCounter(ctx, hotpCode2, 0); err != nil {
+	if _, err := hotpUser2.ValidateCounter(ctx, sealed(t, hotpCode2), 0); err != nil {
 		t.Errorf("HOTP user2 should validate: %v", err)
 	}
 }
@@ -294,7 +294,7 @@ func TestIntegration_ConcurrentAuthentication(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := auth.Authenticate(context.Background(), code); err != nil {
+			if err := auth.Authenticate(context.Background(), sealed(t, code)); err != nil {
 				failCount.Add(1)
 			} else {
 				successCount.Add(1)
@@ -329,7 +329,7 @@ func TestIntegration_ConcurrentHOTP(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if _, err := auth.ValidateCounter(ctx, code, 0); err != nil {
+			if _, err := auth.ValidateCounter(ctx, sealed(t, code), 0); err != nil {
 				failCount.Add(1)
 			} else {
 				successCount.Add(1)
@@ -451,7 +451,7 @@ func TestIntegration_ErrorHandling(t *testing.T) {
 	ctx := context.Background()
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if err := auth.Authenticate(ctx, tt.code); err == nil {
+			if err := auth.Authenticate(ctx, sealed(t, tt.code)); err == nil {
 				t.Errorf("Expected error for invalid code %q", tt.code)
 			}
 		})
@@ -465,7 +465,7 @@ func TestIntegration_ErrorHandling(t *testing.T) {
 	t.Run("context_cancelled", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-		if err := auth.Authenticate(ctx, code); !errors.Is(err, context.Canceled) {
+		if err := auth.Authenticate(ctx, sealed(t, code)); !errors.Is(err, context.Canceled) {
 			t.Errorf("Expected context.Canceled, got %v", err)
 		}
 	})
@@ -474,7 +474,7 @@ func TestIntegration_ErrorHandling(t *testing.T) {
 		// A deadline in the past has expired by construction; no waiting.
 		ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 		defer cancel()
-		if err := auth.Authenticate(ctx, code); !errors.Is(err, context.DeadlineExceeded) {
+		if err := auth.Authenticate(ctx, sealed(t, code)); !errors.Is(err, context.DeadlineExceeded) {
 			t.Errorf("Expected context.DeadlineExceeded, got %v", err)
 		}
 	})

@@ -71,3 +71,18 @@ func forceFIPSActive(t *testing.T) {
 	fips140OnlyActive = func() bool { return true }
 	t.Cleanup(func() { fips140OnlyActive = prev })
 }
+
+// codeOf seals a submitted code into an enclave the test owns, or returns nil
+// for the empty string, which is the "nothing submitted" case.
+func codeOf(t *testing.T, code string) *enclave.MemoryEnclave {
+	t.Helper()
+	if code == "" {
+		return nil
+	}
+	e, err := enclave.NewMemoryEnclaveFromString(code)
+	if err != nil {
+		t.Fatalf("NewMemoryEnclaveFromString: %v", err)
+	}
+	t.Cleanup(e.Destroy)
+	return e
+}

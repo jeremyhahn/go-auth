@@ -7,8 +7,6 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
-
-	secretpkg "github.com/jeremyhahn/go-auth/pkg/secret"
 )
 
 // subprocessEnvKey marks the re-executed child of
@@ -44,66 +42,45 @@ func TestMD5IsAvailableInAnOrdinaryProcess(t *testing.T) {
 	}
 }
 
-// TestNewAuthenticatorRefusesWhenFIPSIsActive drives the refusal branch through
-// both constructors without a second process, by substituting the probe.
+// TestNewAuthenticatorRefusesWhenFIPSIsActive drives the refusal branch
+// without a second process, by substituting the probe.
 func TestNewAuthenticatorRefusesWhenFIPSIsActive(t *testing.T) {
 	restore := fips140OnlyActive
 	fips140OnlyActive = func() bool { return true }
 	t.Cleanup(func() { fips140OnlyActive = restore })
 
-	t.Run("NewAuthenticator", func(t *testing.T) {
-		auth, err := NewAuthenticator("127.0.0.1:49", testSecret)
+	// The refusal is a return path on which the constructor owns the shared
+	// secret, so it must destroy it: under FIPS activation there is nothing
+	// the key could ever be used for.
+	t.Run("well-formed", func(t *testing.T) {
+		secret := sealed(t, testSecret)
+		auth, err := NewAuthenticator("127.0.0.1:49", secret)
 		if !errors.Is(err, ErrFIPSUnsupported) {
 			t.Fatalf("err = %v, want ErrFIPSUnsupported", err)
 		}
 		if auth != nil {
 			t.Error("an authenticator was returned alongside the refusal")
 		}
-	})
-
-	t.Run("NewAuthenticatorWithSecret", func(t *testing.T) {
-		sealed, err := secretpkg.NewString(testSecret)
-		if err != nil {
-			t.Fatalf("seal secret: %v", err)
-		}
-		defer sealed.Destroy()
-
-		auth, err := NewAuthenticatorWithSecret("127.0.0.1:49", sealed)
-		if !errors.Is(err, ErrFIPSUnsupported) {
-			t.Fatalf("err = %v, want ErrFIPSUnsupported", err)
-		}
-		if auth != nil {
-			t.Error("an authenticator was returned alongside the refusal")
+		if secret.IsAlive() {
+			t.Error("the refusal left the shared secret alive")
 		}
 	})
 
-	// The refusal must come before every argument check, in both constructors,
-	// so a FIPS deployment is told the backend is categorically unavailable
-	// rather than told its arguments are wrong. NewAuthenticator validates and
-	// seals the secret string itself before delegating, so it needs its own
-	// gate rather than inheriting the delegate's.
+	// The refusal must come before every argument check, so a FIPS deployment
+	// is told the backend is categorically unavailable rather than told its
+	// arguments are wrong.
 	t.Run("precedence over argument validation", func(t *testing.T) {
 		cases := []struct {
-			name string
-			call func() (*Authenticator, error)
+			name, addr, secret string
 		}{
-			{"NewAuthenticator/empty secret", func() (*Authenticator, error) {
-				return NewAuthenticator("127.0.0.1:49", "")
-			}},
-			{"NewAuthenticator/empty address", func() (*Authenticator, error) {
-				return NewAuthenticator("", testSecret)
-			}},
-			{"NewAuthenticator/both empty", func() (*Authenticator, error) {
-				return NewAuthenticator("", "")
-			}},
-			{"NewAuthenticatorWithSecret/empty address and nil secret", func() (*Authenticator, error) {
-				return NewAuthenticatorWithSecret("", nil)
-			}},
+			{"nil secret", "127.0.0.1:49", ""},
+			{"empty address", "", testSecret},
+			{"empty address and nil secret", "", ""},
 		}
 
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
-				auth, err := tc.call()
+				auth, err := NewAuthenticator(tc.addr, sealed(t, tc.secret))
 				if !errors.Is(err, ErrFIPSUnsupported) {
 					t.Errorf("err = %v, want ErrFIPSUnsupported ahead of the argument checks", err)
 				}
@@ -125,7 +102,7 @@ func TestAuthenticateRefusesWhenFIPSIsActive(t *testing.T) {
 	fips140OnlyActive = func() bool { return true }
 	t.Cleanup(func() { fips140OnlyActive = restore })
 
-	err := (&Authenticator{addr: "127.0.0.1:49"}).Authenticate(context.Background(), "alice", "password")
+	err := (&Authenticator{addr: "127.0.0.1:49"}).Authenticate(context.Background(), "alice", sealed(t, "password"))
 	if !errors.Is(err, ErrFIPSUnsupported) {
 		t.Fatalf("err = %v, want ErrFIPSUnsupported", err)
 	}
@@ -170,11 +147,11 @@ func fipsActivatedChild(t *testing.T) {
 		addr, secret string
 	}{
 		{"well-formed", "127.0.0.1:49", testSecret},
-		{"empty secret", "127.0.0.1:49", ""},
+		{"nil secret", "127.0.0.1:49", ""},
 		{"empty address", "", testSecret},
 		{"both empty", "", ""},
 	} {
-		auth, err := NewAuthenticator(tc.addr, tc.secret)
+		auth, err := NewAuthenticator(tc.addr, sealed(t, tc.secret))
 		if !errors.Is(err, ErrFIPSUnsupported) {
 			t.Errorf("%s: NewAuthenticator err = %v, want ErrFIPSUnsupported", tc.name, err)
 		}

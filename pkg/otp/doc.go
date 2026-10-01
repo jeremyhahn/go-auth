@@ -40,8 +40,15 @@
 //	}
 //	defer auth.Close()
 //
-//	// Validate a code from user's authenticator app
-//	if err := auth.Authenticate(ctx, "123456"); err != nil {
+//	// Validate a code from the user's authenticator app. A code is a
+//	// credential for its validity window, so it arrives in an enclave too;
+//	// Authenticate borrows it and never destroys it.
+//	code, err := enclave.NewMemoryEnclaveFromString(submitted)
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//	defer code.Destroy()
+//	if err := auth.Authenticate(ctx, code); err != nil {
 //	    log.Printf("Authentication failed: %v", err)
 //	}
 //
@@ -72,8 +79,8 @@
 //	}
 //	defer auth.Close()
 //
-//	// Validate code and get new counter value
-//	newCounter, err := auth.ValidateCounter(ctx, "123456", currentCounter)
+//	// Validate code (an enclave the caller owns) and get new counter value
+//	newCounter, err := auth.ValidateCounter(ctx, code, currentCounter)
 //	if err != nil {
 //	    log.Printf("Authentication failed: %v", err)
 //	} else {

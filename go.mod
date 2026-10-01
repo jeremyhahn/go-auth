@@ -12,7 +12,6 @@ require (
 	github.com/miekg/pkcs11 v1.1.2
 	github.com/msteinert/pam/v2 v2.1.0
 	github.com/nwaples/tacplus v0.0.3
-	golang.org/x/sys v0.48.0
 	gopkg.in/yaml.v3 v3.0.1
 	layeh.com/radius v0.0.0-20231213012653-1006025d24f8
 )
@@ -25,5 +24,6 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/stretchr/testify v1.12.1 // indirect
 	golang.org/x/crypto v0.57.0 // indirect
+	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/time v0.16.0 // indirect
 )

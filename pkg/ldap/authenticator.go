@@ -7,11 +7,13 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-ldap/ldap/v3"
+	enclave "github.com/jeremyhahn/go-enclave"
 
-	secretpkg "github.com/jeremyhahn/go-auth/pkg/secret"
+	"github.com/jeremyhahn/go-auth/pkg/internal/credential"
 )
 
 // Authenticator performs username/password authentication against an LDAP directory.
@@ -19,20 +21,20 @@ type Authenticator struct {
 	url            string
 	userDNTemplate string
 	serviceBindDN  string
-	// servicePassword is the service account's bind password, sealed in
-	// protected memory for the lifetime of the authenticator and opened only
-	// for the duration of a single service bind.
-	//
-	// It is nil when the service account was configured with an empty
-	// password, which nothing can seal; emptyServicePassword records that case
-	// so the bind still happens exactly as it did before this field held a
-	// secret. See WithServiceAccount.
-	servicePassword      *secretpkg.Secret
-	emptyServicePassword bool
-	startTLS             bool
-	tlsConfig            *tls.Config
-	timeout              time.Duration
-	implicitTLS          bool
+	// servicePassword is the service account's bind password in locked
+	// memory. The authenticator owns it from the moment WithServiceAccount is
+	// applied, opens it only for the duration of a single service bind, and
+	// destroys it in Close (or in NewAuthenticator, if construction fails).
+	servicePassword *enclave.MemoryEnclave
+	startTLS        bool
+	tlsConfig       *tls.Config
+	timeout         time.Duration
+	implicitTLS     bool
+	// lifecycle orders Close against in-flight calls: every call holds the
+	// read lock for its whole length and Close takes the write lock, so the
+	// credential is destroyed only once no call can still need it.
+	lifecycle sync.RWMutex
+	closed    bool // guarded by lifecycle
 
 	dialContext func(ctx context.Context) (ldapConn, error)
 }
@@ -48,54 +50,25 @@ func WithUserDNTemplate(template string) Option {
 	}
 }
 
-// WithServiceAccount sets the DN and password used for an initial bind before authenticating users.
+// WithServiceAccount sets the DN and password used for an initial bind before
+// authenticating users.
 //
-// The password is sealed in protected memory before the authenticator is
-// returned, but the string the caller passed in cannot be wiped and stays
-// resident until the collector reclaims it.
+// The authenticator TAKES OWNERSHIP of password: NewAuthenticator destroys it
+// if construction fails, and Close destroys it otherwise. Do not use or
+// destroy it after passing it here. Applying the option twice replaces the
+// first password, which is destroyed.
 //
-// Deprecated: use WithProtectedServiceAccount, which takes the password in
-// protected memory and never requires it to exist as a Go string. This option
-// is still supported and will be removed in the coordinated breaking release.
-func WithServiceAccount(dn, password string) Option {
+// The password is opened only for the duration of the service bind. go-ldap's
+// Bind takes it as a string, so it is lent through a heap copy that is wiped
+// when the bind returns; go-ldap's BER packet keeps its own copy, which is
+// residue R1 (docs/security/credential-residues.md).
+func WithServiceAccount(dn string, password *enclave.MemoryEnclave) Option {
 	return func(a *Authenticator) {
-		a.serviceBindDN = dn
-		// An Option cannot report an error, and an empty password is the only
-		// failure NewString has. There is nothing to protect in that case, so
-		// the bind is left exactly as it was before this field held a secret:
-		// it still calls Bind with an empty password, and go-ldap still
-		// refuses it locally with ErrorEmptyPassword ("empty password not
-		// allowed by the client", bind.go:65) rather than sending an
-		// unauthenticated bind. Keeping the call preserves the behavior of an
-		// injected connection, which is the only place it is observable.
-		sealed, err := secretpkg.NewString(password)
-		if err != nil {
-			a.servicePassword = nil
-			a.emptyServicePassword = true
-			return
+		if a.servicePassword != password {
+			a.servicePassword.Destroy()
 		}
-		a.servicePassword = sealed
-		a.emptyServicePassword = false
-	}
-}
-
-// WithProtectedServiceAccount sets the DN and protected-memory password used
-// for an initial bind before authenticating users.
-//
-// It is the replacement for WithServiceAccount: the password is opened only
-// for the duration of the service bind. go-ldap's Bind takes the password as a
-// string, so one immutable copy is made for that call and is unreachable once
-// it returns; it cannot be wiped, which is a property of the LDAP client's API
-// rather than of this package. Everything before and after that call keeps the
-// password sealed.
-//
-// The authenticator borrows the secret and does not take ownership of it:
-// destroy it when the last component using it is done.
-func WithProtectedServiceAccount(dn string, password *secretpkg.Secret) Option {
-	return func(a *Authenticator) {
 		a.serviceBindDN = dn
 		a.servicePassword = password
-		a.emptyServicePassword = false
 	}
 }
 
@@ -137,20 +110,39 @@ type ldapConn interface {
 var (
 	// ErrMissingTemplate indicates no template was supplied to derive user DNs.
 	ErrMissingTemplate = errors.New("ldap: user DN template must be configured")
+	// ErrEmptyURL indicates NewAuthenticator was given no LDAP URL.
+	ErrEmptyURL = errors.New("ldap: url must not be empty")
+	// ErrMissingCredentials indicates Authenticate was called without a
+	// username or without a live password enclave. A destroyed password also
+	// matches enclave.ErrEnclaveDestroyed.
+	ErrMissingCredentials = errors.New("ldap: username and password must not be empty")
+	// ErrServicePasswordRequired indicates WithServiceAccount was given a DN
+	// without a live password enclave.
+	ErrServicePasswordRequired = errors.New("ldap: service account password must be provided")
+	// ErrClosed indicates the authenticator has been closed and its service
+	// account password destroyed.
+	ErrClosed = errors.New("ldap: authenticator is closed")
 )
 
 // NewAuthenticator constructs an LDAP authenticator targeting the provided LDAP URL.
+//
+// It owns the service-account password from WithServiceAccount on every
+// return path: when it returns an error the password has already been
+// destroyed.
 func NewAuthenticator(url string, opts ...Option) (*Authenticator, error) {
-	if strings.TrimSpace(url) == "" {
-		return nil, errors.New("ldap: url must not be empty")
-	}
-
 	auth := &Authenticator{url: url}
 
+	// Options run before the URL check so that a password handed over in one
+	// of them is known to this function, and destroyed, on every refusal.
 	for _, opt := range opts {
 		if opt != nil {
 			opt(auth)
 		}
+	}
+
+	if err := auth.validate(); err != nil {
+		auth.servicePassword.Destroy()
+		return nil, err
 	}
 
 	if strings.HasPrefix(strings.ToLower(url), "ldaps://") {
@@ -166,16 +158,48 @@ func NewAuthenticator(url string, opts ...Option) (*Authenticator, error) {
 	return auth, nil
 }
 
+func (a *Authenticator) validate() error {
+	if strings.TrimSpace(a.url) == "" {
+		return ErrEmptyURL
+	}
+	if a.serviceBindDN != "" {
+		return credential.Require(a.servicePassword, ErrServicePasswordRequired)
+	}
+	return nil
+}
+
+// Close destroys the service-account password the authenticator owns. It
+// waits for every in-flight Authenticate to return first — one that has not
+// reached its service bind yet still needs the password — and it is
+// idempotent. Authenticate fails with ErrClosed afterwards.
+func (a *Authenticator) Close() error {
+	a.lifecycle.Lock()
+	defer a.lifecycle.Unlock()
+	a.closed = true
+	return a.servicePassword.DestroyErr()
+}
+
 // Authenticate binds to LDAP using the derived user DN.
-func (a *Authenticator) Authenticate(ctx context.Context, username, password string) error {
+//
+// The password is BORROWED: it is opened for the user bind and never
+// destroyed here; the caller still owns it.
+func (a *Authenticator) Authenticate(ctx context.Context, username string, password *enclave.MemoryEnclave) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if strings.TrimSpace(username) == "" || password == "" {
-		return errors.New("ldap: username and password must not be empty")
+	a.lifecycle.RLock()
+	defer a.lifecycle.RUnlock()
+	if a.closed {
+		return ErrClosed
+	}
+	if strings.TrimSpace(username) == "" {
+		return ErrMissingCredentials
+	}
+	if err := credential.Require(password, ErrMissingCredentials); err != nil {
+		return err
 	}
 	if a.userDNTemplate == "" {
 		return ErrMissingTemplate
@@ -196,23 +220,20 @@ func (a *Authenticator) Authenticate(ctx context.Context, username, password str
 	}
 
 	if a.serviceBindDN != "" {
-		var err error
-		if a.emptyServicePassword {
-			// Nothing to open: the option was given an empty password, and the
-			// bind is made as it was before, for whatever the connection makes
-			// of it.
-			err = conn.Bind(a.serviceBindDN, "")
-		} else {
-			err = a.servicePassword.OpenString(func(servicePassword string) error {
-				return conn.Bind(a.serviceBindDN, servicePassword)
-			})
-		}
+		// Residue R1: go-ldap's Bind takes the password as a string.
+		err := credential.WithTransientString(a.servicePassword, func(servicePassword string) error {
+			return conn.Bind(a.serviceBindDN, servicePassword)
+		})
 		if err != nil {
 			return fmt.Errorf("ldap: service bind failed: %w", err)
 		}
 	}
 
-	if err := conn.Bind(userDN, password); err != nil {
+	// Residue R1: go-ldap's Bind takes the password as a string.
+	err = credential.WithTransientString(password, func(userPassword string) error {
+		return conn.Bind(userDN, userPassword)
+	})
+	if err != nil {
 		return fmt.Errorf("ldap: user bind failed: %w", err)
 	}
 

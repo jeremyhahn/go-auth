@@ -72,11 +72,13 @@ Comprehensive authentication library for Go with support for multiple authentica
 - QR code provisioning support
 - **Use cases**: Two-factor authentication, MFA, passwordless login
 
-#### [Protected Memory](secret.md)
-- Credential material held in go-enclave locked-memory enclaves
-- Keys, passwords, shared secrets and tokens kept out of Go strings
-- Used by the OTP, RADIUS, TACACS+, LDAP and YubiKey backends
-- **Use cases**: every backend that holds a long-lived secret
+#### [Credentials](credentials.md)
+- One credential type across the library: go-enclave `*enclave.MemoryEnclave`
+- Passwords, PINs, OTPs, shared secrets, API keys, seeds and tokens — never Go strings
+- Ownership rules: constructors take ownership, `Close` destroys, per-call
+  arguments are borrowed, `Service.Login` destroys its request's enclaves
+- [Credential residue register](security/credential-residues.md): the finite,
+  CI-gated list of places a dependency forces plaintext out of locked memory
 
 ### Hardware-Based Authentication
 
@@ -114,6 +116,8 @@ package main
 import (
     "context"
     "log"
+
+    enclave "github.com/jeremyhahn/go-enclave"
 
     "github.com/jeremyhahn/go-auth/pkg/api"
     "github.com/jeremyhahn/go-auth/pkg/ldap"
@@ -160,20 +164,35 @@ func main() {
         },
     })
 
+    // Credentials travel in go-enclave locked memory, never as strings.
+    // Login takes ownership of the request's enclaves and destroys them when
+    // the attempt completes, so every request gets fresh ones. A real
+    // application builds them with enclave.NewMemoryEnclave from the bytes it
+    // read, which wipes that slice.
+    seal := func(v string) *enclave.MemoryEnclave {
+        e, err := enclave.NewMemoryEnclaveFromString(v)
+        if err != nil {
+            log.Fatal(err) // enclave.ErrLockedMemoryUnavailable: fail closed
+        }
+        return e
+    }
+
     // Authenticate using LDAP
     err := service.Login(ctx, api.LoginRequest{
         Backend:  api.BackendLDAP,
         Username: "jdoe",
-        Password: "password",
+        Password: seal("password"),
     })
     if err != nil {
         log.Printf("LDAP authentication failed: %v", err)
     }
 
-    // Authenticate using OAuth token
+    // Authenticate using OAuth token (the username is required by Login and
+    // ignored by OAuth)
     err = service.Login(ctx, api.LoginRequest{
         Backend:  api.BackendOAuth,
-        Password: "oauth-access-token",
+        Username: "oauth-user",
+        Password: seal("oauth-access-token"),
     })
     if err != nil {
         log.Printf("OAuth authentication failed: %v", err)
@@ -182,7 +201,8 @@ func main() {
     // Authenticate using OTP
     err = service.Login(ctx, api.LoginRequest{
         Backend:  api.BackendOTP,
-        Password: "123456",
+        Username: "jdoe",
+        Password: seal("123456"),
     })
     if err != nil {
         log.Printf("OTP authentication failed: %v", err)
@@ -211,7 +231,9 @@ func main() {
 All modules follow consistent error handling:
 
 ```go
-err := authenticator.Authenticate(ctx, credentials...)
+// credential is a *enclave.MemoryEnclave the caller owns; Authenticate
+// borrows it and never destroys it.
+err := authenticator.Authenticate(ctx, username, credential)
 
 switch {
 case err == nil:
@@ -260,7 +282,9 @@ type MockValidator struct {
     result error
 }
 
-func (m *MockValidator) Validate(...) error {
+// Collaborators borrow the credentials they are handed: read them with
+// WithBytes, never destroy them.
+func (m *MockValidator) Validate(ctx context.Context, clientID string, apiKey, otp *enclave.MemoryEnclave) error {
     return m.result
 }
 
@@ -297,11 +321,11 @@ signs with HMAC-SHA-1), and the OTP algorithm a FIPS deployment must provision.
    - Check configuration at startup
 
 4. **Secure credential storage**
-   - Use environment variables
-   - Leverage secret managers
+   - Leverage secret managers, or files read into a `[]byte`
    - Never commit secrets to version control
-   - Hand long-lived secrets to the protected-memory API of each backend
-     ([Protected Memory](secret.md)) rather than keeping them in Go strings
+   - Bring every credential into an enclave with `enclave.NewMemoryEnclave`,
+     which wipes the source slice — see [Credentials](credentials.md); a value
+     that only exists as a string (an environment variable) is residue R7
 
 5. **Audit logging**
    - Log all authentication attempts
@@ -494,7 +518,8 @@ See [LICENSE](../LICENSE) for details.
 - [PKCS#11 Authentication](pkcs11.md) - Hardware security modules
 - [YubiKey OTP](yubikey.md) - Hardware tokens
 - [TPM 2.0 Authentication](tpm2.md) - Platform integrity
-- [Protected Memory](secret.md) - How credential material is held in memory
+- [Credentials](credentials.md) - How credential material is held in memory
+- [Credential residue register](security/credential-residues.md) - Where plaintext still leaves locked memory, and why
 
 ## Additional Resources
 

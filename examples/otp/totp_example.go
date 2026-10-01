@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log"
 
+	"github.com/jeremyhahn/go-enclave"
+
 	"github.com/jeremyhahn/go-auth/pkg/otp"
 )
 
@@ -54,13 +56,30 @@ func main() {
 
 	// Example 5: Validate the code
 	ctx := context.Background()
-	if err := auth.Authenticate(ctx, code); err != nil {
+	submitted := sealCode(code)
+	err = auth.Authenticate(ctx, submitted)
+	submitted.Destroy()
+	if err != nil {
 		log.Fatalf("Authentication failed: %v", err)
 	}
 	fmt.Println("Authentication successful!")
 
 	// Example 6: A wrong code is rejected
-	if err := auth.Authenticate(ctx, "000000"); err != nil {
+	submitted = sealCode("000000")
+	err = auth.Authenticate(ctx, submitted)
+	submitted.Destroy()
+	if err != nil {
 		fmt.Printf("Wrong code rejected: %v\n", err)
 	}
+}
+
+// sealCode puts a submitted code into locked memory, the way a server would
+// on receipt. Authenticate and ValidateCounter only borrow it; the caller
+// destroys it once it has been checked.
+func sealCode(code string) *enclave.MemoryEnclave {
+	e, err := enclave.NewMemoryEnclaveFromString(code)
+	if err != nil {
+		log.Fatalf("Failed to seal code: %v", err)
+	}
+	return e
 }

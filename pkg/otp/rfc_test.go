@@ -145,7 +145,7 @@ func TestCodesMatch(t *testing.T) {
 		{"123456", "1234567", false},
 		{"123456", "", false},
 	} {
-		if got := codesMatch(tc.derived, tc.submitted); got != tc.want {
+		if got := codesMatch(tc.derived, []byte(tc.submitted)); got != tc.want {
 			t.Errorf("codesMatch(%q, %q) = %v, want %v", tc.derived, tc.submitted, got, tc.want)
 		}
 	}
@@ -164,7 +164,7 @@ func TestValidateTOTPSkewWindow(t *testing.T) {
 			t.Fatalf("derive: %v", err)
 		}
 
-		valid, err := validateTOTP(key, code, now, 30, 1, 8, algo)
+		valid, err := validateTOTP(key, []byte(code), now, 30, 1, 8, algo)
 		if err != nil {
 			t.Fatalf("validate: %v", err)
 		}
@@ -172,7 +172,7 @@ func TestValidateTOTPSkewWindow(t *testing.T) {
 			t.Errorf("code at offset %s rejected inside the skew window", offset)
 		}
 
-		valid, err = validateTOTP(key, code, now, 30, 0, 8, algo)
+		valid, err = validateTOTP(key, []byte(code), now, 30, 0, 8, algo)
 		if err != nil {
 			t.Fatalf("validate: %v", err)
 		}
@@ -186,7 +186,7 @@ func TestValidateTOTPSkewWindow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("derive: %v", err)
 	}
-	valid, err := validateTOTP(key, code, now, 30, 1, 8, algo)
+	valid, err := validateTOTP(key, []byte(code), now, 30, 1, 8, algo)
 	if err != nil {
 		t.Fatalf("validate: %v", err)
 	}
@@ -230,7 +230,7 @@ func TestSkewIsBounded(t *testing.T) {
 			t.Errorf("derive: %v", err)
 			return
 		}
-		valid, err := validateTOTP(raw, code, now, 30, math.MaxUint32, 6, algo)
+		valid, err := validateTOTP(raw, []byte(code), now, 30, math.MaxUint32, 6, algo)
 		if err != nil {
 			t.Errorf("validate: %v", err)
 			return
@@ -240,7 +240,7 @@ func TestSkewIsBounded(t *testing.T) {
 		}
 
 		// A time step near the top of the range: first+i must not wrap.
-		if _, err := validateTOTP(raw, code, time.Unix(math.MaxInt64/int64(time.Second), 0).UTC(), 1, maxSkew, 6, algo); err != nil {
+		if _, err := validateTOTP(raw, []byte(code), time.Unix(math.MaxInt64/int64(time.Second), 0).UTC(), 1, maxSkew, 6, algo); err != nil {
 			t.Errorf("validate at the top of the counter range: %v", err)
 		}
 	}()
@@ -263,7 +263,7 @@ func TestValidateTOTPNearEpoch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("derive: %v", err)
 	}
-	valid, err := validateTOTP(key, code, now, 30, 5, 6, algo)
+	valid, err := validateTOTP(key, []byte(code), now, 30, 5, 6, algo)
 	if err != nil {
 		t.Fatalf("validate: %v", err)
 	}

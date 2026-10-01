@@ -3,7 +3,6 @@ package oauth
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 
@@ -258,26 +257,14 @@ func (a *Authenticator) BuildAuthURL(state string, additionalParams map[string]s
 	return a.flows.buildAuthURL(state, "", additionalParams)
 }
 
-// Authenticate is a convenience method that validates a token.
-// It implements the passwordAuthenticator interface used by the api package.
-// The token should be passed as the password parameter.
+// Authenticate is a convenience method that validates a bearer token. It is
+// the pkg/api adapter: username is ignored and the token arrives where other
+// backends take a password.
 //
-// pkg/api still hands credentials over as strings (go-auth#48 replaces that
-// interface). The token is sealed here, at that boundary, destroyed when this
-// returns, and travels no further as a string.
-func (a *Authenticator) Authenticate(ctx context.Context, username, token string) error {
-	// Residue (pkg/api boundary, go-auth#48): the token arrives as a string.
-	sealed, err := enclave.NewMemoryEnclaveFromString(token)
-	if errors.Is(err, enclave.ErrEmptyEnclave) {
-		return ErrMissingToken
-	}
-	if err != nil {
-		return err
-	}
-	defer sealed.Destroy()
-
-	// For token validation, we ignore username and use the token
-	_, err = a.ValidateToken(ctx, sealed)
+// The token is BORROWED and never destroyed here; a nil, destroyed or blank
+// token fails with ErrMissingToken.
+func (a *Authenticator) Authenticate(ctx context.Context, _ string, token *enclave.MemoryEnclave) error {
+	_, err := a.ValidateToken(ctx, token)
 	return err
 }
 

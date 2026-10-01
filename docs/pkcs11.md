@@ -52,6 +52,10 @@ The module uses an interface-based design for testability:
 
 ## Quick Start
 
+The PIN is a go-enclave `*enclave.MemoryEnclave`, never a string (see
+[Credentials](credentials.md)). `Authenticate` borrows it and never destroys
+it; in the snippets after the first, `pin` is such an enclave.
+
 ### Basic Authentication
 
 ```go
@@ -59,7 +63,10 @@ package main
 
 import (
     "context"
+    "errors"
     "log"
+
+    enclave "github.com/jeremyhahn/go-enclave"
 
     "github.com/jeremyhahn/go-auth/pkg/pkcs11"
 )
@@ -78,10 +85,19 @@ func main() {
         log.Fatal(err)
     }
 
+    // The PIN travels in go-enclave locked memory. Build it with
+    // enclave.NewMemoryEnclave from the bytes you read (that wipes them);
+    // NewMemoryEnclaveFromString is for values that only exist as strings.
+    pin, err := enclave.NewMemoryEnclaveFromString("1234")
+    if err != nil {
+        log.Fatal(err) // enclave.ErrLockedMemoryUnavailable: fail closed
+    }
+    defer pin.Destroy() // Authenticate only borrows it
+
     // Authenticate with PIN
     ctx := context.Background()
-    err = auth.Authenticate(ctx, "1234")
-    if err == pkcs11.ErrInvalidPIN {
+    err = auth.Authenticate(ctx, pin)
+    if errors.Is(err, pkcs11.ErrInvalidPIN) {
         log.Println("Invalid PIN")
         return
     }
@@ -194,7 +210,7 @@ Either `TokenLabel` or `Slot` must be specified (not both).
 ## Error Handling
 
 ```go
-err := auth.Authenticate(ctx, "1234")
+err := auth.Authenticate(ctx, pin)
 
 switch {
 case err == nil:
@@ -233,8 +249,9 @@ cfg := pkcs11.Config{ModulePath: "/path/to/module.so"}
 auth, err := pkcs11.NewAuthenticator(cfg, nil)
 // Error: "pkcs11: either token label or slot must be specified"
 
-// Empty PIN
-err := auth.Authenticate(ctx, "")
+// Missing PIN: pkcs11.ErrMissingPIN
+// (a destroyed enclave also matches enclave.ErrEnclaveDestroyed)
+err := auth.Authenticate(ctx, nil)
 // Error: "pkcs11: pin must not be empty"
 ```
 
@@ -295,7 +312,8 @@ type MockSession struct {
     logoutErr error
 }
 
-func (m *MockSession) Login(ctx context.Context, pin string) error {
+func (m *MockSession) Login(ctx context.Context, pin *enclave.MemoryEnclave) error {
+    // Borrowed: read it with pin.WithBytes if needed, never destroy it.
     return m.loginErr
 }
 
@@ -318,7 +336,7 @@ func TestAuthentication(t *testing.T) {
         t.Fatal(err)
     }
 
-    err = auth.Authenticate(context.Background(), "1234")
+    err = auth.Authenticate(context.Background(), pin)
     // ... assertions
 }
 ```
@@ -346,7 +364,7 @@ import "time"
 ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 defer cancel()
 
-err := auth.Authenticate(ctx, "1234")
+err := auth.Authenticate(ctx, pin)
 if err == context.DeadlineExceeded {
     log.Println("Token authentication timed out")
 }
@@ -363,7 +381,7 @@ go func() {
     cancel() // Cancel on signal
 }()
 
-err := auth.Authenticate(ctx, "1234")
+err := auth.Authenticate(ctx, pin)
 ```
 
 ## Integration with go-auth API
@@ -387,10 +405,12 @@ service, _ := api.NewService(api.Config{
     },
 })
 
-// Authenticate (PIN passed as password)
+// Authenticate (PIN passed as password). Login takes ownership of the
+// request's enclaves and destroys them when the attempt completes.
 err := service.Login(ctx, api.LoginRequest{
     Backend:  api.BackendPKCS11,
-    Password: "1234",  // Token PIN
+    Username: "token-user", // required by Login, ignored by PKCS#11
+    Password: pin,          // *enclave.MemoryEnclave holding the token PIN
 })
 ```
 
@@ -419,7 +439,7 @@ cfg := pkcs11.Config{
 }
 
 # Default YubiKey PIV PIN is 123456
-err := auth.Authenticate(ctx, "123456")
+err := auth.Authenticate(ctx, pin)
 ```
 
 ### Smart Card (OpenSC)
@@ -432,7 +452,7 @@ cfg := pkcs11.Config{
 }
 
 // User PIN (typically 4-8 digits)
-err := auth.Authenticate(ctx, "1234")
+err := auth.Authenticate(ctx, pin)
 ```
 
 ### Hardware HSM
@@ -445,7 +465,7 @@ cfg := pkcs11.Config{
 }
 
 // HSM partition password
-err := auth.Authenticate(ctx, "partition-password")
+err := auth.Authenticate(ctx, pin)
 ```
 
 ## Security Considerations
@@ -453,10 +473,19 @@ err := auth.Authenticate(ctx, "partition-password")
 ### PIN Security
 
 1. **PIN strength** - Enforce minimum length and complexity
-2. **PIN storage** - Never store PINs in plaintext
+2. **PIN storage** - Never store PINs in plaintext; hold them in an enclave
+   (`enclave.NewMemoryEnclave` over the bytes you read wipes the source)
 3. **PIN transmission** - Use secure channels
 4. **Failed attempts** - Monitor and implement rate limiting
 5. **Token lockout** - Most tokens lock after 3-5 failed attempts
+
+### The PIN at the Binding
+
+`miekg/pkcs11`'s `Login` accepts the PIN only as a Go `string` and copies it
+with `C.CString`, freeing that copy without wiping it. go-auth lends `Login` a
+string whose bytes are zeroed as soon as it returns; the freed C copy and
+anything the vendor module keeps are residue **R6** in the
+[credential residue register](security/credential-residues.md).
 
 ### Token Lockout
 
@@ -645,17 +674,19 @@ Authenticators are thread-safe:
 ```go
 auth, _ := pkcs11.NewAuthenticator(cfg, nil)
 
-// Safe to use from multiple goroutines
+// Safe to use from multiple goroutines. An enclave may be borrowed by
+// several goroutines at once; destroy it after the last one returns.
 var wg sync.WaitGroup
 for i := 0; i < 10; i++ {
     wg.Add(1)
-    go func(pin string) {
+    go func() {
         defer wg.Done()
         err := auth.Authenticate(ctx, pin)
         // ... handle result
-    }("1234")
+    }()
 }
 wg.Wait()
+pin.Destroy()
 ```
 
 Note: Some PKCS#11 modules may serialize operations internally.

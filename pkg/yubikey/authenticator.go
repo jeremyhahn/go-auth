@@ -3,73 +3,59 @@ package yubikey
 import (
 	"context"
 	"errors"
+	"sync"
 
-	secretpkg "github.com/jeremyhahn/go-auth/pkg/secret"
+	enclave "github.com/jeremyhahn/go-enclave"
+
+	"github.com/jeremyhahn/go-auth/pkg/internal/credential"
 )
 
 // OTPValidator describes a component capable of validating a YubiKey OTP.
 //
-// Deprecated: implement ProtectedOTPValidator instead, which receives the API
-// key in protected memory rather than as a Go string. This interface is still
-// supported — an implementation of it is called with a copy of the key opened
-// from the enclave — and will be removed in the coordinated breaking release.
+// Both credentials are BORROWED for the length of the call: apiKey is the
+// authenticator's Yubico API key and otp is the caller's one-time password.
+// An implementation reads them through WithBytes, must not retain the bytes,
+// and must not destroy either enclave.
 type OTPValidator interface {
-	Validate(ctx context.Context, clientID, secret, otp string) error
-}
-
-// ProtectedOTPValidator is an OTPValidator that takes the API key in protected
-// memory. A validator implementing it is never handed the key as a string:
-// HTTPValidator, the implementation in this package, opens the enclave only to
-// sign a request and to verify the response signature.
-type ProtectedOTPValidator interface {
-	ValidateProtected(ctx context.Context, clientID string, apiKey *secretpkg.Secret, otp string) error
+	Validate(ctx context.Context, clientID string, apiKey, otp *enclave.MemoryEnclave) error
 }
 
 var (
 	errSystemValidatorUnavailable = errors.New("yubikey: system validator unavailable; configure a validator implementation")
 	// ErrInvalidOTP indicates the OTP was syntactically valid but rejected by the validation service.
 	ErrInvalidOTP = errors.New("yubikey: invalid OTP")
+	// ErrNilAuthenticator indicates a method was called on a nil authenticator.
+	ErrNilAuthenticator = errors.New("yubikey: authenticator is nil")
+	// ErrMissingClientID indicates the configuration has no Yubico client id.
+	ErrMissingClientID = errors.New("yubikey: client id must not be empty")
+	// ErrMissingAPIKey indicates the configuration has no live API key
+	// enclave. A destroyed one also matches enclave.ErrEnclaveDestroyed.
+	ErrMissingAPIKey = errors.New("yubikey: api key must not be empty")
+	// ErrMissingOTP indicates Authenticate was called without a live OTP
+	// enclave. A destroyed one also matches enclave.ErrEnclaveDestroyed.
+	ErrMissingOTP = errors.New("yubikey: otp must not be empty")
+	// ErrClosed indicates the authenticator has been closed and its API key
+	// destroyed.
+	ErrClosed = errors.New("yubikey: authenticator is closed")
 )
 
 // Config contains the inputs required to talk to a YubiKey validation service.
 type Config struct {
 	ClientID string
-	// APIKey is the base64 API key issued by Yubico.
+	// APIKey is the base64 API key issued by Yubico, in locked memory. Build
+	// it with enclave.NewMemoryEnclave (which wipes the caller's slice) or,
+	// from a configuration string, enclave.NewMemoryEnclaveFromString.
 	//
-	// Deprecated: a Go string cannot be wiped, so a key set here stays
-	// resident for the lifetime of the process that read it. Use
-	// ProtectedAPIKey instead. Still honored, and still the default when
-	// ProtectedAPIKey is unset, but it will be removed in the coordinated
-	// breaking release.
-	APIKey string
-	// ProtectedAPIKey is the base64 API key issued by Yubico, held in
-	// protected memory. It is the replacement for APIKey: build one with
-	// secret.NewString, or with secret.New from a key read into a buffer the
-	// caller controls.
-	//
-	// Exactly one of APIKey and ProtectedAPIKey may be set. The authenticator
-	// borrows the secret and does not take ownership of it: destroy it when
-	// the last component using it is done.
-	ProtectedAPIKey *secretpkg.Secret
+	// NewAuthenticator TAKES OWNERSHIP of it on every return path, and Close
+	// destroys it. Do not use or destroy it afterwards.
+	APIKey *enclave.MemoryEnclave
 }
 
 func (c Config) validate() error {
 	if c.ClientID == "" {
-		return errors.New("yubikey: client id must not be empty")
+		return ErrMissingClientID
 	}
-	if c.ProtectedAPIKey != nil {
-		if c.APIKey != "" {
-			return errors.New("yubikey: set either APIKey or ProtectedAPIKey, not both")
-		}
-		if c.ProtectedAPIKey.Size() == 0 {
-			return errors.New("yubikey: api key must not be empty")
-		}
-		return nil
-	}
-	if c.APIKey == "" {
-		return errors.New("yubikey: api key must not be empty")
-	}
-	return nil
+	return credential.Require(c.APIKey, ErrMissingAPIKey)
 }
 
 var systemValidator OTPValidator
@@ -84,11 +70,19 @@ func SetSystemValidator(v OTPValidator) {
 type Authenticator struct {
 	cfg       Config
 	validator OTPValidator
+	// lifecycle orders Close against in-flight calls: every call holds the
+	// read lock for its whole length and Close takes the write lock, so the
+	// credential is destroyed only once no call can still need it.
+	lifecycle sync.RWMutex
+	closed    bool // guarded by lifecycle
 }
 
 // NewAuthenticator constructs a YubiKey authenticator. If validator is nil the
 // package-level system validator is used — the YubiCloud HTTPValidator unless
 // SetSystemValidator replaced it.
+//
+// It owns cfg.APIKey on every return path: when it returns an error the key
+// has already been destroyed, and otherwise Close destroys it.
 //
 // Under FIPS activation it returns ErrFIPSUnsupported, ahead of the
 // configuration checks, when the validator it would use is the YubiCloud one.
@@ -97,25 +91,57 @@ func NewAuthenticator(cfg Config, validator OTPValidator) (*Authenticator, error
 	if validator == nil {
 		validator = systemValidator
 	}
-	if refusedUnderFIPS(validator) {
-		return nil, ErrFIPSUnsupported
-	}
-	if err := cfg.validate(); err != nil {
+	if err := checkConstruction(cfg, validator); err != nil {
+		cfg.APIKey.Destroy()
 		return nil, err
-	}
-	if validator == nil {
-		return nil, errSystemValidatorUnavailable
 	}
 	return &Authenticator{cfg: cfg, validator: validator}, nil
 }
 
-// Authenticate validates the provided OTP.
-func (a *Authenticator) Authenticate(ctx context.Context, otp string) error {
-	if a == nil {
-		return errors.New("yubikey: authenticator is nil")
+func checkConstruction(cfg Config, validator OTPValidator) error {
+	if refusedUnderFIPS(validator) {
+		return ErrFIPSUnsupported
 	}
-	if otp == "" {
-		return errors.New("yubikey: otp must not be empty")
+	if err := cfg.validate(); err != nil {
+		return err
+	}
+	if validator == nil {
+		return errSystemValidatorUnavailable
+	}
+	return nil
+}
+
+// Close destroys the API key the authenticator owns. It waits for every
+// in-flight Authenticate to finish — including a YubiCloud exchange whose
+// response signature still has to be verified with the key — and it is
+// idempotent.
+// Authenticate fails with ErrClosed afterwards.
+func (a *Authenticator) Close() error {
+	if a == nil {
+		return nil
+	}
+	a.lifecycle.Lock()
+	defer a.lifecycle.Unlock()
+	a.closed = true
+	return a.cfg.APIKey.DestroyErr()
+}
+
+// Authenticate validates the provided OTP.
+//
+// A YubiKey OTP is a credential for as long as the validation service would
+// accept it, so it travels in an enclave like every other credential. It is
+// BORROWED: the caller still owns it and destroys it.
+func (a *Authenticator) Authenticate(ctx context.Context, otp *enclave.MemoryEnclave) error {
+	if a == nil {
+		return ErrNilAuthenticator
+	}
+	a.lifecycle.RLock()
+	defer a.lifecycle.RUnlock()
+	if a.closed {
+		return ErrClosed
+	}
+	if err := credential.Require(otp, ErrMissingOTP); err != nil {
+		return err
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -123,29 +149,5 @@ func (a *Authenticator) Authenticate(ctx context.Context, otp string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	apiKey := a.cfg.ProtectedAPIKey
-	if apiKey == nil {
-		// The deprecated string path. Sealing it here does not undo the
-		// exposure of Config.APIKey, but it does mean everything below this
-		// line — including a custom validator that implements
-		// ProtectedOTPValidator — sees the key the protected way.
-		sealed, err := secretpkg.NewString(a.cfg.APIKey)
-		if err != nil {
-			return err
-		}
-		defer sealed.Destroy()
-		apiKey = sealed
-	}
-
-	if protected, ok := a.validator.(ProtectedOTPValidator); ok {
-		return protected.ValidateProtected(ctx, a.cfg.ClientID, apiKey, otp)
-	}
-
-	// A validator that only implements the deprecated interface has to be
-	// given a string. The copy exists for the length of the call and is
-	// unreachable afterwards, but it cannot be wiped — which is the reason
-	// that interface is deprecated.
-	return apiKey.OpenString(func(key string) error {
-		return a.validator.Validate(ctx, a.cfg.ClientID, key, otp)
-	})
+	return a.validator.Validate(ctx, a.cfg.ClientID, a.cfg.APIKey, otp)
 }

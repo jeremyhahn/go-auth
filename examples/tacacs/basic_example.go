@@ -13,9 +13,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"time"
+
+	enclave "github.com/jeremyhahn/go-enclave"
 
 	"github.com/jeremyhahn/go-auth/pkg/tacacs"
 )
@@ -39,14 +42,21 @@ func basicExample() {
 	// Create TACACS+ authenticator
 	// The address must include both host and port (typically 49 for TACACS+)
 	// The shared secret is used to encrypt communication with the server
+	sharedSecret, err := enclave.NewMemoryEnclaveFromString("shared-secret")
+	if err != nil {
+		log.Fatalf("Failed to seal the shared secret: %v", err)
+	}
+	// NewAuthenticator takes ownership of sharedSecret — it destroys it on
+	// error — and auth.Close destroys it otherwise.
 	auth, err := tacacs.NewAuthenticator(
 		"tacacs.example.com:49",
-		"shared-secret",
+		sharedSecret,
 		tacacs.WithTimeout(5*time.Second),
 	)
 	if err != nil {
 		log.Fatalf("Failed to create TACACS+ authenticator: %v", err)
 	}
+	defer auth.Close()
 
 	// Create context with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -54,7 +64,14 @@ func basicExample() {
 
 	// Example credentials
 	username := "admin"
-	password := "adminpass"
+	// The password travels in go-enclave locked memory. In production it
+	// comes from enclave.NewMemoryEnclave over a []byte the reader fills,
+	// which wipes that slice; a string literal is only for the example.
+	password, err := enclave.NewMemoryEnclaveFromString("adminpass")
+	if err != nil {
+		log.Fatalf("Failed to seal the password: %v", err)
+	}
+	defer password.Destroy()
 
 	fmt.Printf("Authenticating user: %s\n", username)
 	fmt.Printf("TACACS+ server: tacacs.example.com:49\n")
@@ -62,7 +79,7 @@ func basicExample() {
 	// Perform authentication
 	err = auth.Authenticate(ctx, username, password)
 	if err != nil {
-		if err == tacacs.ErrAuthenticationFailed {
+		if errors.Is(err, tacacs.ErrAuthenticationFailed) {
 			log.Printf("Access denied by TACACS+ server")
 		} else {
 			log.Printf("Authentication failed: %v", err)
@@ -84,27 +101,41 @@ func privilegeLevelExample() {
 	// Create TACACS+ authenticator with custom privilege level
 	// Privilege levels typically range from 0 (least privileged) to 15 (most privileged)
 	// Common levels: 1 (normal user), 15 (admin/enable)
+	sharedSecret, err := enclave.NewMemoryEnclaveFromString("shared-secret")
+	if err != nil {
+		log.Fatalf("Failed to seal the shared secret: %v", err)
+	}
+	// NewAuthenticator takes ownership of sharedSecret — it destroys it on
+	// error — and auth.Close destroys it otherwise.
 	auth, err := tacacs.NewAuthenticator(
 		"tacacs.example.com:49",
-		"shared-secret",
+		sharedSecret,
 		tacacs.WithPrivLevel(15), // Request admin privilege level
 		tacacs.WithTimeout(5*time.Second),
 	)
 	if err != nil {
 		log.Fatalf("Failed to create TACACS+ authenticator: %v", err)
 	}
+	defer auth.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	username := "admin"
-	password := "adminpass"
+	// The password travels in go-enclave locked memory. In production it
+	// comes from enclave.NewMemoryEnclave over a []byte the reader fills,
+	// which wipes that slice; a string literal is only for the example.
+	password, err := enclave.NewMemoryEnclaveFromString("adminpass")
+	if err != nil {
+		log.Fatalf("Failed to seal the password: %v", err)
+	}
+	defer password.Destroy()
 
 	fmt.Printf("Authenticating user: %s (privilege level 15)\n", username)
 
 	err = auth.Authenticate(ctx, username, password)
 	if err != nil {
-		if err == tacacs.ErrAuthenticationFailed {
+		if errors.Is(err, tacacs.ErrAuthenticationFailed) {
 			log.Printf("Access denied - user may not have required privilege level")
 		} else {
 			log.Printf("Authentication failed: %v", err)

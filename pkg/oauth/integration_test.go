@@ -2,6 +2,7 @@ package oauth
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -252,8 +253,8 @@ func TestAuthenticator_Authenticate(t *testing.T) {
 	defer auth.Close()
 
 	// Test the convenience Authenticate method
-	err = auth.Authenticate(context.Background(), "ignored", "")
-	if err != ErrMissingToken {
+	err = auth.Authenticate(context.Background(), "ignored", nil)
+	if !errors.Is(err, ErrMissingToken) {
 		t.Errorf("Expected ErrMissingToken, got %v", err)
 	}
 }
@@ -277,7 +278,7 @@ func TestAuthenticator_ContextHandling(t *testing.T) {
 
 	t.Run("nil context", func(t *testing.T) {
 		// Should default to background context
-		err := auth.Authenticate(nil, "", "token")
+		err := auth.Authenticate(nil, "", sealedForTest(t, "token"))
 		// Will fail validation but shouldn't panic on nil context
 		if err == nil {
 			t.Error("Expected validation error")
@@ -288,7 +289,7 @@ func TestAuthenticator_ContextHandling(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel() // Cancel immediately
 
-		err := auth.Authenticate(ctx, "", "token")
+		err := auth.Authenticate(ctx, "", sealedForTest(t, "token"))
 		if err == nil {
 			t.Error("Expected context canceled error")
 		}

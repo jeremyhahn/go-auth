@@ -43,6 +43,8 @@ import (
     "fmt"
     "log"
 
+    enclave "github.com/jeremyhahn/go-enclave"
+
     "github.com/jeremyhahn/go-auth/pkg/otp"
 )
 
@@ -69,8 +71,16 @@ func main() {
     code, _ := auth.Generate()
     fmt.Printf("Current code: %s\n", code)
 
+    // A submitted code is a credential for its validity window, so it is
+    // validated from an enclave. Authenticate borrows it.
+    submitted, err := enclave.NewMemoryEnclaveFromString(code)
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer submitted.Destroy()
+
     // Validate code
-    if err := auth.Authenticate(context.Background(), code); err != nil {
+    if err := auth.Authenticate(context.Background(), submitted); err != nil {
         log.Fatal(err)
     }
     fmt.Println("Authentication successful!")
@@ -102,8 +112,13 @@ currentCounter := uint64(0)
 // Generate code for current counter
 code, _ := auth.Generate(currentCounter)
 
-// Validate and get new counter
-newCounter, err := auth.ValidateCounter(context.Background(), code, currentCounter)
+// Validate and get new counter; the submitted code is borrowed from an enclave
+submitted, err := enclave.NewMemoryEnclaveFromString(code)
+if err != nil {
+    log.Fatal(err)
+}
+defer submitted.Destroy()
+newCounter, err := auth.ValidateCounter(context.Background(), submitted, currentCounter)
 if err != nil {
     log.Fatal(err)
 }
@@ -149,7 +164,8 @@ it, each documented as a deliberate, unwipeable copy:
 Both encode inside a locked scratch enclave and convert to a string only at
 the end. Render or store the result and drop it; never log it.
 `DecodeSeed`'s input is a string the caller already holds — that residue is the
-caller's.
+caller's. These are residues **R8** (the exported text) and **R7** (the
+caller's input) in the [credential residue register](security/credential-residues.md).
 
 ## Configuration
 
@@ -232,25 +248,29 @@ Destroys the seed. Idempotent. Returns go-enclave's teardown report (`nil`, or
 ### Authenticate
 
 ```go
-func (a *Authenticator) Authenticate(ctx context.Context, code string) error
+func (a *Authenticator) Authenticate(ctx context.Context, code *enclave.MemoryEnclave) error
 ```
 
-Validates a code against the current time (TOTP, with skew) or the configured
+The code is **borrowed** from the caller's enclave and compared inside the
+borrow. Validates a code against the current time (TOTP, with skew) or the configured
 counter (HOTP). Comparison is constant time, and a TOTP check evaluates every
 step in the window whether or not one matches.
 
 **Errors:**
 - `ErrNilAuthenticator`: Called on nil authenticator
 - `ErrInvalidCode`: Invalid code (also wraps `enclave.ErrEnclaveDestroyed` after `Close`)
+- `ErrInvalidCode` joined with `ErrMissingCode`: nil code, or a destroyed one
+  (then also `enclave.ErrEnclaveDestroyed`)
 - `context.Canceled` / `context.DeadlineExceeded`
 
 ### ValidateCounter (HOTP only)
 
 ```go
-func (a *Authenticator) ValidateCounter(ctx context.Context, code string, counter uint64) (uint64, error)
+func (a *Authenticator) ValidateCounter(ctx context.Context, code *enclave.MemoryEnclave, counter uint64) (uint64, error)
 ```
 
-Validates an HOTP code at `counter` and returns `counter + 1` to persist.
+Validates an HOTP code (borrowed, as in `Authenticate`) at `counter` and
+returns `counter + 1` to persist.
 
 **Errors:** `ErrNilAuthenticator`, `ErrInvalidConfig` (TOTP authenticator),
 `ErrInvalidCode`.
@@ -262,7 +282,9 @@ func (a *Authenticator) Generate(counter ...uint64) (string, error)
 ```
 
 Generates the code for now (TOTP) or the given counter (HOTP).
-`ErrCounterRequired` when an HOTP authenticator is given no counter.
+`ErrCounterRequired` when an HOTP authenticator is given no counter. The code
+is returned as a string for display or delivery — residue **R8** in the
+[credential residue register](security/credential-residues.md).
 
 ### ProvisioningURI
 
@@ -299,6 +321,7 @@ var (
     ErrExpiredCode      = errors.New("otp: code expired")
     ErrNilAuthenticator = errors.New("otp: authenticator is nil")
     ErrCounterRequired  = errors.New("otp: counter required for HOTP generation")
+    ErrMissingCode      = errors.New("otp: code must not be empty") // joined with ErrInvalidCode
     ErrFIPSUnsupported  = errors.New("otp: unavailable under FIPS 140-only mode")
 )
 ```
@@ -387,11 +410,18 @@ err = qrcode.WriteFile(uri, qrcode.Medium, 256, "qr.png")
 
 ```go
 func otpAuthHandler(w http.ResponseWriter, r *http.Request) {
-    code := r.FormValue("code")
+    // net/http has already parsed the form into strings (residue R5); bring
+    // the code into an enclave at once and drop the string.
+    code, err := enclave.NewMemoryEnclaveFromString(r.FormValue("code"))
+    if err != nil {
+        http.Error(w, "Invalid code", http.StatusBadRequest)
+        return
+    }
+    defer code.Destroy()
 
     // Load the user's stored seed and settings
     stored := getUserOTP(r.Context(), userID)
-    seed, err := otp.DecodeSeed(stored.Seed)
+    seed, err := otp.DecodeSeed(stored.Seed) // residue R7: the stored text
     if err != nil {
         http.Error(w, "Invalid configuration", http.StatusInternalServerError)
         return

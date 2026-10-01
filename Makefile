@@ -1,7 +1,6 @@
 GO ?= go
 
-MODULES := secret pam radius tacacs ldap pkcs11 yubikey oauth otp tpm2
-MODULE_DIR_secret := pkg/secret
+MODULES := pam radius tacacs ldap pkcs11 yubikey oauth otp tpm2
 MODULE_DIR_pam := pkg/pam
 MODULE_DIR_radius := pkg/radius
 MODULE_DIR_tacacs := pkg/tacacs
@@ -164,14 +163,6 @@ clean:
 
 .PHONY: integration-test
 integration-test: $(MODULES:%=%-integration-test)
-
-.PHONY: secret-test
-secret-test:
-	$(MAKE) -C $(MODULE_DIR_secret) test
-
-.PHONY: secret-integration-test
-secret-integration-test:
-	$(MAKE) -C $(MODULE_DIR_secret) integration-test
 
 .PHONY: pam-test
 pam-test:

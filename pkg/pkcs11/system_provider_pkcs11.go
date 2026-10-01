@@ -8,7 +8,10 @@ import (
 	"strconv"
 	"strings"
 
+	enclave "github.com/jeremyhahn/go-enclave"
 	pkcs "github.com/miekg/pkcs11"
+
+	"github.com/jeremyhahn/go-auth/pkg/internal/credential"
 )
 
 func init() {
@@ -78,11 +81,17 @@ type nativeSession struct {
 	session pkcs.SessionHandle
 }
 
-func (s *nativeSession) Login(ctx context.Context, pin string) error {
+func (s *nativeSession) Login(ctx context.Context, pin *enclave.MemoryEnclave) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return s.module.Login(s.session, pkcs.CKU_USER, pin)
+	// Residue R6: miekg/pkcs11's Login takes the PIN as a string and copies it
+	// with C.CString, which it frees without wiping. The string is wiped here
+	// when Login returns; the C copy and anything the vendor module keeps are
+	// beyond reach.
+	return credential.WithTransientString(pin, func(value string) error {
+		return s.module.Login(s.session, pkcs.CKU_USER, value)
+	})
 }
 
 func (s *nativeSession) Logout(ctx context.Context) error {

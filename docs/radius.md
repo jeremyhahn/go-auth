@@ -16,8 +16,8 @@ RADIUS is a networking protocol that provides centralized authentication, author
 > HMAC-MD5 (RFC 2869 §5.14), so this backend cannot run under
 > `GODEBUG=fips140=only` — RadSec included, since it tunnels the same
 > MD5-authenticated packet. The backend is in every build; when FIPS is
-> activated, `NewAuthenticator` and `NewAuthenticatorWithSecret` return
-> `radius.ErrFIPSUnsupported` instead of constructing it. Check for it with
+> activated, `NewAuthenticator` returns `radius.ErrFIPSUnsupported` instead
+> of constructing it (and destroys the shared secret it was handed). Check for it with
 > `errors.Is`. See [FIPS 140-3 compliance](fips.md).
 
 ## Features
@@ -32,6 +32,12 @@ RADIUS is a networking protocol that provides centralized authentication, author
 
 ## Quick Start
 
+Credentials are go-enclave `*enclave.MemoryEnclave` values, never strings
+(see [Credentials](credentials.md)). In the snippets after the first,
+`sharedSecret` is an enclave handed to `NewAuthenticator`, which **takes
+ownership** of it — every authenticator needs its own — and `password` is one
+the caller owns and `Authenticate` borrows.
+
 ### PAP Authentication
 
 Traditional username/password authentication:
@@ -41,25 +47,41 @@ package main
 
 import (
     "context"
+    "errors"
     "log"
+
+    enclave "github.com/jeremyhahn/go-enclave"
 
     "github.com/jeremyhahn/go-auth/pkg/radius"
 )
 
 func main() {
-    // Create RADIUS authenticator
-    auth, err := radius.NewAuthenticator(
-        "radius.example.com:1812",
-        "shared-secret",
-    )
+    // Credentials travel in go-enclave locked memory. Build them with
+    // enclave.NewMemoryEnclave from bytes you read (that wipes them);
+    // NewMemoryEnclaveFromString is for values that only exist as strings.
+    sharedSecret, err := enclave.NewMemoryEnclaveFromString("shared-secret")
+    if err != nil {
+        log.Fatal(err) // enclave.ErrLockedMemoryUnavailable: fail closed
+    }
+
+    // NewAuthenticator takes ownership of sharedSecret: it destroys it on
+    // error, and auth.Close destroys it otherwise.
+    auth, err := radius.NewAuthenticator("radius.example.com:1812", sharedSecret)
     if err != nil {
         log.Fatal(err)
     }
+    defer auth.Close()
+
+    password, err := enclave.NewMemoryEnclaveFromString("password")
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer password.Destroy() // Authenticate only borrows it
 
     // Authenticate user
     ctx := context.Background()
-    err = auth.Authenticate(ctx, "username", "password")
-    if err == radius.ErrRejected {
+    err = auth.Authenticate(ctx, "username", password)
+    if errors.Is(err, radius.ErrRejected) {
         log.Println("Access denied")
         return
     }
@@ -100,14 +122,14 @@ tlsConfig := &tls.Config{
 // Create RadSec authenticator
 auth, err := radius.NewAuthenticator(
     "radsec.example.com:2083",
-    "shared-secret",
+    sharedSecret,
     radius.WithTLSConfig(tlsConfig),
 )
 if err != nil {
     log.Fatal(err)
 }
 
-err = auth.Authenticate(ctx, "username", "password")
+err = auth.Authenticate(ctx, "username", password)
 ```
 
 ### EAP-TLS Authentication
@@ -150,7 +172,7 @@ eapTLSConfig := &radius.EAPTLSConfig{
 // Create authenticator with EAP-TLS
 auth, err := radius.NewAuthenticator(
     "radius.example.com:1812",
-    "shared-secret",
+    sharedSecret,
     radius.WithEAPTLS(eapTLSConfig),
 )
 if err != nil {
@@ -158,7 +180,7 @@ if err != nil {
 }
 
 // Authenticate (password parameter ignored for EAP-TLS)
-err = auth.Authenticate(ctx, "user@example.com", "")
+err = auth.Authenticate(ctx, "user@example.com", nil)
 ```
 
 ## Configuration Options
@@ -166,12 +188,16 @@ err = auth.Authenticate(ctx, "user@example.com", "")
 ### NewAuthenticator Parameters
 
 ```go
-func NewAuthenticator(address, secret string, opts ...Option) (*Authenticator, error)
+func NewAuthenticator(address string, sharedSecret *enclave.MemoryEnclave, opts ...Option) (*Authenticator, error)
+func (a *Authenticator) Authenticate(ctx context.Context, username string, password *enclave.MemoryEnclave) error
+func (a *Authenticator) Close() error
 ```
 
 **Required Parameters:**
 - `address` - RADIUS server address with port (e.g., "192.168.1.1:1812")
-- `secret` - Shared secret for RADIUS packet encryption
+- `sharedSecret` - Shared secret for RADIUS packet authentication, in locked
+  memory. `NewAuthenticator` takes ownership on every return path; `Close`
+  destroys it.
 
 **Standard Ports:**
 - `1812` - Authentication (UDP)
@@ -187,7 +213,7 @@ Override the network protocol (default: "udp"):
 ```go
 auth, err := radius.NewAuthenticator(
     "radius.example.com:1812",
-    "secret",
+    sharedSecret,
     radius.WithNetwork("udp4"), // Force IPv4
 )
 ```
@@ -206,7 +232,7 @@ tlsConfig := &tls.Config{
 
 auth, err := radius.NewAuthenticator(
     "radsec.example.com:2083",
-    "secret",
+    sharedSecret,
     radius.WithTLSConfig(tlsConfig),
 )
 ```
@@ -220,7 +246,7 @@ import "time"
 
 auth, err := radius.NewAuthenticator(
     "radius.example.com:1812",
-    "secret",
+    sharedSecret,
     radius.WithRetry(3 * time.Second),
 )
 ```
@@ -232,7 +258,7 @@ Limit tolerance for malformed responses:
 ```go
 auth, err := radius.NewAuthenticator(
     "radius.example.com:1812",
-    "secret",
+    sharedSecret,
     radius.WithMaxPacketErrors(3),
 )
 ```
@@ -244,7 +270,7 @@ Set connection timeout:
 ```go
 auth, err := radius.NewAuthenticator(
     "radius.example.com:1812",
-    "secret",
+    sharedSecret,
     radius.WithDialTimeout(5 * time.Second),
 )
 ```
@@ -256,7 +282,7 @@ Disable response authenticator verification (testing only):
 ```go
 auth, err := radius.NewAuthenticator(
     "radius.example.com:1812",
-    "secret",
+    sharedSecret,
     radius.WithInsecureSkipVerify(true), // DO NOT use in production
 )
 ```
@@ -275,7 +301,7 @@ eapConfig := &radius.EAPTLSConfig{
 
 auth, err := radius.NewAuthenticator(
     "radius.example.com:1812",
-    "secret",
+    sharedSecret,
     radius.WithEAPTLS(eapConfig),
 )
 ```
@@ -320,7 +346,7 @@ FragmentSize: 1400, // Adjust based on network MTU
 ### Common Errors
 
 ```go
-err := auth.Authenticate(ctx, "username", "password")
+err := auth.Authenticate(ctx, "username", password)
 
 switch {
 case err == nil:
@@ -350,27 +376,28 @@ default:
 Configuration errors are returned from `NewAuthenticator`:
 
 ```go
-auth, err := radius.NewAuthenticator("", "secret")
-if err != nil {
-    // Error: "radius: address must not be empty"
+auth, err := radius.NewAuthenticator("", sharedSecret)
+if errors.Is(err, radius.ErrEmptyAddress) {
+    // Error: "radius: address must not be empty" (sharedSecret is destroyed)
 }
 
-auth, err := radius.NewAuthenticator("server:1812", "")
-if err != nil {
+auth, err := radius.NewAuthenticator("server:1812", nil)
+if errors.Is(err, radius.ErrMissingSharedSecret) {
     // Error: "radius: secret must not be empty"
+    // A destroyed enclave also matches enclave.ErrEnclaveDestroyed.
 }
 ```
 
 ### FIPS activation
 
-Both constructors return `radius.ErrFIPSUnsupported` — ahead of any argument
-check — when the process runs under `GODEBUG=fips140=only`. RFC 2865 §3
+`NewAuthenticator` returns `radius.ErrFIPSUnsupported` — ahead of any argument
+check, and after destroying the shared secret it was handed — when the process runs under `GODEBUG=fips140=only`. RFC 2865 §3
 authenticates every packet with MD5 and RFC 2869 §5.14 signs it with HMAC-MD5,
 so no configuration, transport or option makes this backend usable there;
 RadSec does not help, because the inner packet is unchanged.
 
 ```go
-auth, err := radius.NewAuthenticator("server:1812", "secret")
+auth, err := radius.NewAuthenticator("server:1812", sharedSecret)
 if errors.Is(err, radius.ErrFIPSUnsupported) {
     // FIPS is activated in this deployment. Use a different backend;
     // there is no RADIUS configuration that satisfies FIPS 140-3.
@@ -391,7 +418,7 @@ import (
 
 radiusAuth, _ := radius.NewAuthenticator(
     "radius.example.com:1812",
-    "shared-secret",
+    sharedSecret,
 )
 
 service, _ := api.NewService(api.Config{
@@ -400,10 +427,12 @@ service, _ := api.NewService(api.Config{
     },
 })
 
+// Login takes ownership of the request's enclaves and destroys them when
+// the attempt completes.
 err := service.Login(ctx, api.LoginRequest{
     Backend:  api.BackendRADIUS,
     Username: "user",
-    Password: "pass",
+    Password: password, // *enclave.MemoryEnclave
 })
 ```
 
@@ -417,7 +446,7 @@ import "time"
 ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 defer cancel()
 
-err := auth.Authenticate(ctx, "username", "password")
+err := auth.Authenticate(ctx, "username", password)
 if err == context.DeadlineExceeded {
     log.Println("RADIUS server did not respond in time")
 }
@@ -435,13 +464,18 @@ var auth *radius.Authenticator
 var err error
 
 for _, server := range servers {
-    auth, err = radius.NewAuthenticator(server, "secret")
+    // Each authenticator owns its own copy of the shared secret.
+    sharedSecret, err := loadSharedSecret() // returns a fresh *enclave.MemoryEnclave
+    if err != nil {
+        log.Fatal(err)
+    }
+    auth, err = radius.NewAuthenticator(server, sharedSecret)
     if err != nil {
         continue
     }
 
     ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-    err = auth.Authenticate(ctx, "username", "password")
+    err = auth.Authenticate(ctx, "username", password)
     cancel()
 
     if err == nil {
@@ -478,33 +512,45 @@ tlsConfig := &tls.Config{
 
 auth, err := radius.NewAuthenticator(
     "radsec.example.com:2083",
-    "shared-secret",
+    sharedSecret,
     radius.WithTLSConfig(tlsConfig),
 )
 ```
 
-## Protected Memory
+## Credentials in Locked Memory
 
-The RADIUS shared secret authenticates every packet, so it is held in protected
-memory for the lifetime of the authenticator and opened only for the duration of
-one exchange — see [Protected Memory](secret.md).
+The shared secret and the user's password are go-enclave
+`*enclave.MemoryEnclave` values — see [Credentials](credentials.md).
+
+- The **shared secret** belongs to the authenticator. `NewAuthenticator` takes
+  ownership on every return path (including `ErrFIPSUnsupported`), each
+  exchange borrows it, and `Close` destroys it; `Authenticate` then fails with
+  `radius.ErrClosed`.
+- The **password** is borrowed by `Authenticate` and never destroyed there.
+  With EAP-TLS the certificate is the credential and the password may be nil.
 
 ```go
-import "github.com/jeremyhahn/go-auth/pkg/secret"
-
-sharedSecret, err := secret.NewString(os.Getenv("RADIUS_SECRET"))
+raw, err := os.ReadFile("/run/secrets/radius-secret")
 if err != nil {
     log.Fatal(err)
 }
-defer sharedSecret.Destroy()
+sharedSecret, err := enclave.NewMemoryEnclave(bytes.TrimSpace(raw)) // wipes raw's bytes
+if err != nil {
+    log.Fatal(err)
+}
 
-auth, err := radius.NewAuthenticatorWithSecret("127.0.0.1:1812", sharedSecret,
+auth, err := radius.NewAuthenticator("127.0.0.1:1812", sharedSecret,
     radius.WithDialTimeout(5*time.Second))
+if err != nil {
+    log.Fatal(err) // sharedSecret has already been destroyed
+}
+defer auth.Close()
 ```
 
-`radius.NewAuthenticator`, which takes the secret as a `string`, is deprecated.
-It still works, and it now seals the secret before returning, but the caller's
-string cannot be wiped.
+The password is obfuscated (RFC 2865 §5.2) straight out of its borrow, so no
+plaintext copy of it is made. The shared secret is hashed by `crypto/md5` and
+keys `crypto/hmac` for the Message-Authenticator; that derived state is
+residue **R2** in the [credential residue register](security/credential-residues.md).
 
 ## Security Considerations
 
@@ -512,14 +558,18 @@ string cannot be wiped.
 
 1. **Use strong secrets** - 32+ random characters
 2. **Unique per client** - Don't reuse across systems
-3. **Secure storage** - Environment variables or secret managers
+3. **Secure storage** - Secret managers or files read into `[]byte`
 4. **Regular rotation** - Change secrets periodically
 
 ```go
-// Load secret from environment
-secret := os.Getenv("RADIUS_SECRET")
-if secret == "" {
-    log.Fatal("RADIUS_SECRET not set")
+// Read the secret into bytes, never a string; NewMemoryEnclave wipes them.
+raw, err := os.ReadFile(os.Getenv("RADIUS_SECRET_FILE"))
+if err != nil {
+    log.Fatal("RADIUS secret not readable: ", err)
+}
+sharedSecret, err := enclave.NewMemoryEnclave(bytes.TrimSpace(raw))
+if err != nil {
+    log.Fatal(err)
 }
 ```
 

@@ -56,6 +56,10 @@ Common PAM service names:
 
 ## Usage
 
+The password is a go-enclave `*enclave.MemoryEnclave`, never a string (see
+[Credentials](credentials.md)). `Authenticate` borrows it and never destroys
+it; in the snippets after the first, `password` is such an enclave.
+
 ### Basic Authentication
 
 ```go
@@ -64,6 +68,8 @@ package main
 import (
     "context"
     "log"
+
+    enclave "github.com/jeremyhahn/go-enclave"
 
     "github.com/jeremyhahn/go-auth/pkg/pam"
 )
@@ -75,9 +81,18 @@ func main() {
         log.Fatal(err)
     }
 
+    // The password travels in go-enclave locked memory. Build it with
+    // enclave.NewMemoryEnclave from the bytes you read (that wipes them);
+    // NewMemoryEnclaveFromString is for values that only exist as strings.
+    password, err := enclave.NewMemoryEnclaveFromString("password")
+    if err != nil {
+        log.Fatal(err) // enclave.ErrLockedMemoryUnavailable: fail closed
+    }
+    defer password.Destroy() // Authenticate only borrows it
+
     // Authenticate user
     ctx := context.Background()
-    err = auth.Authenticate(ctx, "username", "password")
+    err = auth.Authenticate(ctx, "username", password)
     if err != nil {
         log.Printf("Authentication failed: %v", err)
         return
@@ -96,7 +111,7 @@ if err != nil {
     log.Fatal(err)
 }
 
-err = auth.Authenticate(ctx, "user", "pass")
+err = auth.Authenticate(ctx, "user", password)
 ```
 
 ### Context Management
@@ -108,7 +123,7 @@ import "time"
 ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 defer cancel()
 
-err := auth.Authenticate(ctx, "username", "password")
+err := auth.Authenticate(ctx, "username", password)
 if err == context.DeadlineExceeded {
     log.Println("Authentication timed out")
 }
@@ -122,7 +137,7 @@ go func() {
     cancel() // Cancel authentication on signal
 }()
 
-err = auth.Authenticate(ctx, "username", "password")
+err = auth.Authenticate(ctx, "username", password)
 ```
 
 ## Testing
@@ -147,7 +162,8 @@ type MockSession struct {
     closeErr error
 }
 
-func (m *MockSession) Authenticate(ctx context.Context, password string) error {
+func (m *MockSession) Authenticate(ctx context.Context, password *enclave.MemoryEnclave) error {
+    // Borrowed: read it with password.WithBytes if needed, never destroy it.
     return m.authErr
 }
 
@@ -166,7 +182,7 @@ func TestMyCode(t *testing.T) {
         t.Fatal(err)
     }
 
-    err = auth.Authenticate(context.Background(), "user", "pass")
+    err = auth.Authenticate(context.Background(), "user", password)
     // ... assertions
 }
 ```
@@ -238,7 +254,7 @@ session    optional     pam_systemd.so
 ## Error Handling
 
 ```go
-err := auth.Authenticate(ctx, "username", "password")
+err := auth.Authenticate(ctx, "username", password)
 
 switch {
 case err == nil:
@@ -287,7 +303,7 @@ service, _ := api.NewService(api.Config{
 err := service.Login(ctx, api.LoginRequest{
     Backend:  api.BackendPAM,
     Username: "user",
-    Password: "pass",
+    Password: password, // *enclave.MemoryEnclave; Login takes ownership
 })
 ```
 
@@ -312,10 +328,22 @@ Some PAM configurations require root privileges or specific group membership.
 
 ### Input Validation
 
-The module validates:
-- Service name must not be empty
-- Username must not be empty
-- Password must not be empty
+The module validates, with typed sentinels:
+- Service name must not be empty (`pam.ErrEmptyServiceName`)
+- Username must not be empty (`pam.ErrMissingUsername`)
+- Password must be a live enclave (`pam.ErrMissingPassword`; a destroyed one
+  also matches `enclave.ErrEnclaveDestroyed`)
+
+### The Conversation Password
+
+The password reaches libpam through the PAM conversation. The
+`msteinert/pam` binding requires the conversation callback to return a Go
+`string`, so go-auth lends it one backed by a buffer that is zeroed as soon as
+`pam_authenticate` and `pam_acct_mgmt` return. The binding copies that string
+into a `C.CString` buffer which the PAM module owns and frees (Linux-PAM's
+`pam_get_authtok` overwrites it before freeing it). That copy, and whatever
+the module stack keeps, is residue **R6** in the
+[credential residue register](security/credential-residues.md).
 
 Always use parameterized PAM configurations to prevent injection attacks.
 

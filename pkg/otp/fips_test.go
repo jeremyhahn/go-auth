@@ -152,7 +152,7 @@ func assertApprovedDigestsWork(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s Generate: %v", algo, err)
 		}
-		if err := auth.Authenticate(context.Background(), code); err != nil {
+		if err := auth.Authenticate(context.Background(), codeOf(t, code)); err != nil {
 			t.Errorf("%s Authenticate: %v", algo, err)
 		}
 		uri, err := auth.ProvisioningURI()
@@ -176,7 +176,7 @@ func assertApprovedDigestsWork(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s HOTP Generate: %v", algo, err)
 		}
-		if _, err := hotp.ValidateCounter(context.Background(), code, 1); err != nil {
+		if _, err := hotp.ValidateCounter(context.Background(), codeOf(t, code), 1); err != nil {
 			t.Errorf("%s ValidateCounter: %v", algo, err)
 		}
 		_ = hotp.Close()
@@ -226,7 +226,7 @@ func assertSeedFloor(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: Generate: %v", tc.name, err)
 		}
-		if err := auth.Authenticate(context.Background(), code); err != nil {
+		if err := auth.Authenticate(context.Background(), codeOf(t, code)); err != nil {
 			t.Errorf("%s: Authenticate: %v", tc.name, err)
 		}
 		_ = auth.Close()

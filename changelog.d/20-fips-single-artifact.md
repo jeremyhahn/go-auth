@@ -15,7 +15,7 @@
   | `yubikey.NewAuthenticator(cfg, nil)` → `errSystemValidatorUnavailable` under the tag | → `yubikey.ErrFIPSUnsupported` under FIPS activation; the YubiCloud default is always installed by `init()` |
   | absence of `pkg/radius` / `pkg/tacacs` at link time | `errors.Is(err, radius.ErrFIPSUnsupported)` / `errors.Is(err, tacacs.ErrFIPSUnsupported)` at startup |
 
-- `pkg/tacacs`: `NewAuthenticator` and `NewAuthenticatorWithSecret` return the
+- `pkg/tacacs`: `NewAuthenticator` returns the
   new typed `tacacs.ErrFIPSUnsupported` when FIPS is activated, ahead of every
   argument check and before the shared secret is sealed or locked, and
   `Authenticate` returns it before building a packet ([#20]). RFC 8907 §4.5
@@ -25,8 +25,8 @@
 - `pkg/yubikey`: new typed `yubikey.ErrFIPSUnsupported` ([#20]). Under FIPS
   activation `NewAuthenticator` returns it — ahead of the configuration checks
   — when the validator it would use is the YubiCloud `HTTPValidator`, passed
-  explicitly or as the package default, and `HTTPValidator.Validate` /
-  `ValidateProtected` return it before any request is built. Yubico
+  explicitly or as the package default, and `HTTPValidator.Validate`
+  returns it before any request is built. Yubico
   Validation Protocol 2.0 signs with HMAC-SHA-1. An injected `OTPValidator`
   for an approved service keeps working under FIPS activation.
 - CI's `fips` job no longer passes `-tags fips140only` ([#20]). It builds and

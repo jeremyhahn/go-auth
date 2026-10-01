@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	enclave "github.com/jeremyhahn/go-enclave"
+
 	"github.com/jeremyhahn/go-auth/pkg/api"
 	"github.com/jeremyhahn/go-auth/pkg/pkcs11"
 	"github.com/jeremyhahn/go-auth/pkg/yubikey"
@@ -68,7 +70,7 @@ func TestPKCS11SoftHSMIntegration(t *testing.T) {
 		t.Fatalf("NewService: %v", err)
 	}
 
-	if err := service.Login(context.Background(), api.LoginRequest{Username: "token-user", Password: pin}); err != nil {
+	if err := service.Login(context.Background(), api.LoginRequest{Username: "token-user", Password: sealed(t, pin)}); err != nil {
 		t.Fatalf("expected PKCS#11 login success, got %v", err)
 	}
 }
@@ -78,10 +80,11 @@ func TestPKCS11FallbackToYubiKey(t *testing.T) {
 	validator := &stubYubiValidator{expectedOTP: "otp-value"}
 	yubikey.SetSystemValidator(validator)
 	t.Cleanup(func() { yubikey.SetSystemValidator(nil) })
-	yubiAuth, err := yubikey.NewAuthenticator(yubikey.Config{ClientID: "client", APIKey: "secret"}, nil)
+	yubiAuth, err := yubikey.NewAuthenticator(yubikey.Config{ClientID: "client", APIKey: sealed(t, "secret")}, nil)
 	if err != nil {
 		t.Fatalf("NewAuthenticator(yubikey): %v", err)
 	}
+	t.Cleanup(func() { _ = yubiAuth.Close() })
 
 	cfg, pin := setupSoftHSMToken(t)
 	pkcsAuth, err := pkcs11.NewAuthenticator(cfg, nil)
@@ -98,7 +101,7 @@ func TestPKCS11FallbackToYubiKey(t *testing.T) {
 	}
 
 	// Wrong PIN, correct OTP. Should fall back to YubiKey backend.
-	if err := service.Login(context.Background(), api.LoginRequest{Username: "user", Password: pin + "!", OTP: "otp-value"}); err != nil {
+	if err := service.Login(context.Background(), api.LoginRequest{Username: "user", Password: sealed(t, pin+"!"), OTP: sealed(t, "otp-value")}); err != nil {
 		t.Fatalf("expected fallback success, got %v", err)
 	}
 
@@ -114,13 +117,25 @@ type stubYubiValidator struct {
 	err         error
 }
 
-func (v *stubYubiValidator) Validate(ctx context.Context, clientID, secret, otp string) error {
+func (v *stubYubiValidator) Validate(ctx context.Context, clientID string, apiKey, otp *enclave.MemoryEnclave) error {
 	v.calls++
 	if v.err != nil {
 		return v.err
 	}
-	if otp != v.expectedOTP {
+	if !otp.EqualTo([]byte(v.expectedOTP)) {
 		return yubikey.ErrInvalidOTP
 	}
 	return nil
+}
+
+// sealed returns s in an enclave; the cleanup is a no-op once Login or an
+// authenticator has destroyed it.
+func sealed(t *testing.T, s string) *enclave.MemoryEnclave {
+	t.Helper()
+	e, err := enclave.NewMemoryEnclaveFromString(s)
+	if err != nil {
+		t.Fatalf("NewMemoryEnclaveFromString: %v", err)
+	}
+	t.Cleanup(e.Destroy)
+	return e
 }

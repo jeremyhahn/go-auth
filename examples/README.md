@@ -112,11 +112,15 @@ import (
     "log"
     "time"
 
+    enclave "github.com/jeremyhahn/go-enclave"
+
     "github.com/jeremyhahn/go-auth/pkg/<module>"
 )
 
 func main() {
-    // 1. Create authenticator with configuration
+    // 1. Create authenticator with configuration. A shared secret or API key
+    //    in the configuration is an *enclave.MemoryEnclave that the
+    //    authenticator takes ownership of; Close destroys it.
     auth, err := <module>.NewAuthenticator(config)
     if err != nil {
         log.Fatal(err)
@@ -127,8 +131,16 @@ func main() {
     ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
     defer cancel()
 
-    // 3. Perform authentication
-    err = auth.Authenticate(ctx, credentials...)
+    // 3. Bring the credential into locked memory. The caller owns it and
+    //    destroys it; Authenticate only borrows it.
+    password, err := enclave.NewMemoryEnclaveFromString("...")
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer password.Destroy()
+
+    // 4. Perform authentication
+    err = auth.Authenticate(ctx, username, password)
     if err != nil {
         log.Printf("Authentication failed: %v", err)
         return
@@ -142,7 +154,10 @@ func main() {
 
 ### Security
 - **Never hardcode credentials** in production code
-- Use environment variables or secure configuration management
+- Every credential is a go-enclave `*enclave.MemoryEnclave` (see
+  [docs/credentials.md](../docs/credentials.md)); read secrets into a
+  `[]byte` and use `enclave.NewMemoryEnclave`, which wipes it. The examples
+  use `NewMemoryEnclaveFromString` on literals only for brevity
 - Enable TLS/encryption for network authentication (LDAP, RADIUS)
 - Validate certificates in production (disable `InsecureSkipVerify`)
 

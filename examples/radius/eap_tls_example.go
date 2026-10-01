@@ -16,9 +16,12 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"log"
 	"time"
+
+	enclave "github.com/jeremyhahn/go-enclave"
 
 	"github.com/jeremyhahn/go-auth/pkg/radius"
 )
@@ -56,9 +59,18 @@ func main() {
 	}
 
 	// Create RADIUS authenticator with EAP-TLS
+	// The shared secret travels in go-enclave locked memory. In production
+	// build it with enclave.NewMemoryEnclave over a []byte read from a key
+	// file or secrets manager, which wipes that slice.
+	sharedSecret, err := enclave.NewMemoryEnclaveFromString("shared-secret")
+	if err != nil {
+		log.Fatalf("Failed to seal the shared secret: %v", err)
+	}
+	// NewAuthenticator takes ownership of sharedSecret — it destroys it on
+	// error — and auth.Close destroys it otherwise.
 	auth, err := radius.NewAuthenticator(
 		"radius.example.com:1812",
-		"shared-secret",
+		sharedSecret,
 		radius.WithEAPTLS(eapTLSConfig),
 		radius.WithDialTimeout(5*time.Second),
 		radius.WithRetry(3*time.Second),
@@ -66,6 +78,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to create RADIUS authenticator: %v", err)
 	}
+	defer auth.Close()
 
 	// Create context with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -78,10 +91,10 @@ func main() {
 
 	// Perform EAP-TLS authentication
 	// The username parameter is used as the EAP identity
-	// The password can be empty for certificate-based auth
-	err = auth.Authenticate(ctx, eapTLSConfig.Identity, "")
+	// The certificate is the credential, so the password is nil
+	err = auth.Authenticate(ctx, eapTLSConfig.Identity, nil)
 	if err != nil {
-		if err == radius.ErrRejected {
+		if errors.Is(err, radius.ErrRejected) {
 			log.Printf("Access rejected by RADIUS server")
 		} else {
 			log.Printf("Authentication failed: %v", err)

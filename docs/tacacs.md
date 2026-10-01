@@ -16,8 +16,8 @@ TACACS+ is a Cisco-developed protocol that provides centralized authentication, 
 > body with an MD5 keystream (RFC 8907 §4.5), the only body encoding the
 > protocol defines, so this backend cannot run under `GODEBUG=fips140=only`.
 > The backend is in every build; when FIPS is activated, `NewAuthenticator`
-> and `NewAuthenticatorWithSecret` return `tacacs.ErrFIPSUnsupported` instead
-> of constructing it. Check for it with `errors.Is`.
+> returns `tacacs.ErrFIPSUnsupported` instead of constructing it (and destroys
+> the shared secret it was handed). Check for it with `errors.Is`.
 > See [FIPS 140-3 compliance](fips.md).
 
 TACACS+ is commonly used for:
@@ -38,6 +38,12 @@ TACACS+ is commonly used for:
 
 ## Quick Start
 
+Credentials are go-enclave `*enclave.MemoryEnclave` values, never strings
+(see [Credentials](credentials.md)). In the snippets after the first,
+`sharedSecret` is an enclave handed to `NewAuthenticator`, which **takes
+ownership** of it — every authenticator needs its own — and `password` is one
+the caller owns and `Authenticate` borrows.
+
 ### Basic Authentication
 
 ```go
@@ -45,25 +51,41 @@ package main
 
 import (
     "context"
+    "errors"
     "log"
+
+    enclave "github.com/jeremyhahn/go-enclave"
 
     "github.com/jeremyhahn/go-auth/pkg/tacacs"
 )
 
 func main() {
-    // Create TACACS+ authenticator
-    auth, err := tacacs.NewAuthenticator(
-        "tacacs.example.com:49",
-        "shared-secret",
-    )
+    // Credentials travel in go-enclave locked memory. Build them with
+    // enclave.NewMemoryEnclave from bytes you read (that wipes them);
+    // NewMemoryEnclaveFromString is for values that only exist as strings.
+    sharedSecret, err := enclave.NewMemoryEnclaveFromString("shared-secret")
+    if err != nil {
+        log.Fatal(err) // enclave.ErrLockedMemoryUnavailable: fail closed
+    }
+
+    // NewAuthenticator takes ownership of sharedSecret: it destroys it on
+    // error, and auth.Close destroys it otherwise.
+    auth, err := tacacs.NewAuthenticator("tacacs.example.com:49", sharedSecret)
     if err != nil {
         log.Fatal(err)
     }
+    defer auth.Close()
+
+    password, err := enclave.NewMemoryEnclaveFromString("password")
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer password.Destroy() // Authenticate only borrows it
 
     // Authenticate user
     ctx := context.Background()
-    err = auth.Authenticate(ctx, "username", "password")
-    if err == tacacs.ErrAuthenticationFailed {
+    err = auth.Authenticate(ctx, "username", password)
+    if errors.Is(err, tacacs.ErrAuthenticationFailed) {
         log.Println("Authentication failed - invalid credentials")
         return
     }
@@ -82,14 +104,14 @@ func main() {
 // Configure privilege level (default: 1)
 auth, err := tacacs.NewAuthenticator(
     "tacacs.example.com:49",
-    "shared-secret",
+    sharedSecret,
     tacacs.WithPrivLevel(15), // Highest privilege (admin)
 )
 if err != nil {
     log.Fatal(err)
 }
 
-err = auth.Authenticate(ctx, "admin", "password")
+err = auth.Authenticate(ctx, "admin", password)
 ```
 
 ### With Timeout
@@ -100,14 +122,14 @@ import "time"
 // Set read/write timeout
 auth, err := tacacs.NewAuthenticator(
     "tacacs.example.com:49",
-    "shared-secret",
+    sharedSecret,
     tacacs.WithTimeout(10 * time.Second),
 )
 if err != nil {
     log.Fatal(err)
 }
 
-err = auth.Authenticate(ctx, "username", "password")
+err = auth.Authenticate(ctx, "username", password)
 ```
 
 ## Configuration
@@ -115,12 +137,15 @@ err = auth.Authenticate(ctx, "username", "password")
 ### NewAuthenticator Parameters
 
 ```go
-func NewAuthenticator(addr, secret string, opts ...Option) (*Authenticator, error)
+func NewAuthenticator(addr string, sharedSecret *enclave.MemoryEnclave, opts ...Option) (*Authenticator, error)
+func (a *Authenticator) Authenticate(ctx context.Context, username string, password *enclave.MemoryEnclave) error
+func (a *Authenticator) Close() error
 ```
 
 **Required Parameters:**
 - `addr` - TACACS+ server address with port (e.g., "192.168.1.1:49")
-- `secret` - Shared secret for packet encryption
+- `sharedSecret` - Shared secret for packet obfuscation, in locked memory.
+  `NewAuthenticator` takes ownership on every return path; `Close` destroys it.
 
 **Standard Port:**
 - `49` - TACACS+ (TCP)
@@ -134,7 +159,7 @@ Set the privilege level for authentication requests:
 ```go
 auth, err := tacacs.NewAuthenticator(
     "tacacs.example.com:49",
-    "secret",
+    sharedSecret,
     tacacs.WithPrivLevel(15), // Privilege level 0-15
 )
 ```
@@ -155,7 +180,7 @@ import "time"
 
 auth, err := tacacs.NewAuthenticator(
     "tacacs.example.com:49",
-    "secret",
+    sharedSecret,
     tacacs.WithTimeout(5 * time.Second),
 )
 ```
@@ -203,7 +228,7 @@ The server can respond with various status codes:
 ## Error Handling
 
 ```go
-err := auth.Authenticate(ctx, "username", "password")
+err := auth.Authenticate(ctx, "username", password)
 
 switch {
 case err == nil:
@@ -231,33 +256,36 @@ default:
 ### Common Errors
 
 ```go
-// Empty address
-auth, err := tacacs.NewAuthenticator("", "secret")
+// Empty address: tacacs.ErrEmptyAddress (sharedSecret is destroyed)
+auth, err := tacacs.NewAuthenticator("", sharedSecret)
 // Error: "tacacs: address must not be empty"
 
-// Empty secret
-auth, err := tacacs.NewAuthenticator("server:49", "")
+// Missing secret: tacacs.ErrMissingSharedSecret
+auth, err := tacacs.NewAuthenticator("server:49", nil)
 // Error: "tacacs: secret must not be empty"
 
-// Empty username
-err := auth.Authenticate(ctx, "", "password")
+// Empty username: tacacs.ErrMissingUsername
+err := auth.Authenticate(ctx, "", password)
 // Error: "tacacs: username must not be empty"
 
-// Empty password
-err := auth.Authenticate(ctx, "user", "")
+// Missing password: tacacs.ErrMissingPassword
+// (a destroyed enclave also matches enclave.ErrEnclaveDestroyed)
+err := auth.Authenticate(ctx, "user", nil)
 // Error: "tacacs: password must not be empty"
+
+// After Close: tacacs.ErrClosed
 ```
 
 ### FIPS activation
 
-Both constructors return `tacacs.ErrFIPSUnsupported` — ahead of any argument
-check, and before the shared secret is sealed or locked — when the process runs
+`NewAuthenticator` returns `tacacs.ErrFIPSUnsupported` — ahead of any argument
+check, after destroying the shared secret it was handed — when the process runs
 under `GODEBUG=fips140=only`. RFC 8907 §4.5 obfuscates every packet body with
 an MD5 keystream, so no configuration or option makes this backend usable
 there. `Authenticate` returns the same error before building a packet.
 
 ```go
-auth, err := tacacs.NewAuthenticator("server:49", "secret")
+auth, err := tacacs.NewAuthenticator("server:49", sharedSecret)
 if errors.Is(err, tacacs.ErrFIPSUnsupported) {
     // FIPS is activated in this deployment. Use a different backend;
     // there is no TACACS+ configuration that satisfies FIPS 140-3.
@@ -278,7 +306,7 @@ import "time"
 ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 defer cancel()
 
-err := auth.Authenticate(ctx, "username", "password")
+err := auth.Authenticate(ctx, "username", password)
 if err == context.DeadlineExceeded {
     log.Println("TACACS+ server did not respond in time")
 }
@@ -295,7 +323,7 @@ go func() {
     cancel() // Cancel on signal
 }()
 
-err := auth.Authenticate(ctx, "username", "password")
+err := auth.Authenticate(ctx, "username", password)
 ```
 
 ## Integration with go-auth API
@@ -308,7 +336,7 @@ import (
 
 tacacsAuth, _ := tacacs.NewAuthenticator(
     "tacacs.example.com:49",
-    "shared-secret",
+    sharedSecret,
 )
 
 service, _ := api.NewService(api.Config{
@@ -317,56 +345,58 @@ service, _ := api.NewService(api.Config{
     },
 })
 
+// Login takes ownership of the request's enclaves and destroys them when
+// the attempt completes.
 err := service.Login(ctx, api.LoginRequest{
     Backend:  api.BackendTACACS,
     Username: "user",
-    Password: "pass",
+    Password: password, // *enclave.MemoryEnclave
 })
 ```
 
-## Protected Memory
+## Credentials in Locked Memory
 
-The TACACS+ shared secret keys the obfuscation of every packet body (RFC 8907
-§4.5), so it is held in protected memory for the lifetime of the authenticator —
-see [Protected Memory](secret.md).
+The shared secret and the user's password are go-enclave
+`*enclave.MemoryEnclave` values — see [Credentials](credentials.md).
+
+- The **shared secret** belongs to the authenticator. `NewAuthenticator` takes
+  ownership on every return path (including `ErrFIPSUnsupported`), each
+  `Authenticate` lends it to `tacplus` for the length of the exchange, and
+  `Close` destroys it; `Authenticate` then fails with `tacacs.ErrClosed`.
+- The **password** is borrowed by `Authenticate` and never destroyed there.
 
 ```go
-import "github.com/jeremyhahn/go-auth/pkg/secret"
-
-sharedSecret, err := secret.NewString(os.Getenv("TACACS_SECRET"))
+raw, err := os.ReadFile("/run/secrets/tacacs-secret")
 if err != nil {
     log.Fatal(err)
 }
-defer sharedSecret.Destroy()
+sharedSecret, err := enclave.NewMemoryEnclave(bytes.TrimSpace(raw)) // wipes raw's bytes
+if err != nil {
+    log.Fatal(err)
+}
 
-auth, err := tacacs.NewAuthenticatorWithSecret("tacacs.example.com:49", sharedSecret,
+auth, err := tacacs.NewAuthenticator("tacacs.example.com:49", sharedSecret,
     tacacs.WithPrivLevel(15))
 if err != nil {
-    log.Fatal(err)
+    log.Fatal(err) // sharedSecret has already been destroyed
 }
+defer auth.Close()
 ```
 
-`tacacs.NewAuthenticator`, which takes the secret as a `string`, is deprecated.
-It still works, and it now seals the secret before returning, but the caller's
-string cannot be wiped.
+`tacplus` is handed the locked pages themselves (`ConnConfig.Secret`), with no
+copy, for the length of one `Authenticate`. That is safe, and lets `Close`
+release the key, because `tacplus` v0.0.3 reads the secret only inside
+`SendAuthenStart` and `Continue`, on the calling goroutine: its connection
+goroutines move ciphertext and never decrypt, and the handler it spawns for a
+packet that matches no session fails its sequence-number checks before
+reaching the cipher. Earlier releases kept a locked copy with no release point
+on the assumption that those goroutines decrypted; they do not. A `tacplus`
+upgrade must re-verify this.
 
-Unlike the other backends, the authenticator takes its **own locked copy** of
-the secret rather than borrowing the caller's. `tacplus` keeps the key for the
-life of a connection and decrypts with it from goroutines it does not join, so
-the bytes have to stay mapped for as long as the authenticator can be used: an
-enclave opened per exchange would be unmapped underneath a live reader. The
-copy lives in a `secret.Locked` — locked against swap, excluded from core
-dumps, never in the Go heap — so releasing the caller's secret does not disable
-the authenticator.
-
-**Known limitation.** That copy has no release point. Destroying it would unmap
-pages a `tacplus` goroutine may still be reading, which faults the process, and
-wiping them instead would be an unsynchronized write to the same bytes; neither
-is safe without joining goroutines the dependency does not expose. So the key
-stays resident in locked memory for as long as the process holds the
-authenticator — one page each. **Construct one authenticator per TACACS+
-server and reuse it**, rather than one per authentication. Releasing it safely
-needs `tacplus` forked or replaced, which is an owner decision.
+What `tacplus` does copy — the key into a heap buffer for every packet, and the
+password, which `Continue` accepts only as a `string` — is residue **R3** in the
+[credential residue register](security/credential-residues.md). go-auth lends
+`Continue` a string whose bytes are zeroed when it returns.
 
 ## Security Considerations
 
@@ -382,18 +412,22 @@ TACACS+ encrypts the entire packet body (unlike RADIUS which only encrypts passw
 
 1. **Use strong secrets** - 32+ random characters
 2. **Unique per client** - Don't reuse across devices
-3. **Secure storage** - Environment variables or secret managers
+3. **Secure storage** - Secret managers or files read into `[]byte`
 4. **Regular rotation** - Change secrets periodically
 5. **Secure transmission** - Never send secrets over unencrypted channels
 
 ```go
-// Load secret from environment
-secret := os.Getenv("TACACS_SECRET")
-if secret == "" {
-    log.Fatal("TACACS_SECRET not set")
+// Read the secret into bytes, never a string; NewMemoryEnclave wipes them.
+raw, err := os.ReadFile(os.Getenv("TACACS_SECRET_FILE"))
+if err != nil {
+    log.Fatal("TACACS+ secret not readable: ", err)
+}
+sharedSecret, err := enclave.NewMemoryEnclave(bytes.TrimSpace(raw))
+if err != nil {
+    log.Fatal(err)
 }
 
-auth, err := tacacs.NewAuthenticator("server:49", secret)
+auth, err := tacacs.NewAuthenticator("server:49", sharedSecret)
 ```
 
 ### Transport Security
@@ -434,9 +468,14 @@ servers := []string{
 var lastErr error
 
 for _, server := range servers {
+    // Each authenticator owns its own copy of the shared secret.
+    sharedSecret, err := loadSharedSecret() // returns a fresh *enclave.MemoryEnclave
+    if err != nil {
+        return err
+    }
     auth, err := tacacs.NewAuthenticator(
         server,
-        "shared-secret",
+        sharedSecret,
         tacacs.WithTimeout(3*time.Second),
     )
     if err != nil {
@@ -445,7 +484,7 @@ for _, server := range servers {
     }
 
     ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-    err = auth.Authenticate(ctx, "username", "password")
+    err = auth.Authenticate(ctx, "username", password)
     cancel()
 
     if err == nil {
@@ -476,7 +515,7 @@ customDialer := func(ctx context.Context, network, addr string) (net.Conn, error
 
 auth, err := tacacs.NewAuthenticator(
     "tacacs.example.com:49",
-    "secret",
+    sharedSecret,
     tacacs.WithDialContext(customDialer),
 )
 ```
@@ -486,27 +525,28 @@ auth, err := tacacs.NewAuthenticator(
 Authenticate at different privilege levels:
 
 ```go
-// User-level authentication
+// User-level authentication. Each authenticator owns its own shared-secret
+// enclave, so the two get separate copies.
 userAuth, _ := tacacs.NewAuthenticator(
     "tacacs.example.com:49",
-    "secret",
+    sharedSecret,
     tacacs.WithPrivLevel(1),
 )
 
 // Admin-level authentication
 adminAuth, _ := tacacs.NewAuthenticator(
     "tacacs.example.com:49",
-    "secret",
+    adminSharedSecret,
     tacacs.WithPrivLevel(15),
 )
 
 // First authenticate as user
-if err := userAuth.Authenticate(ctx, "username", "userpass"); err != nil {
+if err := userAuth.Authenticate(ctx, "username", userPassword); err != nil {
     return err
 }
 
 // Then authenticate for admin privileges
-if err := adminAuth.Authenticate(ctx, "username", "enablepass"); err != nil {
+if err := adminAuth.Authenticate(ctx, "username", enablePassword); err != nil {
     return err
 }
 ```
@@ -636,7 +676,7 @@ func TestAuthentication(t *testing.T) {
 
     auth, err := tacacs.NewAuthenticator(
         "test:49",
-        "secret",
+        sharedSecret,
         tacacs.WithDialContext(mockDialer.DialContext),
     )
     if err != nil {
@@ -649,7 +689,7 @@ func TestAuthentication(t *testing.T) {
         // ...
     }()
 
-    err = auth.Authenticate(context.Background(), "user", "pass")
+    err = auth.Authenticate(context.Background(), "user", password)
     // ... assertions
 }
 ```

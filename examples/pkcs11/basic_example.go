@@ -15,9 +15,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"time"
+
+	enclave "github.com/jeremyhahn/go-enclave"
 
 	"github.com/jeremyhahn/go-auth/pkg/pkcs11"
 )
@@ -58,8 +61,15 @@ func tokenLabelExample() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// PIN for the token
-	pin := "1234"
+	// The PIN travels in go-enclave locked memory. In production it
+	// comes from enclave.NewMemoryEnclave over a []byte the reader fills,
+	// which wipes that slice; a string literal is only for the example.
+	pin, err := enclave.NewMemoryEnclaveFromString("1234")
+	if err != nil {
+		log.Fatalf("Failed to seal the PIN: %v", err)
+	}
+	// Authenticate borrows it; the caller destroys it.
+	defer pin.Destroy()
 
 	fmt.Printf("Authenticating to token: %s\n", cfg.TokenLabel)
 	fmt.Printf("Module path: %s\n", cfg.ModulePath)
@@ -67,7 +77,7 @@ func tokenLabelExample() {
 	// Perform authentication
 	err = auth.Authenticate(ctx, pin)
 	if err != nil {
-		if err == pkcs11.ErrInvalidPIN {
+		if errors.Is(err, pkcs11.ErrInvalidPIN) {
 			log.Printf("Invalid PIN")
 		} else {
 			log.Printf("Authentication failed: %v", err)
@@ -108,13 +118,21 @@ func slotExample() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	pin := "1234"
+	// The PIN travels in go-enclave locked memory. In production it
+	// comes from enclave.NewMemoryEnclave over a []byte the reader fills,
+	// which wipes that slice; a string literal is only for the example.
+	pin, err := enclave.NewMemoryEnclaveFromString("1234")
+	if err != nil {
+		log.Fatalf("Failed to seal the PIN: %v", err)
+	}
+	// Authenticate borrows it; the caller destroys it.
+	defer pin.Destroy()
 
 	fmt.Printf("Authenticating to slot: %s\n", cfg.Slot)
 
 	err = auth.Authenticate(ctx, pin)
 	if err != nil {
-		if err == pkcs11.ErrInvalidPIN {
+		if errors.Is(err, pkcs11.ErrInvalidPIN) {
 			log.Printf("Invalid PIN")
 		} else {
 			log.Printf("Authentication failed: %v", err)

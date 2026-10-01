@@ -36,7 +36,7 @@ one of them in a FIPS deployment fails at startup rather than on the first
 login. Startup code tells the two cases apart with `errors.Is`:
 
 ```go
-auth, err := radius.NewAuthenticator(addr, secret)
+auth, err := radius.NewAuthenticator(addr, sharedSecret) // sharedSecret: *enclave.MemoryEnclave
 if errors.Is(err, radius.ErrFIPSUnsupported) {
     // FIPS is activated; RADIUS cannot be offered in this deployment.
 }
@@ -93,7 +93,7 @@ process. The primitive is nonetheless kept out of the FIPS-activated path.
 | Primitive | MD5, and HMAC-MD5 |
 | Mandated by | RFC 2865 §3 (Request/Response Authenticator = `MD5(Code \|\| ID \|\| Length \|\| RequestAuth \|\| Attributes \|\| Secret)`); RFC 2869 §5.14 and RFC 3579 §3.2 (Message-Authenticator = HMAC-MD5) |
 | Scope | The whole backend. Every RADIUS packet carries an MD5 authenticator, so no code path avoids it. |
-| Refusal | `NewAuthenticator` / `NewAuthenticatorWithSecret` return `radius.ErrFIPSUnsupported`, ahead of every argument check |
+| Refusal | `NewAuthenticator` returns `radius.ErrFIPSUnsupported`, ahead of every argument check, and destroys the shared-secret enclave it was handed |
 
 RadSec (RFC 6614) does not resolve this. It carries RADIUS inside TLS, but the
 inner packet's MD5 authenticator is still computed, so a RadSec client would
@@ -107,11 +107,11 @@ FIPS 140-3 cannot use the RADIUS backend.
 | Primitive | MD5 |
 | Mandated by | RFC 8907 §4.5 — the packet body is obfuscated with an MD5-based keystream (`MD5(session_id \|\| key \|\| version \|\| seq_no \|\| prev_hash)` chained and XORed over the body) |
 | Scope | The whole backend. It is the only body encoding the protocol defines for production use. |
-| Refusal | `NewAuthenticator` / `NewAuthenticatorWithSecret` return `tacacs.ErrFIPSUnsupported`, ahead of every argument check; `Authenticate` returns it too, before any packet is built |
+| Refusal | `NewAuthenticator` returns `tacacs.ErrFIPSUnsupported`, ahead of every argument check, and destroys the shared-secret enclave it was handed; `Authenticate` returns it too, before any packet is built |
 
 Same conclusion as RADIUS: not available to FIPS 140-3 deployments, refused at
-construction. The shared secret is never sealed or locked when the refusal
-fires.
+construction. The shared secret is destroyed when the refusal fires: the
+constructor owns it on every return path.
 
 ### YubiCloud — `pkg/yubikey` `HTTPValidator`, refuses under FIPS activation
 
@@ -120,7 +120,7 @@ fires.
 | Primitive | HMAC-SHA-1 |
 | Mandated by | Yubico Validation Protocol 2.0 — every request and response is signed with HMAC-SHA-1 over the sorted parameter list, and the service rejects any other digest |
 | Scope | The YubiCloud HTTP validator only, not the whole backend |
-| Refusal | `NewAuthenticator` returns `yubikey.ErrFIPSUnsupported` when the validator it would use — passed explicitly, or the package default — is the YubiCloud one; `HTTPValidator.Validate` / `ValidateProtected` return it before any request is built |
+| Refusal | `NewAuthenticator` returns `yubikey.ErrFIPSUnsupported` when the validator it would use — passed explicitly, or the package default — is the YubiCloud one; `HTTPValidator.Validate` returns it before any request is built |
 
 `pkg/yubikey`'s `init()` installs the YubiCloud validator as the package
 default in every build. Under FIPS activation `NewAuthenticator(cfg, nil)`
@@ -231,3 +231,15 @@ that cannot fail on the thing it exists to catch is decoration. If a failure
 cannot be fixed or honestly exempted, it gets escalated, not silenced.
 
 [#46]: https://github.com/jeremyhahn/go-auth/issues/46
+
+## Credentials in locked memory
+
+Every credential go-auth holds is a go-enclave `*enclave.MemoryEnclave`
+([credentials.md](credentials.md)). A `MemoryEnclave` is **locked-only**:
+`mlock`, guard pages, a canary and a wipe — no cipher, no hash, no key. The
+protected-memory layer therefore executes no cryptographic primitive at all
+and sits outside the FIPS 140-3 boundary question; what FIPS activation
+restricts is only the primitive a backend keys with a borrowed credential, as
+the tables above record. When the kernel refuses to lock memory, construction
+fails closed with `enclave.ErrLockedMemoryUnavailable`; there is no fallback
+to ordinary memory.

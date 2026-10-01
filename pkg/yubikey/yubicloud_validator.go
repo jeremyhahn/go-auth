@@ -33,7 +33,21 @@ import (
 	"sort"
 	"strings"
 
-	secretpkg "github.com/jeremyhahn/go-auth/pkg/secret"
+	enclave "github.com/jeremyhahn/go-enclave"
+
+	"github.com/jeremyhahn/go-auth/pkg/internal/credential"
+)
+
+var (
+	// ErrResponseNonceMismatch indicates the validation service answered a
+	// request other than the one sent.
+	ErrResponseNonceMismatch = errors.New("yubikey: response nonce mismatch")
+	// ErrResponseOTPMismatch indicates the validation service answered for an
+	// OTP other than the one sent.
+	ErrResponseOTPMismatch = errors.New("yubikey: response otp mismatch")
+	// ErrResponseSignatureInvalid indicates the response was not signed with
+	// the configured API key.
+	ErrResponseSignatureInvalid = errors.New("yubikey: response signature invalid")
 )
 
 // HTTPValidator validates YubiKey OTPs against the public YubiCloud service.
@@ -59,31 +73,17 @@ func init() {
 	systemValidator = NewHTTPValidator(nil, "")
 }
 
-// Validate implements OTPValidator.
+// Validate implements OTPValidator: it signs the request and verifies the
+// response signature with the API key borrowed from its enclave, and never
+// materializes the key as a string.
 //
-// Deprecated: use ValidateProtected. This method seals the key it is given
-// before doing any work, so the exposure is limited to the string the caller
-// already holds.
-func (v *HTTPValidator) Validate(ctx context.Context, clientID, apiKey, otp string) error {
-	// Ahead of sealing: under FIPS activation the key has no use.
-	if fips140OnlyActive() {
-		return ErrFIPSUnsupported
-	}
-	sealed, err := secretpkg.NewString(apiKey)
-	if err != nil {
-		return err
-	}
-	defer sealed.Destroy()
-	return v.ValidateProtected(ctx, clientID, sealed, otp)
-}
-
-// ValidateProtected implements ProtectedOTPValidator: it signs the request and
-// verifies the response signature with the API key opened from protected
-// memory, and never materializes the key as a string.
+// The OTP has to travel in the request's query string, so it is lent to
+// net/url and net/http as a string that is wiped when Validate returns; their
+// own copies (the encoded URL, the request line) are residue R5.
 //
 // Under FIPS activation it returns ErrFIPSUnsupported before any request is
 // built or sent.
-func (v *HTTPValidator) ValidateProtected(ctx context.Context, clientID string, apiKey *secretpkg.Secret, otp string) error {
+func (v *HTTPValidator) Validate(ctx context.Context, clientID string, apiKey, otp *enclave.MemoryEnclave) error {
 	if fips140OnlyActive() {
 		return ErrFIPSUnsupported
 	}
@@ -92,6 +92,14 @@ func (v *HTTPValidator) ValidateProtected(ctx context.Context, clientID string, 
 		return err
 	}
 
+	// Residue R5: the OTP is a query parameter, which net/url and net/http
+	// only carry as strings.
+	return credential.WithTransientString(otp, func(otp string) error {
+		return v.exchange(ctx, clientID, apiKey, otp, nonce)
+	})
+}
+
+func (v *HTTPValidator) exchange(ctx context.Context, clientID string, apiKey *enclave.MemoryEnclave, otp, nonce string) error {
 	params := url.Values{}
 	params.Set("id", clientID)
 	params.Set("otp", otp)
@@ -125,10 +133,10 @@ func (v *HTTPValidator) ValidateProtected(ctx context.Context, clientID string, 
 		return ErrInvalidOTP
 	}
 	if responseValues.Get("nonce") != nonce {
-		return errors.New("yubikey: response nonce mismatch")
+		return ErrResponseNonceMismatch
 	}
-	if responseValues.Get("otp") != otp {
-		return errors.New("yubikey: response otp mismatch")
+	if !hmac.Equal([]byte(responseValues.Get("otp")), []byte(otp)) {
+		return ErrResponseOTPMismatch
 	}
 
 	responseSignature := responseValues.Get("h")
@@ -140,24 +148,25 @@ func (v *HTTPValidator) ValidateProtected(ctx context.Context, clientID string, 
 	}
 
 	if !hmac.Equal([]byte(responseSignature), []byte(expectedSig)) {
-		return errors.New("yubikey: response signature invalid")
+		return ErrResponseSignatureInvalid
 	}
 
 	return nil
 }
 
 // computeSignature signs the sorted parameter list with the API key, which is
-// opened from protected memory and decoded into a locked scratch buffer for
-// the HMAC. Neither the base64 key nor the decoded key reaches ordinary heap.
+// borrowed from its enclave and decoded into a locked scratch enclave for the
+// HMAC. Neither the base64 key nor the decoded key reaches ordinary heap
+// (crypto/hmac's ipad/opad blocks are its own derived copies).
 //
 // It is the one path to the HMAC-SHA-1, so it carries the FIPS gate itself and
 // no caller can reach the primitive's panic.
-func computeSignature(values url.Values, apiKey *secretpkg.Secret) (string, error) {
+func computeSignature(values url.Values, apiKey *enclave.MemoryEnclave) (string, error) {
 	if fips140OnlyActive() {
 		return "", ErrFIPSUnsupported
 	}
 	var signature string
-	err := apiKey.Open(func(encoded []byte) error {
+	err := apiKey.WithBytes(func(encoded []byte) error {
 		return withDecodedAPIKey(encoded, func(key []byte) error {
 			signed, err := signValues(values, key)
 			if err != nil {
@@ -173,8 +182,8 @@ func computeSignature(values url.Values, apiKey *secretpkg.Secret) (string, erro
 	return signature, nil
 }
 
-// withDecodedAPIKey base64-decodes the API key into locked scratch memory and
-// calls fn with it.
+// withDecodedAPIKey base64-decodes the API key into a locked scratch enclave
+// and calls fn with it; the scratch enclave is destroyed before it returns.
 //
 // A key that is not valid base64 is passed through as its own bytes. That is
 // what this package has always done — Yubico issues base64 keys, but callers
@@ -190,7 +199,13 @@ func withDecodedAPIKey(encoded []byte, fn func(key []byte) error) error {
 		return fn(encoded)
 	}
 
-	return secretpkg.Scratch(size, func(buf []byte) error {
+	scratch, err := enclave.NewMemoryEnclaveSized(size)
+	if err != nil {
+		return err
+	}
+	defer scratch.Destroy()
+
+	return scratch.WithBytes(func(buf []byte) error {
 		n, err := base64.StdEncoding.Decode(buf, encoded)
 		if err != nil {
 			return fn(encoded)

@@ -14,7 +14,7 @@ import (
 	"strings"
 	"testing"
 
-	secretpkg "github.com/jeremyhahn/go-auth/pkg/secret"
+	enclave "github.com/jeremyhahn/go-enclave"
 )
 
 // TestComputeSignatureMatchesTheProtocol pins the wire format across the move
@@ -32,13 +32,9 @@ func TestComputeSignatureMatchesTheProtocol(t *testing.T) {
 	rawKey := []byte("my-api-key-bytes")
 	encoded := base64.StdEncoding.EncodeToString(rawKey)
 
-	sealed, err := secretpkg.NewString(encoded)
-	if err != nil {
-		t.Fatalf("NewString: %v", err)
-	}
-	defer sealed.Destroy()
+	key := sealed(t, encoded)
 
-	got, err := computeSignature(values, sealed)
+	got, err := computeSignature(values, key)
 	if err != nil {
 		t.Fatalf("computeSignature: %v", err)
 	}
@@ -47,12 +43,8 @@ func TestComputeSignatureMatchesTheProtocol(t *testing.T) {
 	}
 
 	// A key that is not base64 is signed with its own bytes, which is what
-	// this package did before the key moved into protected memory.
-	plain, err := secretpkg.NewString("not base64 at all!!")
-	if err != nil {
-		t.Fatalf("NewString: %v", err)
-	}
-	defer plain.Destroy()
+	// this package has always done.
+	plain := sealed(t, "not base64 at all!!")
 
 	got, err = computeSignature(values, plain)
 	if err != nil {
@@ -75,12 +67,9 @@ func TestComputeSignatureWithShortRawKey(t *testing.T) {
 	values.Set("otp", "ccccccbdefgh")
 
 	for _, raw := range []string{"x", "yz", "abc"} {
-		sealed, err := secretpkg.NewString(raw)
-		if err != nil {
-			t.Fatalf("NewString(%q): %v", raw, err)
-		}
+		key := sealed(t, raw)
 
-		got, err := computeSignature(values, sealed)
+		got, err := computeSignature(values, key)
 		if err != nil {
 			t.Fatalf("computeSignature(%q): %v", raw, err)
 		}
@@ -90,27 +79,24 @@ func TestComputeSignatureWithShortRawKey(t *testing.T) {
 		if want := referenceSignature(values, []byte(raw)); got != want {
 			t.Errorf("signature for raw key %q = %q, want %q", raw, got, want)
 		}
-		sealed.Destroy()
+		key.Destroy()
 	}
 }
 
 func TestComputeSignatureWithDestroyedKey(t *testing.T) {
 	skipUnderFIPSActivation(t)
-	sealed, err := secretpkg.NewString("bXktYXBpLWtleQ==")
-	if err != nil {
-		t.Fatalf("NewString: %v", err)
-	}
-	sealed.Destroy()
+	key := sealed(t, "bXktYXBpLWtleQ==")
+	key.Destroy()
 
-	if _, err := computeSignature(url.Values{}, sealed); !errors.Is(err, secretpkg.ErrDestroyed) {
-		t.Fatalf("computeSignature with a destroyed key = %v, want ErrDestroyed", err)
+	if _, err := computeSignature(url.Values{}, key); !errors.Is(err, enclave.ErrEnclaveDestroyed) {
+		t.Fatalf("computeSignature with a destroyed key = %v, want ErrEnclaveDestroyed", err)
 	}
 }
 
-// TestValidateProtectedRoundTrip exercises the whole YubiCloud exchange
+// TestValidateRoundTrip exercises the whole YubiCloud exchange
 // against a server that checks the request signature and signs its reply, with
-// the API key never leaving protected memory on this side.
-func TestValidateProtectedRoundTrip(t *testing.T) {
+// the API key never leaving locked memory on this side.
+func TestValidateRoundTrip(t *testing.T) {
 	skipUnderFIPSActivation(t)
 	rawKey := []byte("my-api-key-bytes")
 	encoded := base64.StdEncoding.EncodeToString(rawKey)
@@ -138,30 +124,20 @@ func TestValidateProtectedRoundTrip(t *testing.T) {
 	}))
 	defer server.Close()
 
-	sealed, err := secretpkg.NewString(encoded)
-	if err != nil {
-		t.Fatalf("NewString: %v", err)
-	}
-	defer sealed.Destroy()
+	key := sealed(t, encoded)
 
 	validator := NewHTTPValidator(server.Client(), server.URL)
-	if err := validator.ValidateProtected(context.Background(), "1234", sealed, otp); err != nil {
-		t.Fatalf("ValidateProtected: %v", err)
-	}
-
-	// The deprecated string entry point seals the key and reaches the same
-	// place.
-	if err := validator.Validate(context.Background(), "1234", encoded, otp); err != nil {
+	code := sealed(t, otp)
+	if err := validator.Validate(context.Background(), "1234", key, code); err != nil {
 		t.Fatalf("Validate: %v", err)
+	}
+	if !key.IsAlive() || !code.IsAlive() {
+		t.Fatal("Validate destroyed a borrowed enclave")
 	}
 
 	// A wrong key produces a request the server refuses to answer.
-	wrong, err := secretpkg.NewString(base64.StdEncoding.EncodeToString([]byte("wrong-api-key!!!")))
-	if err != nil {
-		t.Fatalf("NewString: %v", err)
-	}
-	defer wrong.Destroy()
-	if err := validator.ValidateProtected(context.Background(), "1234", wrong, otp); err == nil {
+	wrong := sealed(t, base64.StdEncoding.EncodeToString([]byte("wrong-api-key!!!")))
+	if err := validator.Validate(context.Background(), "1234", wrong, code); err == nil {
 		t.Fatal("a request signed with the wrong key was accepted")
 	}
 }

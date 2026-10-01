@@ -16,6 +16,8 @@ import (
 
 	"github.com/google/go-tpm/tpm2"
 	"github.com/google/go-tpm/tpm2/transport"
+	enclave "github.com/jeremyhahn/go-enclave"
+
 	tpm2auth "github.com/jeremyhahn/go-auth/pkg/tpm2"
 )
 
@@ -113,7 +115,11 @@ type realTPMSession struct {
 	hashAlgorithm tpm2.TPMAlgID
 }
 
-func (s *realTPMSession) Unseal(ctx context.Context, handle tpm2auth.Handle, password string) ([]byte, error) {
+// Unseal borrows the authorization value and returns the unsealed data in an
+// enclave the caller owns. go-tpm hands back the response in an ordinary
+// buffer; it is moved into locked memory the moment it arrives, and
+// enclave.NewMemoryEnclave wipes that buffer.
+func (s *realTPMSession) Unseal(ctx context.Context, handle tpm2auth.Handle, password *enclave.MemoryEnclave) (*enclave.MemoryEnclave, error) {
 	// Create TPM handle
 	tpmHandle := tpm2.TPMHandle(handle)
 
@@ -136,33 +142,45 @@ func (s *realTPMSession) Unseal(ctx context.Context, handle tpm2auth.Handle, pas
 	// Check if the object has an authorization policy (authPolicy field is non-empty)
 	hasPolicy := len(pubArea.AuthPolicy.Buffer) > 0
 
+	var unsealed []byte
 	if hasPolicy {
 		// Object has a policy - use policy session for authorization
-		return s.unsealWithPCRPolicy(tpmHandle, readPubResp.Name)
+		unsealed, err = s.unsealWithPCRPolicy(tpmHandle, readPubResp.Name)
+	} else {
+		// No policy - use simple password authorization
+		unsealed, err = s.unsealWithPassword(tpmHandle, readPubResp.Name, password)
 	}
-
-	// No policy - use simple password authorization
-	return s.unsealWithPassword(tpmHandle, readPubResp.Name, password)
+	if err != nil {
+		return nil, err
+	}
+	return enclave.NewMemoryEnclave(unsealed)
 }
 
 // unsealWithPassword unseals an object using password authorization.
-func (s *realTPMSession) unsealWithPassword(tpmHandle tpm2.TPMHandle, name tpm2.TPM2BName, password string) ([]byte, error) {
-	auth := tpm2.PasswordAuth([]byte(password))
+// The password is borrowed from its enclave for the length of the command:
+// go-tpm reads it while marshaling the authorization area.
+func (s *realTPMSession) unsealWithPassword(tpmHandle tpm2.TPMHandle, name tpm2.TPM2BName, password *enclave.MemoryEnclave) ([]byte, error) {
+	var out []byte
+	err := password.WithBytes(func(value []byte) error {
+		unsealCmd := tpm2.Unseal{
+			ItemHandle: tpm2.AuthHandle{
+				Handle: tpmHandle,
+				Name:   name,
+				Auth:   tpm2.PasswordAuth(value),
+			},
+		}
 
-	unsealCmd := tpm2.Unseal{
-		ItemHandle: tpm2.AuthHandle{
-			Handle: tpmHandle,
-			Name:   name,
-			Auth:   auth,
-		},
-	}
-
-	rsp, err := unsealCmd.Execute(s.tpm)
+		rsp, err := unsealCmd.Execute(s.tpm)
+		if err != nil {
+			return mapTPMError(err)
+		}
+		out = rsp.OutData.Buffer
+		return nil
+	})
 	if err != nil {
-		return nil, mapTPMError(err)
+		return nil, err
 	}
-
-	return rsp.OutData.Buffer, nil
+	return out, nil
 }
 
 // unsealWithPCRPolicy unseals an object that has a PCR policy.
@@ -442,7 +460,7 @@ func TestAuthenticateSuccess(t *testing.T) {
 	ctx, cancel := testContext(t)
 	defer cancel()
 
-	err = auth.Authenticate(ctx, correctPassword)
+	err = auth.Authenticate(ctx, sealed(t, correctPassword))
 	if err != nil {
 		t.Fatalf("expected successful authentication, got error: %v", err)
 	}
@@ -468,7 +486,7 @@ func TestAuthenticateFailureWrongPassword(t *testing.T) {
 	ctx, cancel := testContext(t)
 	defer cancel()
 
-	err = auth.Authenticate(ctx, wrongPassword)
+	err = auth.Authenticate(ctx, sealed(t, wrongPassword))
 	if err == nil {
 		t.Fatal("expected authentication failure with wrong password")
 	}
@@ -525,7 +543,7 @@ func TestAuthenticateDifferentPasswords(t *testing.T) {
 			ctx, cancel := testContext(t)
 			defer cancel()
 
-			err = auth.Authenticate(ctx, tt.password)
+			err = auth.Authenticate(ctx, sealed(t, tt.password))
 			if tt.wantErr == nil {
 				if err != nil {
 					t.Errorf("expected success, got error: %v", err)
@@ -564,7 +582,7 @@ func TestAuthenticatePCRPolicy(t *testing.T) {
 
 	// Should succeed when PCRs match the sealed policy
 	// Note: password parameter is ignored for policy-based objects
-	err = auth.Authenticate(ctx, correctPassword)
+	err = auth.Authenticate(ctx, sealed(t, correctPassword))
 	if err != nil {
 		t.Errorf("expected successful authentication with matching PCRs, got error: %v", err)
 	}
@@ -590,7 +608,7 @@ func TestAuthenticateMultiplePCRs(t *testing.T) {
 	ctx, cancel := testContext(t)
 	defer cancel()
 
-	err = auth.Authenticate(ctx, correctPassword)
+	err = auth.Authenticate(ctx, sealed(t, correctPassword))
 	// This test should fail because the object was sealed with only PCR 7,
 	// but we're trying to validate with PCRs 0, 1, and 7
 	if err == nil {
@@ -647,7 +665,7 @@ func TestAuthenticateHashAlgorithms(t *testing.T) {
 			ctx, cancel := testContext(t)
 			defer cancel()
 
-			err = auth.Authenticate(ctx, correctPassword)
+			err = auth.Authenticate(ctx, sealed(t, correctPassword))
 			if tt.wantErr && err == nil {
 				t.Error("expected error, got nil")
 			}
@@ -677,7 +695,7 @@ func TestAuthenticateInvalidHandle(t *testing.T) {
 	ctx, cancel := testContext(t)
 	defer cancel()
 
-	err = auth.Authenticate(ctx, correctPassword)
+	err = auth.Authenticate(ctx, sealed(t, correctPassword))
 	if err == nil {
 		t.Fatal("expected error for invalid handle, got nil")
 	}
@@ -703,7 +721,7 @@ func TestAuthenticateTPMUnavailable(t *testing.T) {
 	ctx, cancel := testContext(t)
 	defer cancel()
 
-	err = auth.Authenticate(ctx, correctPassword)
+	err = auth.Authenticate(ctx, sealed(t, correctPassword))
 	if err == nil {
 		t.Fatal("expected error for unavailable TPM, got nil")
 	}
@@ -731,7 +749,7 @@ func TestAuthenticateContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Cancel immediately
 
-	err = auth.Authenticate(ctx, correctPassword)
+	err = auth.Authenticate(ctx, sealed(t, correctPassword))
 	if err == nil {
 		t.Fatal("expected error for cancelled context, got nil")
 	}
@@ -763,7 +781,7 @@ func TestAuthenticateContextTimeout(t *testing.T) {
 	// Wait to ensure timeout
 	time.Sleep(1 * time.Millisecond)
 
-	err = auth.Authenticate(ctx, correctPassword)
+	err = auth.Authenticate(ctx, sealed(t, correctPassword))
 	if err == nil {
 		t.Fatal("expected error for timeout context, got nil")
 	}
@@ -791,11 +809,13 @@ func TestConcurrentAuthentication(t *testing.T) {
 	const numGoroutines = 5
 	errChan := make(chan error, numGoroutines)
 
+	// One enclave, borrowed by every goroutine at once.
+	password := sealed(t, correctPassword)
 	for i := 0; i < numGoroutines; i++ {
 		go func() {
 			ctx, cancel := testContext(t)
 			defer cancel()
-			errChan <- auth.Authenticate(ctx, correctPassword)
+			errChan <- auth.Authenticate(ctx, password)
 		}()
 	}
 
@@ -824,11 +844,17 @@ func BenchmarkAuthenticate(b *testing.B) {
 		b.Fatalf("failed to create authenticator: %v", err)
 	}
 
+	password, err := enclave.NewMemoryEnclaveFromString(correctPassword)
+	if err != nil {
+		b.Fatalf("seal password: %v", err)
+	}
+	defer password.Destroy()
+
 	ctx := context.Background()
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		if err := auth.Authenticate(ctx, correctPassword); err != nil {
+		if err := auth.Authenticate(ctx, password); err != nil {
 			b.Fatalf("authentication failed: %v", err)
 		}
 	}

@@ -14,9 +14,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"time"
+
+	enclave "github.com/jeremyhahn/go-enclave"
 
 	"github.com/jeremyhahn/go-auth/pkg/radius"
 )
@@ -28,15 +31,25 @@ func main() {
 	// Create RADIUS authenticator
 	// The address must include both host and port (typically 1812 for authentication)
 	// The shared secret is used to encrypt the Access-Request packet
+	// The shared secret travels in go-enclave locked memory. In production
+	// build it with enclave.NewMemoryEnclave over a []byte read from a key
+	// file or secrets manager, which wipes that slice.
+	sharedSecret, err := enclave.NewMemoryEnclaveFromString("shared-secret")
+	if err != nil {
+		log.Fatalf("Failed to seal the shared secret: %v", err)
+	}
+	// NewAuthenticator takes ownership of sharedSecret — it destroys it on
+	// error — and auth.Close destroys it otherwise.
 	auth, err := radius.NewAuthenticator(
 		"radius.example.com:1812",
-		"shared-secret",
+		sharedSecret,
 		radius.WithDialTimeout(5*time.Second),
 		radius.WithRetry(3*time.Second),
 	)
 	if err != nil {
 		log.Fatalf("Failed to create RADIUS authenticator: %v", err)
 	}
+	defer auth.Close()
 
 	// Create context with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -44,7 +57,12 @@ func main() {
 
 	// Example credentials
 	username := "testuser"
-	password := "testpass"
+	password, err := enclave.NewMemoryEnclaveFromString("testpass")
+	if err != nil {
+		log.Fatalf("Failed to seal the password: %v", err)
+	}
+	// Authenticate borrows the password; the caller destroys it.
+	defer password.Destroy()
 
 	fmt.Printf("Authenticating user: %s\n", username)
 	fmt.Printf("RADIUS server: radius.example.com:1812\n")
@@ -55,7 +73,7 @@ func main() {
 	// The RADIUS server responds with Access-Accept or Access-Reject
 	err = auth.Authenticate(ctx, username, password)
 	if err != nil {
-		if err == radius.ErrRejected {
+		if errors.Is(err, radius.ErrRejected) {
 			log.Printf("Access rejected by RADIUS server")
 		} else {
 			log.Printf("Authentication failed: %v", err)

@@ -94,15 +94,16 @@ func TestAuthenticateSuccess(t *testing.T) {
 	addr, cleanup := startIntegrationServer(t)
 	defer cleanup()
 
-	auth, err := tacacslib.NewAuthenticator(addr, tacacsSecret, tacacslib.WithTimeout(2*time.Second))
+	auth, err := tacacslib.NewAuthenticator(addr, sealed(t, tacacsSecret), tacacslib.WithTimeout(2*time.Second))
 	if err != nil {
 		t.Fatalf("failed to create authenticator: %v", err)
 	}
+	t.Cleanup(func() { _ = auth.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if err := auth.Authenticate(ctx, "tacacsuser", "tacacspass"); err != nil {
+	if err := auth.Authenticate(ctx, "tacacsuser", sealed(t, "tacacspass")); err != nil {
 		t.Fatalf("expected success, got error: %v", err)
 	}
 }
@@ -111,12 +112,13 @@ func TestAuthenticateRejectsWrongPassword(t *testing.T) {
 	addr, cleanup := startIntegrationServer(t)
 	defer cleanup()
 
-	auth, err := tacacslib.NewAuthenticator(addr, tacacsSecret)
+	auth, err := tacacslib.NewAuthenticator(addr, sealed(t, tacacsSecret))
 	if err != nil {
 		t.Fatalf("failed to create authenticator: %v", err)
 	}
+	t.Cleanup(func() { _ = auth.Close() })
 
-	if err := auth.Authenticate(context.Background(), "tacacsuser", "wrongpass"); err == nil {
+	if err := auth.Authenticate(context.Background(), "tacacsuser", sealed(t, "wrongpass")); err == nil {
 		t.Fatal("expected failure for wrong password")
 	}
 }
@@ -125,12 +127,13 @@ func TestAuthenticateRejectsUnknownUser(t *testing.T) {
 	addr, cleanup := startIntegrationServer(t)
 	defer cleanup()
 
-	auth, err := tacacslib.NewAuthenticator(addr, tacacsSecret)
+	auth, err := tacacslib.NewAuthenticator(addr, sealed(t, tacacsSecret))
 	if err != nil {
 		t.Fatalf("failed to create authenticator: %v", err)
 	}
+	t.Cleanup(func() { _ = auth.Close() })
 
-	if err := auth.Authenticate(context.Background(), "ghost", "whatever"); err == nil {
+	if err := auth.Authenticate(context.Background(), "ghost", sealed(t, "whatever")); err == nil {
 		t.Fatal("expected failure for unknown user")
 	}
 }

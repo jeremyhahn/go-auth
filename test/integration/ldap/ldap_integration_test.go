@@ -29,15 +29,16 @@ func TestLDAPAuthenticateSuccess(t *testing.T) {
 
 	auth, err := ldapauth.NewAuthenticator("ldap://"+srv.Addr(),
 		ldapauth.WithUserDNTemplate("cn=%s,dc=example,dc=com"),
-		ldapauth.WithServiceAccount("cn=admin,dc=example,dc=com", "secret"))
+		ldapauth.WithServiceAccount("cn=admin,dc=example,dc=com", sealed(t, "secret")))
 	if err != nil {
 		t.Fatalf("NewAuthenticator error: %v", err)
 	}
+	t.Cleanup(func() { _ = auth.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if err := auth.Authenticate(ctx, "alice", "password"); err != nil {
+	if err := auth.Authenticate(ctx, "alice", sealed(t, "password")); err != nil {
 		t.Fatalf("expected success, got %v", err)
 	}
 
@@ -57,8 +58,9 @@ func TestLDAPAuthenticateWrongPassword(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAuthenticator error: %v", err)
 	}
+	t.Cleanup(func() { _ = auth.Close() })
 
-	if err := auth.Authenticate(context.Background(), "alice", "wrong"); err == nil {
+	if err := auth.Authenticate(context.Background(), "alice", sealed(t, "wrong")); err == nil {
 		t.Fatal("expected failure for wrong password")
 	}
 
@@ -75,12 +77,13 @@ func TestLDAPAuthenticateServiceBindFailure(t *testing.T) {
 
 	auth, err := ldapauth.NewAuthenticator("ldap://"+srv.Addr(),
 		ldapauth.WithUserDNTemplate("cn=%s,dc=example,dc=com"),
-		ldapauth.WithServiceAccount("cn=admin,dc=example,dc=com", "not-the-secret"))
+		ldapauth.WithServiceAccount("cn=admin,dc=example,dc=com", sealed(t, "not-the-secret")))
 	if err != nil {
 		t.Fatalf("NewAuthenticator error: %v", err)
 	}
+	t.Cleanup(func() { _ = auth.Close() })
 
-	if err := auth.Authenticate(context.Background(), "alice", "password"); err == nil {
+	if err := auth.Authenticate(context.Background(), "alice", sealed(t, "password")); err == nil {
 		t.Fatal("expected failure when the service bind is rejected")
 	}
 
@@ -102,8 +105,9 @@ func TestLDAPAuthenticateLDAPS(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAuthenticator error: %v", err)
 	}
+	t.Cleanup(func() { _ = auth.Close() })
 
-	if err := auth.Authenticate(context.Background(), "bob", "secret"); err != nil {
+	if err := auth.Authenticate(context.Background(), "bob", sealed(t, "secret")); err != nil {
 		t.Fatalf("expected success, got %v", err)
 	}
 
@@ -121,14 +125,15 @@ func TestLDAPAuthenticateStartTLS(t *testing.T) {
 	clientTLS := &tls.Config{InsecureSkipVerify: true}
 	auth, err := ldapauth.NewAuthenticator("ldap://"+srv.Addr(),
 		ldapauth.WithUserDNTemplate("cn=%s,dc=example,dc=com"),
-		ldapauth.WithServiceAccount("cn=admin,dc=example,dc=com", "secret"),
+		ldapauth.WithServiceAccount("cn=admin,dc=example,dc=com", sealed(t, "secret")),
 		ldapauth.WithStartTLS(),
 		ldapauth.WithTLSConfig(clientTLS))
 	if err != nil {
 		t.Fatalf("NewAuthenticator error: %v", err)
 	}
+	t.Cleanup(func() { _ = auth.Close() })
 
-	if err := auth.Authenticate(context.Background(), "carol", "secret"); err != nil {
+	if err := auth.Authenticate(context.Background(), "carol", sealed(t, "secret")); err != nil {
 		t.Fatalf("expected success, got %v", err)
 	}
 
@@ -153,8 +158,9 @@ func TestLDAPAuthenticateStartTLSRefused(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAuthenticator error: %v", err)
 	}
+	t.Cleanup(func() { _ = auth.Close() })
 
-	if err := auth.Authenticate(context.Background(), "carol", "secret"); err == nil {
+	if err := auth.Authenticate(context.Background(), "carol", sealed(t, "secret")); err == nil {
 		t.Fatal("expected failure when the server refuses StartTLS")
 	}
 
@@ -306,7 +312,8 @@ func TestLDAPStubShutdownWithLiveClient(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAuthenticator error: %v", err)
 	}
-	if err := auth.Authenticate(context.Background(), "alice", "password"); err != nil {
+	t.Cleanup(func() { _ = auth.Close() })
+	if err := auth.Authenticate(context.Background(), "alice", sealed(t, "password")); err != nil {
 		t.Fatalf("expected success, got %v", err)
 	}
 

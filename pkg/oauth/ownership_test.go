@@ -343,9 +343,17 @@ func TestValidateTokenRejectsAMissingToken(t *testing.T) {
 	}
 }
 
-func TestAuthenticateSealsTheStringToken(t *testing.T) {
+func TestAuthenticateRefusesMissingToken(t *testing.T) {
 	auth := &Authenticator{config: &Config{}, cache: &noopCache{}}
-	if err := auth.Authenticate(context.Background(), "ignored", ""); !errors.Is(err, ErrMissingToken) {
-		t.Errorf("Authenticate(empty) = %v, want ErrMissingToken", err)
+	destroyed := sealedForTest(t, "token")
+	destroyed.Destroy()
+	for name, token := range map[string]*enclave.MemoryEnclave{
+		"nil":       nil,
+		"destroyed": destroyed,
+		"blank":     sealedForTest(t, "   "),
+	} {
+		if err := auth.Authenticate(context.Background(), "ignored", token); !errors.Is(err, ErrMissingToken) {
+			t.Errorf("Authenticate(%s) = %v, want ErrMissingToken", name, err)
+		}
 	}
 }

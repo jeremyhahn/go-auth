@@ -87,6 +87,8 @@ import (
     "errors"
     "log"
 
+    enclave "github.com/jeremyhahn/go-enclave"
+
     "github.com/jeremyhahn/go-auth/pkg/tpm2"
 )
 
@@ -105,9 +107,19 @@ func main() {
         log.Fatal(err)
     }
 
+    // The authorization value travels in go-enclave locked memory. Build it
+    // with enclave.NewMemoryEnclave from the bytes you read (that wipes
+    // them); NewMemoryEnclaveFromString is for values that only exist as
+    // strings.
+    password, err := enclave.NewMemoryEnclaveFromString("password123")
+    if err != nil {
+        log.Fatal(err) // enclave.ErrLockedMemoryUnavailable: fail closed
+    }
+    defer password.Destroy() // Authenticate only borrows it
+
     // Authenticate
     ctx := context.Background()
-    err = auth.Authenticate(ctx, "password123")
+    err = auth.Authenticate(ctx, password)
     if errors.Is(err, tpm2.ErrPCRMismatch) {
         log.Fatal("Platform integrity check failed")
     } else if errors.Is(err, tpm2.ErrInvalidPassword) {
@@ -119,6 +131,11 @@ func main() {
     log.Println("Authentication successful")
 }
 ```
+
+In the snippets below, `password` is a `*enclave.MemoryEnclave` the caller
+owns (see [Credentials](credentials.md)). `Authenticate` borrows it, and
+destroys the unsealed data the session returns before it returns, on every
+path.
 
 ### Error Handling
 
@@ -206,11 +223,13 @@ type MockSession struct {
     unsealData []byte
 }
 
-func (m *MockSession) Unseal(ctx context.Context, handle Handle, password string) ([]byte, error) {
+// Unseal borrows password and returns the unsealed data in an enclave the
+// caller (the authenticator) owns and destroys.
+func (m *MockSession) Unseal(ctx context.Context, handle Handle, password *enclave.MemoryEnclave) (*enclave.MemoryEnclave, error) {
     if m.unsealErr != nil {
         return nil, m.unsealErr
     }
-    return m.unsealData, nil
+    return enclave.NewMemoryEnclaveCopy(m.unsealData)
 }
 
 func (m *MockSession) Close(ctx context.Context) error {
@@ -262,11 +281,19 @@ type RealTPMSession struct {
     handle Handle
 }
 
-func (s *RealTPMSession) Unseal(ctx context.Context, handle Handle, password string) ([]byte, error) {
-    // Use tpm2 library to unseal
+func (s *RealTPMSession) Unseal(ctx context.Context, handle Handle, password *enclave.MemoryEnclave) (*enclave.MemoryEnclave, error) {
+    // Borrow the authorization value only for the command:
+    //   password.WithBytes(func(auth []byte) error {
+    //       rsp, err = tpm2.Unseal{ItemHandle: tpm2.AuthHandle{..., Auth: tpm2.PasswordAuth(auth)}}.Execute(s.transport)
+    //       ...
+    //   })
     // The unseal operation automatically validates PCR policy
     // Return ErrPCRMismatch if PCR policy validation fails
     // Return ErrInvalidPassword if password is wrong
+    //
+    // Move the response straight into locked memory: NewMemoryEnclave wipes
+    // go-tpm's response buffer, so the plaintext never stays on the heap.
+    //   return enclave.NewMemoryEnclave(rsp.OutData.Buffer)
 }
 
 func (s *RealTPMSession) Close(ctx context.Context) error {
@@ -314,6 +341,11 @@ PCR values change with firmware/software updates:
 
 ### Password/Authorization
 
+- The authorization value is a `*enclave.MemoryEnclave`, borrowed by
+  `Authenticate` and lent to the session's `Unseal`; it is never a string
+- The unsealed data comes back in an enclave and is destroyed before
+  `Authenticate` returns, including when the session returns it alongside an
+  error
 - Passwords protect sealed objects from unauthorized unsealing
 - Use strong passwords/authorization values
 - Consider enhanced authorization (HMAC sessions, policy sessions)

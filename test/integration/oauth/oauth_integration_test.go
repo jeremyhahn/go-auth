@@ -323,7 +323,7 @@ func TestOAuthIntegration_TokenIntrospection(t *testing.T) {
 	}
 
 	// Test 2: Invalid token should fail validation
-	err = validator.Authenticate(ctx, "", "invalid-token-xyz")
+	err = validator.Authenticate(ctx, "", sealForTest(t, "invalid-token-xyz"))
 	if err == nil {
 		t.Error("Expected invalid token to fail validation")
 	} else {
@@ -331,7 +331,7 @@ func TestOAuthIntegration_TokenIntrospection(t *testing.T) {
 	}
 
 	// Test 3: Empty token should fail
-	err = validator.Authenticate(ctx, "", "")
+	err = validator.Authenticate(ctx, "", nil)
 	if err == nil {
 		t.Error("Expected empty token to fail validation")
 	}
@@ -417,14 +417,18 @@ func TestOAuthIntegration_WithAPIService(t *testing.T) {
 		t.Fatalf("Failed to create API service: %v", err)
 	}
 
-	// Test 1: Valid token should authenticate
+	// Test 1: Valid token should authenticate. Login takes ownership of the
+	// request's enclaves, so it gets its own copy rather than the Token's.
 	req := api.LoginRequest{
 		Backend:  api.BackendOAuth,
-		Username: "ignored",                           // OAuth doesn't use username
-		Password: openForTest(t, token.AccessToken()), // pkg/api still takes strings (go-auth#48)
+		Username: "ignored", // OAuth doesn't use username
+		Password: sealForTest(t, openForTest(t, token.AccessToken())),
 	}
 
 	err = service.Login(ctx, req)
+	if req.Password.IsAlive() {
+		t.Error("Login left the request's token alive")
+	}
 	if err != nil {
 		t.Errorf("Expected valid token to authenticate via API service, got error: %v", err)
 	} else {
@@ -432,7 +436,7 @@ func TestOAuthIntegration_WithAPIService(t *testing.T) {
 	}
 
 	// Test 2: Invalid token should fail
-	req.Password = "invalid-token-xyz"
+	req.Password = sealForTest(t, "invalid-token-xyz")
 	err = service.Login(ctx, req)
 	if err == nil {
 		t.Error("Expected invalid token to fail authentication via API service")

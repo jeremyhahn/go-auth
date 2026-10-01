@@ -70,9 +70,9 @@ func otpExample(ctx context.Context) {
 
 	// Authenticate with OTP code in the OTP field
 	err = service.Login(ctx, api.LoginRequest{
-		Username: "user@example.com", // Ignored for OTP
-		Password: "dummy",            // Required by API but ignored for OTP
-		OTP:      validCode,
+		Username: "user@example.com",      // Ignored for OTP
+		Password: sealCredential("dummy"), // Required by API but ignored for OTP
+		OTP:      sealCredential(validCode),
 	})
 
 	if err != nil {
@@ -85,8 +85,7 @@ func otpExample(ctx context.Context) {
 	// Alternative: OTP code can be passed in Password field
 	err = service.Login(ctx, api.LoginRequest{
 		Username: "user@example.com",
-		Password: validCode, // OTP code in password field
-		OTP:      "",
+		Password: sealCredential(validCode), // OTP code in password field
 	})
 
 	if err != nil {
@@ -150,7 +149,7 @@ func multiBackendExample(ctx context.Context) {
 	// Try to authenticate - OAuth will fail, but OTP will succeed
 	err = service.Login(ctx, api.LoginRequest{
 		Username: "user@example.com",
-		Password: validCode,
+		Password: sealCredential(validCode),
 	})
 
 	if err != nil {
@@ -217,7 +216,7 @@ func targetedBackendExample(ctx context.Context) {
 	err = service.Login(ctx, api.LoginRequest{
 		Backend:  "totp",
 		Username: "user@example.com",
-		Password: totpCode,
+		Password: sealCredential(totpCode),
 	})
 
 	if err != nil {
@@ -240,7 +239,7 @@ func targetedBackendExample(ctx context.Context) {
 	err = service.Login(ctx, api.LoginRequest{
 		Backend:  "hotp",
 		Username: "user@example.com",
-		Password: hotpCode,
+		Password: sealCredential(hotpCode),
 	})
 
 	if err != nil {
@@ -260,4 +259,19 @@ func mustDecodeSeed(encoded string) *enclave.MemoryEnclave {
 		log.Fatalf("Failed to decode OTP seed: %v", err)
 	}
 	return seed
+}
+
+// sealCredential puts a credential into locked memory for a LoginRequest.
+// Service.Login takes ownership of the request's enclaves and destroys them
+// when the attempt completes, so each request gets fresh ones and nothing
+// here destroys them. A real application builds them with
+// enclave.NewMemoryEnclave over the bytes it read, which wipes that slice; the
+// generated codes in this example are strings only because Generate returns
+// one.
+func sealCredential(value string) *enclave.MemoryEnclave {
+	e, err := enclave.NewMemoryEnclaveFromString(value)
+	if err != nil {
+		log.Fatalf("Failed to seal credential: %v", err)
+	}
+	return e
 }

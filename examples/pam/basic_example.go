@@ -19,6 +19,8 @@ import (
 	"log"
 	"time"
 
+	enclave "github.com/jeremyhahn/go-enclave"
+
 	"github.com/jeremyhahn/go-auth/pkg/pam"
 )
 
@@ -41,7 +43,15 @@ func main() {
 
 	// Example credentials (replace with actual values for testing)
 	username := "testuser"
-	password := "testpass"
+	// The password travels in go-enclave locked memory. In production it
+	// comes from enclave.NewMemoryEnclave over a []byte the reader fills,
+	// which wipes that slice; a string literal is only for the example.
+	password, err := enclave.NewMemoryEnclaveFromString("testpass")
+	if err != nil {
+		log.Fatalf("Failed to seal the password: %v", err)
+	}
+	// Authenticate borrows the password; the caller destroys it.
+	defer password.Destroy()
 
 	fmt.Printf("Authenticating user: %s\n", username)
 

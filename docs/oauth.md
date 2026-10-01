@@ -402,12 +402,18 @@ marked in the source:
 - **JWT parse boundary.** golang-jwt parses only from a `string`, so a token
   validated as a JWT (`ValidateToken`, `ValidateIDToken`) is copied into one
   for the parse.
-- **`pkg/api` boundary.** `Authenticator.Authenticate(ctx, username, token
-  string)` still takes the string `api.LoginRequest` hands it; it seals the
-  token immediately and validates the enclave. #48 replaces that interface.
+- **`pkg/api` adapter.** `Authenticator.Authenticate(ctx, username string,
+  token *enclave.MemoryEnclave)` borrows the bearer token `api.LoginRequest`
+  carries in an enclave and validates it with `ValidateToken`; no string
+  boundary remains ([#48]).
+
+Every site is listed in the
+[credential residue register](security/credential-residues.md) and gated by
+CI.
 
 [#3]: https://github.com/jeremyhahn/go-auth/issues/3
 [#47]: https://github.com/jeremyhahn/go-auth/issues/47
+[#48]: https://github.com/jeremyhahn/go-auth/issues/48
 
 ## Provider Configuration
 
@@ -548,9 +554,13 @@ service, _ := api.NewService(api.Config{
     },
 })
 
+// The bearer token goes in the Password field, as an enclave. Login takes
+// ownership of the request's enclaves and destroys them when the attempt
+// completes, so hand it a copy rather than an enclave a Token still owns.
 err := service.Login(ctx, api.LoginRequest{
     Backend:  api.BackendOAuth,
-    Password: token, // Token goes in password field; sealed on arrival
+    Username: "oauth-user", // required by Login, ignored by OAuth
+    Password: bearer,       // *enclave.MemoryEnclave holding the token
 })
 ```
 

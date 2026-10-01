@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 
+	enclave "github.com/jeremyhahn/go-enclave"
+
 	"github.com/jeremyhahn/go-auth/pkg/tpm2"
 )
 
@@ -26,9 +28,17 @@ func ExampleNewAuthenticator() {
 		log.Fatal(err)
 	}
 
-	// Authenticate by unsealing the secret
+	// The authorization value travels in locked memory. The caller owns it
+	// and destroys it; Authenticate only borrows it.
+	password, err := enclave.NewMemoryEnclaveFromString("password123")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer password.Destroy()
+
+	// Authenticate by unsealing the sealed object
 	ctx := context.Background()
-	err = auth.Authenticate(ctx, "password123")
+	err = auth.Authenticate(ctx, password)
 	if errors.Is(err, tpm2.ErrPCRMismatch) {
 		fmt.Println("Platform integrity check failed")
 	} else if errors.Is(err, tpm2.ErrInvalidPassword) {
@@ -74,7 +84,13 @@ func ExampleAuthenticator_Authenticate_pcrMismatch() {
 		log.Fatal(err)
 	}
 
-	err = auth.Authenticate(context.Background(), "password")
+	password, err := enclave.NewMemoryEnclaveFromString("password")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer password.Destroy()
+
+	err = auth.Authenticate(context.Background(), password)
 	if errors.Is(err, tpm2.ErrPCRMismatch) {
 		fmt.Println("PCR values do not match sealed policy")
 		fmt.Println("This could indicate:")
@@ -127,11 +143,13 @@ type mockTPMSessionExample struct {
 	shouldFailPCR bool
 }
 
-func (m *mockTPMSessionExample) Unseal(ctx context.Context, handle tpm2.Handle, password string) ([]byte, error) {
+func (m *mockTPMSessionExample) Unseal(ctx context.Context, handle tpm2.Handle, password *enclave.MemoryEnclave) (*enclave.MemoryEnclave, error) {
 	if m.shouldFailPCR {
 		return nil, tpm2.ErrPCRMismatch
 	}
-	return []byte("unsealed-secret"), nil
+	// A real session moves the TPM's response straight into an enclave:
+	// NewMemoryEnclave wipes the slice it is given.
+	return enclave.NewMemoryEnclave([]byte("unsealed-data"))
 }
 
 func (m *mockTPMSessionExample) Close(ctx context.Context) error {

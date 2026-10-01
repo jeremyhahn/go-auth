@@ -3,11 +3,19 @@ package pkcs11
 import (
 	"context"
 	"errors"
+
+	enclave "github.com/jeremyhahn/go-enclave"
+
+	"github.com/jeremyhahn/go-auth/pkg/internal/credential"
 )
 
 // Session represents an active PKCS#11 session capable of authenticating a PIN.
+//
+// Login BORROWS the PIN for the length of the call: an implementation reads it
+// through WithBytes (or, where the binding only takes a string, through a
+// copy it wipes), must not retain it, and must not destroy it.
 type Session interface {
-	Login(ctx context.Context, pin string) error
+	Login(ctx context.Context, pin *enclave.MemoryEnclave) error
 	Logout(ctx context.Context) error
 }
 
@@ -20,6 +28,16 @@ var (
 	errSystemProviderUnavailable = errors.New("pkcs11: system provider unavailable; build with PKCS#11 support to use default")
 	// ErrInvalidPIN indicates the supplied PIN or passphrase was rejected by the token.
 	ErrInvalidPIN = errors.New("pkcs11: invalid PIN")
+	// ErrNilAuthenticator indicates a method was called on a nil authenticator.
+	ErrNilAuthenticator = errors.New("pkcs11: authenticator is nil")
+	// ErrMissingPIN indicates Authenticate was called without a live PIN
+	// enclave. A destroyed one also matches enclave.ErrEnclaveDestroyed.
+	ErrMissingPIN = errors.New("pkcs11: pin must not be empty")
+	// ErrMissingModulePath indicates the configuration names no PKCS#11 module.
+	ErrMissingModulePath = errors.New("pkcs11: module path must not be empty")
+	// ErrMissingTokenSelector indicates the configuration names neither a
+	// token label nor a slot.
+	ErrMissingTokenSelector = errors.New("pkcs11: either token label or slot must be specified")
 )
 
 // Config supplies the parameters required to locate and access a PKCS#11 token.
@@ -31,10 +49,10 @@ type Config struct {
 
 func (c Config) validate() error {
 	if c.ModulePath == "" {
-		return errors.New("pkcs11: module path must not be empty")
+		return ErrMissingModulePath
 	}
 	if c.TokenLabel == "" && c.Slot == "" {
-		return errors.New("pkcs11: either token label or slot must be specified")
+		return ErrMissingTokenSelector
 	}
 	return nil
 }
@@ -71,12 +89,15 @@ func NewAuthenticator(cfg Config, provider SessionProvider) (*Authenticator, err
 }
 
 // Authenticate opens a PKCS#11 session and attempts to log in with the provided PIN.
-func (a *Authenticator) Authenticate(ctx context.Context, pin string) (err error) {
+//
+// The PIN is BORROWED: it is lent to the session's Login and never destroyed
+// here; the caller still owns it.
+func (a *Authenticator) Authenticate(ctx context.Context, pin *enclave.MemoryEnclave) (err error) {
 	if a == nil {
-		return errors.New("pkcs11: authenticator is nil")
+		return ErrNilAuthenticator
 	}
-	if pin == "" {
-		return errors.New("pkcs11: pin must not be empty")
+	if err := credential.Require(pin, ErrMissingPIN); err != nil {
+		return err
 	}
 	if ctx == nil {
 		ctx = context.Background()

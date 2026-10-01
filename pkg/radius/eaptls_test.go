@@ -30,7 +30,7 @@ func TestAuthenticateEAPTLSSuccess(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if err := auth.Authenticate(ctx, "user@example", ""); err != nil {
+	if err := auth.Authenticate(ctx, "user@example", sealed(t, "")); err != nil {
 		t.Fatalf("unexpected authenticate error: %v", err)
 	}
 
@@ -56,7 +56,7 @@ func TestAuthenticateEAPTLSRequiresAccessAccept(t *testing.T) {
 
 	auth := mustEAPTLSAuthenticator(t, secret, srv, clientCfg)
 
-	err := auth.Authenticate(context.Background(), "user@example", "")
+	err := auth.Authenticate(context.Background(), "user@example", sealed(t, ""))
 	if !errors.Is(err, errEAPTLSTooManyRoundTrips) {
 		t.Fatalf("expected the conversation to run out of round trips, got %v", err)
 	}
@@ -94,7 +94,7 @@ func TestAuthenticateEAPTLSRejectsBadFinalPacket(t *testing.T) {
 
 			auth := mustEAPTLSAuthenticator(t, secret, srv, clientCfg)
 
-			err := auth.Authenticate(context.Background(), "user@example", "")
+			err := auth.Authenticate(context.Background(), "user@example", sealed(t, ""))
 			if err == nil {
 				t.Fatal("authentication succeeded without an authorizing Access-Accept")
 			}
@@ -121,7 +121,7 @@ func TestAuthenticateEAPTLSDiscardsForgedReject(t *testing.T) {
 
 	auth := mustEAPTLSAuthenticator(t, secret, srv, clientCfg)
 
-	err := auth.Authenticate(context.Background(), "user@example", "")
+	err := auth.Authenticate(context.Background(), "user@example", sealed(t, ""))
 	if errors.Is(err, ErrRejected) {
 		t.Fatal("a forged Access-Reject was surfaced as the server's rejection")
 	}
@@ -144,7 +144,7 @@ func TestAuthenticateEAPTLSDiscardsForgedChallenge(t *testing.T) {
 
 	auth := mustEAPTLSAuthenticator(t, secret, srv, clientCfg)
 
-	err := auth.Authenticate(context.Background(), "user@example", "")
+	err := auth.Authenticate(context.Background(), "user@example", sealed(t, ""))
 	if err == nil {
 		t.Fatal("authentication succeeded on a conversation of unauthenticated challenges")
 	}
@@ -157,7 +157,7 @@ func mustEAPTLSAuthenticator(t *testing.T, secret []byte, srv *fakeEAPTLSServer,
 	t.Helper()
 	auth, err := NewAuthenticator(
 		"127.0.0.1:1812",
-		string(secret),
+		sealed(t, string(secret)),
 		WithPacketExchanger(srv),
 		WithEAPTLS(&EAPTLSConfig{TLSConfig: clientCfg}),
 	)
@@ -171,7 +171,7 @@ func TestAuthenticateEAPTLSMissingTLSConfig(t *testing.T) {
 	skipUnderFIPSActivation(t)
 	auth, err := NewAuthenticator(
 		"127.0.0.1:1812",
-		"secret",
+		sealed(t, "secret"),
 		WithPacketExchanger(&fakeExchanger{}),
 		WithEAPTLS(&EAPTLSConfig{}),
 	)
@@ -179,7 +179,7 @@ func TestAuthenticateEAPTLSMissingTLSConfig(t *testing.T) {
 		t.Fatalf("unexpected error creating authenticator: %v", err)
 	}
 
-	err = auth.Authenticate(context.Background(), "user", "")
+	err = auth.Authenticate(context.Background(), "user", sealed(t, ""))
 	if err == nil || err.Error() != "radius: EAP-TLS requires TLS configuration" {
 		t.Fatalf("expected TLS config error, got %v", err)
 	}

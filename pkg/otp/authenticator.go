@@ -6,10 +6,11 @@ import (
 	"fmt"
 	"net/url"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/jeremyhahn/go-enclave"
+
+	"github.com/jeremyhahn/go-auth/pkg/internal/credential"
 )
 
 // Type represents the OTP algorithm type.
@@ -66,6 +67,11 @@ var (
 	// ErrCounterRequired indicates Generate was called on an HOTP
 	// authenticator without a counter.
 	ErrCounterRequired = errors.New("otp: counter required for HOTP generation")
+	// ErrMissingCode indicates Authenticate or ValidateCounter was called
+	// without a live code enclave. It always comes joined with
+	// ErrInvalidCode, and a destroyed code also matches
+	// enclave.ErrEnclaveDestroyed.
+	ErrMissingCode = errors.New("otp: code must not be empty")
 )
 
 // Config holds OTP authenticator configuration.
@@ -228,7 +234,11 @@ func (a *Authenticator) Close() error {
 // Authenticate validates an OTP code.
 // For TOTP, it validates against the current time with skew tolerance.
 // For HOTP, it validates against the configured counter value.
-func (a *Authenticator) Authenticate(ctx context.Context, code string) error {
+//
+// The code is a credential for its validity window, so it arrives in an
+// enclave like every other credential. It is BORROWED: compared in constant
+// time from inside WithBytes, and never destroyed here.
+func (a *Authenticator) Authenticate(ctx context.Context, code *enclave.MemoryEnclave) error {
 	if a == nil {
 		return ErrNilAuthenticator
 	}
@@ -241,8 +251,8 @@ func (a *Authenticator) Authenticate(ctx context.Context, code string) error {
 		return err
 	}
 
-	if strings.TrimSpace(code) == "" {
-		return fmt.Errorf("%w: code must not be empty", ErrInvalidCode)
+	if err := credential.Require(code, ErrMissingCode); err != nil {
+		return errors.Join(ErrInvalidCode, err)
 	}
 
 	if a.cfg.Type == TypeTOTP {
@@ -254,7 +264,8 @@ func (a *Authenticator) Authenticate(ctx context.Context, code string) error {
 // ValidateCounter validates an HOTP code and returns the new counter value.
 // This method is only valid for HOTP authenticators.
 // The returned counter should be stored and used for the next validation.
-func (a *Authenticator) ValidateCounter(ctx context.Context, code string, counter uint64) (uint64, error) {
+// The code is BORROWED, as in Authenticate.
+func (a *Authenticator) ValidateCounter(ctx context.Context, code *enclave.MemoryEnclave, counter uint64) (uint64, error) {
 	if a == nil {
 		return 0, ErrNilAuthenticator
 	}
@@ -271,8 +282,8 @@ func (a *Authenticator) ValidateCounter(ctx context.Context, code string, counte
 		return 0, fmt.Errorf("%w: ValidateCounter is only valid for HOTP", ErrInvalidConfig)
 	}
 
-	if strings.TrimSpace(code) == "" {
-		return 0, fmt.Errorf("%w: code must not be empty", ErrInvalidCode)
+	if err := credential.Require(code, ErrMissingCode); err != nil {
+		return 0, errors.Join(ErrInvalidCode, err)
 	}
 
 	if err := a.authenticateHOTP(code, counter); err != nil {
@@ -314,12 +325,15 @@ func (a *Authenticator) derive(counter uint64) (string, error) {
 }
 
 // authenticateTOTP validates a TOTP code at now against the borrowed seed.
-func (a *Authenticator) authenticateTOTP(code string, now time.Time) error {
+// Both the submitted code and the seed are read only inside their borrows.
+func (a *Authenticator) authenticateTOTP(code *enclave.MemoryEnclave, now time.Time) error {
 	var valid bool
-	err := a.seed.WithBytes(func(key []byte) error {
-		var err error
-		valid, err = validateTOTP(key, code, now, a.cfg.Period, a.cfg.Skew, a.cfg.Digits, a.cfg.Algorithm)
-		return err
+	err := code.WithBytes(func(submitted []byte) error {
+		return a.seed.WithBytes(func(key []byte) error {
+			var err error
+			valid, err = validateTOTP(key, submitted, now, a.cfg.Period, a.cfg.Skew, a.cfg.Digits, a.cfg.Algorithm)
+			return err
+		})
 	})
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrInvalidCode, err)
@@ -332,12 +346,19 @@ func (a *Authenticator) authenticateTOTP(code string, now time.Time) error {
 
 // authenticateHOTP validates an HOTP code at counter against the borrowed
 // seed, comparing in constant time.
-func (a *Authenticator) authenticateHOTP(code string, counter uint64) error {
+func (a *Authenticator) authenticateHOTP(code *enclave.MemoryEnclave, counter uint64) error {
 	derived, err := a.derive(counter)
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrInvalidCode, err)
 	}
-	if !codesMatch(derived, code) {
+	var valid bool
+	if err := code.WithBytes(func(submitted []byte) error {
+		valid = codesMatch(derived, submitted)
+		return nil
+	}); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidCode, err)
+	}
+	if !valid {
 		return ErrInvalidCode
 	}
 	return nil

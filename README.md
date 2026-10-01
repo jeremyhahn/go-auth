@@ -20,9 +20,9 @@ My client authentication libraries for Golang.
 The [api package](pkg/api/) contains a factory pattern for working with all of the clients through a uniform constructor.
 
 
-## Protected memory
+## Credentials
 
-Keys, passwords, shared secrets and API keys are held in [protected memory](docs/secret.md) — a [go-enclave](https://github.com/jeremyhahn/go-enclave) `MemoryEnclave`: locked, guard-paged, non-swappable, undumpable memory — for their whole lifetime, and are read only inside the call that uses them. The entry points that take a credential as a Go string still work and are deprecated; see the [changelog](CHANGELOG.md).
+Every credential — passwords, PINs, one-time passwords, shared secrets, API keys, OTP seeds, OAuth secrets and tokens — is a [go-enclave](https://github.com/jeremyhahn/go-enclave) `*enclave.MemoryEnclave`: locked, guard-paged, non-swappable, undumpable memory, read only inside the call that uses it. There is no plaintext-string credential path. See [Credentials](docs/credentials.md) for the ownership rules, and the [credential residue register](docs/security/credential-residues.md) for the finite, CI-gated places where a dependency still forces plaintext out of locked memory.
 
 
 ## Support

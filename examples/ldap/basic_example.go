@@ -17,6 +17,8 @@ import (
 	"log"
 	"time"
 
+	enclave "github.com/jeremyhahn/go-enclave"
+
 	ldapauth "github.com/jeremyhahn/go-auth/pkg/ldap"
 )
 
@@ -47,6 +49,7 @@ func basicExample() {
 	if err != nil {
 		log.Fatalf("Failed to create LDAP authenticator: %v", err)
 	}
+	defer auth.Close()
 
 	// Create context with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -54,7 +57,15 @@ func basicExample() {
 
 	// Example credentials
 	username := "john.doe"
-	password := "secret123"
+	// The password travels in go-enclave locked memory. In production it
+	// comes from enclave.NewMemoryEnclave over a []byte the reader fills,
+	// which wipes that slice; a string literal is only for the example.
+	password, err := enclave.NewMemoryEnclaveFromString("secret123")
+	if err != nil {
+		log.Fatalf("Failed to seal the password: %v", err)
+	}
+	// Authenticate borrows it; the caller destroys it.
+	defer password.Destroy()
 
 	fmt.Printf("Authenticating user: %s\n", username)
 	fmt.Printf("Full DN will be: uid=%s,ou=users,dc=example,dc=com\n", username)
@@ -84,12 +95,21 @@ func startTLSExample() {
 	if err != nil {
 		log.Fatalf("Failed to create LDAP authenticator: %v", err)
 	}
+	defer auth.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	username := "jane.smith"
-	password := "secret456"
+	// The password travels in go-enclave locked memory. In production it
+	// comes from enclave.NewMemoryEnclave over a []byte the reader fills,
+	// which wipes that slice; a string literal is only for the example.
+	password, err := enclave.NewMemoryEnclaveFromString("secret456")
+	if err != nil {
+		log.Fatalf("Failed to seal the password: %v", err)
+	}
+	// Authenticate borrows it; the caller destroys it.
+	defer password.Destroy()
 
 	fmt.Printf("Authenticating user: %s with StartTLS\n", username)
 
@@ -104,6 +124,7 @@ func startTLSExample() {
 	fmt.Println()
 	fmt.Println("Additional LDAP options:")
 	fmt.Println("  - Use ldaps:// URL for implicit TLS (port 636)")
-	fmt.Println("  - Use WithServiceAccount() for binding as a service account first")
+	fmt.Println("  - Use WithServiceAccount(dn, password) for binding as a service account first;")
+	fmt.Println("    the authenticator owns that password enclave and Close destroys it")
 	fmt.Println("  - Use WithTLSConfig() to customize TLS settings")
 }

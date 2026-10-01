@@ -34,8 +34,17 @@
 //		log.Fatal(err)
 //	}
 //
+//	// The authorization value is a go-enclave enclave the caller owns;
+//	// Authenticate borrows it, and destroys the unsealed data the session
+//	// returns before it returns.
+//	password, err := enclave.NewMemoryEnclaveFromString("password123")
+//	if err != nil {
+//		log.Fatal(err)
+//	}
+//	defer password.Destroy()
+//
 //	// Authenticate by unsealing
-//	err = auth.Authenticate(context.Background(), "password123")
+//	err = auth.Authenticate(context.Background(), password)
 //	if errors.Is(err, tpm2.ErrPCRMismatch) {
 //		log.Fatal("Platform integrity check failed")
 //	} else if errors.Is(err, tpm2.ErrInvalidPassword) {
@@ -74,7 +83,7 @@
 //   - ErrInvalidPassword: Password/authorization failed
 //   - ErrPCRMismatch: Platform state doesn't match sealed policy
 //   - ErrNilAuthenticator: Nil authenticator used
-//   - ErrEmptyPassword: Empty password provided
+//   - ErrEmptyPassword: Nil or destroyed password enclave provided
 //
 // # Testing
 //

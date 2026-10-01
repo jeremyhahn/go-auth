@@ -65,8 +65,7 @@ func (cfg *EAPTLSConfig) identityFor(username string) (string, string) {
 	return identity, outer
 }
 
-func (a *Authenticator) authenticateEAPTLS(ctx context.Context, username, password string) error {
-	_ = password
+func (a *Authenticator) authenticateEAPTLS(ctx context.Context, username string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -108,9 +107,11 @@ func (a *Authenticator) authenticateEAPTLS(ctx context.Context, username, passwo
 	// long as the conversation runs — but no longer. run is synchronous and
 	// the only reader of session.secret; the handshake goroutine it starts
 	// works on the TLS transport and never touches the key. Clearing the field
-	// on the way out keeps a stale reference to unmapped memory from
-	// outliving the open.
-	return a.secret.Open(func(sharedSecret []byte) error {
+	// on the way out keeps a reference to the locked pages from outliving the
+	// borrow, after which Close may unmap them.
+	//
+	// Residue R2: HMAC-MD5 pads derived from the shared secret live on the heap.
+	return a.secret.WithBytes(func(sharedSecret []byte) error {
 		session.secret = sharedSecret
 		defer func() { session.secret = nil }()
 		return session.run(ctx)

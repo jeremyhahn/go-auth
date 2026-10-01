@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	enclave "github.com/jeremyhahn/go-enclave"
 )
 
 // mockTPMProvider implements TPMProvider for testing
@@ -17,6 +20,9 @@ type mockTPMProvider struct {
 	closeErr    error
 	openCalled  atomic.Bool
 	closeCalled atomic.Bool
+
+	mu       sync.Mutex
+	sessions []*mockTPMSession
 }
 
 func (m *mockTPMProvider) Open(ctx context.Context, cfg Config) (TPMSession, error) {
@@ -24,11 +30,26 @@ func (m *mockTPMProvider) Open(ctx context.Context, cfg Config) (TPMSession, err
 	if m.openErr != nil {
 		return nil, m.openErr
 	}
-	return &mockTPMSession{
+	session := &mockTPMSession{
 		unsealErr:  m.unsealErr,
 		unsealData: m.unsealData,
 		closeErr:   m.closeErr,
-	}, nil
+	}
+	m.mu.Lock()
+	m.sessions = append(m.sessions, session)
+	m.mu.Unlock()
+	return session, nil
+}
+
+// unsealed returns every enclave the provider's sessions handed back.
+func (m *mockTPMProvider) unsealed() []*enclave.MemoryEnclave {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []*enclave.MemoryEnclave
+	for _, s := range m.sessions {
+		out = append(out, s.returned...)
+	}
+	return out
 }
 
 type mockTPMSession struct {
@@ -37,14 +58,34 @@ type mockTPMSession struct {
 	closeErr    error
 	closed      atomic.Bool
 	unsealCount atomic.Int32
+	// lastPassword is a copy of the authorization value, taken during the
+	// call: the enclave itself is only borrowed.
+	lastPassword string
+	// returned holds every enclave Unseal handed to the authenticator, so a
+	// test can prove the authenticator destroyed them.
+	returned []*enclave.MemoryEnclave
 }
 
-func (m *mockTPMSession) Unseal(ctx context.Context, handle Handle, password string) ([]byte, error) {
+func (m *mockTPMSession) Unseal(ctx context.Context, handle Handle, password *enclave.MemoryEnclave) (*enclave.MemoryEnclave, error) {
 	m.unsealCount.Add(1)
+	value, err := password.OpenString()
+	if err != nil {
+		return nil, err
+	}
+	m.lastPassword = value
 	if m.unsealErr != nil {
 		return nil, m.unsealErr
 	}
-	return m.unsealData, nil
+	data := m.unsealData
+	if len(data) == 0 {
+		data = []byte("unsealed-secret")
+	}
+	out, err := enclave.NewMemoryEnclaveCopy(data)
+	if err != nil {
+		return nil, err
+	}
+	m.returned = append(m.returned, out)
+	return out, nil
 }
 
 func (m *mockTPMSession) Close(ctx context.Context) error {
@@ -265,7 +306,7 @@ func TestAuthenticateSuccess(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	err = auth.Authenticate(ctx, "password123")
+	err = auth.Authenticate(ctx, sealed(t, "password123"))
 	if err != nil {
 		t.Errorf("Authenticate() failed: %v", err)
 	}
@@ -377,9 +418,9 @@ func TestAuthenticateErrors(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			var err error
 			if tt.auth == nil {
-				err = (*Authenticator)(nil).Authenticate(tt.ctx, tt.password)
+				err = (*Authenticator)(nil).Authenticate(tt.ctx, sealed(t, tt.password))
 			} else {
-				err = tt.auth.Authenticate(tt.ctx, tt.password)
+				err = tt.auth.Authenticate(tt.ctx, sealed(t, tt.password))
 			}
 
 			if !errors.Is(err, tt.wantErr) {
@@ -405,7 +446,7 @@ func TestAuthenticateContextHandling(t *testing.T) {
 			t.Fatalf("NewAuthenticator() failed: %v", err)
 		}
 
-		err = auth.Authenticate(nil, "password")
+		err = auth.Authenticate(nil, sealed(t, "password"))
 		if err != nil {
 			t.Errorf("Authenticate() with nil context failed: %v", err)
 		}
@@ -424,7 +465,7 @@ func TestAuthenticateContextHandling(t *testing.T) {
 		defer cancel()
 		time.Sleep(2 * time.Millisecond)
 
-		err = auth.Authenticate(ctx, "password")
+		err = auth.Authenticate(ctx, sealed(t, "password"))
 		if !errors.Is(err, context.DeadlineExceeded) {
 			t.Errorf("Authenticate() error = %v, want context.DeadlineExceeded", err)
 		}
@@ -447,7 +488,7 @@ func TestAuthenticateSessionCleanup(t *testing.T) {
 			t.Fatalf("NewAuthenticator() failed: %v", err)
 		}
 
-		err = auth.Authenticate(context.Background(), "password")
+		err = auth.Authenticate(context.Background(), sealed(t, "password"))
 		if err != nil {
 			t.Errorf("Authenticate() failed: %v", err)
 		}
@@ -462,7 +503,7 @@ func TestAuthenticateSessionCleanup(t *testing.T) {
 			t.Fatalf("NewAuthenticator() failed: %v", err)
 		}
 
-		err = auth.Authenticate(context.Background(), "wrong")
+		err = auth.Authenticate(context.Background(), sealed(t, "wrong"))
 		if !errors.Is(err, ErrInvalidPassword) {
 			t.Errorf("Authenticate() error = %v, want ErrInvalidPassword", err)
 		}
@@ -483,7 +524,7 @@ func TestAuthenticateSessionCleanup(t *testing.T) {
 		// Modify provider to return close error
 		provider.closeErr = closeErr
 
-		err = auth.Authenticate(context.Background(), "password")
+		err = auth.Authenticate(context.Background(), sealed(t, "password"))
 		// The implementation should join the close error
 		if err != nil && !errors.Is(err, closeErr) {
 			// This is acceptable - close error might be wrapped or joined
@@ -513,7 +554,7 @@ func TestConcurrentAuthenticate(t *testing.T) {
 
 	for i := 0; i < numGoroutines; i++ {
 		go func() {
-			errChan <- auth.Authenticate(context.Background(), "password")
+			errChan <- auth.Authenticate(context.Background(), sealed(t, "password"))
 		}()
 	}
 
@@ -583,5 +624,97 @@ func TestErrorTypes(t *testing.T) {
 				t.Errorf("%s has empty error message", tt.name)
 			}
 		})
+	}
+}
+
+// TestAuthenticateDestroysUnsealedMaterial proves the unsealed plaintext never
+// outlives Authenticate: the enclave the session returns is destroyed before
+// Authenticate does, and the borrowed password is not.
+func TestAuthenticateDestroysUnsealedMaterial(t *testing.T) {
+	provider := &mockTPMProvider{unsealData: []byte("sealed-key-material")}
+	auth, err := NewAuthenticator(Config{
+		DevicePath:   "/dev/tpm0",
+		SealedHandle: 0x81000000,
+		PCRSelection: []int{0},
+	}, provider)
+	if err != nil {
+		t.Fatalf("NewAuthenticator: %v", err)
+	}
+
+	password := sealed(t, "password")
+	if err := auth.Authenticate(context.Background(), password); err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+
+	unsealed := provider.unsealed()
+	if len(unsealed) != 1 {
+		t.Fatalf("Unseal returned %d enclaves, want 1", len(unsealed))
+	}
+	if unsealed[0].IsAlive() {
+		t.Fatal("the unsealed material is still alive after Authenticate")
+	}
+	if !password.IsAlive() {
+		t.Fatal("Authenticate destroyed a borrowed password")
+	}
+	if got := provider.sessions[0].lastPassword; got != "password" {
+		t.Fatalf("session saw password %q", got)
+	}
+}
+
+func TestAuthenticateRejectsDestroyedPassword(t *testing.T) {
+	provider := &mockTPMProvider{}
+	auth, err := NewAuthenticator(Config{
+		DevicePath:   "/dev/tpm0",
+		SealedHandle: 0x81000000,
+		PCRSelection: []int{0},
+	}, provider)
+	if err != nil {
+		t.Fatalf("NewAuthenticator: %v", err)
+	}
+	password := sealed(t, "password")
+	password.Destroy()
+
+	err = auth.Authenticate(context.Background(), password)
+	if !errors.Is(err, ErrEmptyPassword) || !errors.Is(err, enclave.ErrEnclaveDestroyed) {
+		t.Fatalf("err = %v, want ErrEmptyPassword joined with ErrEnclaveDestroyed", err)
+	}
+	if provider.openCalled.Load() {
+		t.Fatal("a TPM session was opened for a destroyed password")
+	}
+}
+
+// leakySession returns unsealed material AND an error, which a careless
+// implementation might do; the authenticator must still destroy it.
+type leakySession struct{ returned *enclave.MemoryEnclave }
+
+func (l *leakySession) Unseal(context.Context, Handle, *enclave.MemoryEnclave) (*enclave.MemoryEnclave, error) {
+	e, err := enclave.NewMemoryEnclaveFromString("unsealed")
+	if err != nil {
+		return nil, err
+	}
+	l.returned = e
+	return e, ErrPCRMismatch
+}
+func (l *leakySession) Close(context.Context) error { return nil }
+
+type leakyProvider struct{ session *leakySession }
+
+func (p *leakyProvider) Open(context.Context, Config) (TPMSession, error) { return p.session, nil }
+
+func TestAuthenticateDestroysUnsealedMaterialOnError(t *testing.T) {
+	session := &leakySession{}
+	auth, err := NewAuthenticator(Config{
+		DevicePath:   "/dev/tpm0",
+		SealedHandle: 0x81000000,
+		PCRSelection: []int{0},
+	}, &leakyProvider{session: session})
+	if err != nil {
+		t.Fatalf("NewAuthenticator: %v", err)
+	}
+	if err := auth.Authenticate(context.Background(), sealed(t, "password")); !errors.Is(err, ErrPCRMismatch) {
+		t.Fatalf("err = %v, want ErrPCRMismatch", err)
+	}
+	if session.returned.IsAlive() {
+		t.Fatal("material returned alongside an error is still alive")
 	}
 }

@@ -429,9 +429,13 @@ func TestAuthenticate_DelegatesCorrectly(t *testing.T) {
 	})
 
 	// Username is ignored for token validation
-	err = auth.Authenticate(context.Background(), "ignored", token)
+	sealedToken := sealedForTest(t, token)
+	err = auth.Authenticate(context.Background(), "ignored", sealedToken)
 	if err != nil {
 		t.Errorf("Authenticate() failed: %v", err)
+	}
+	if !sealedToken.IsAlive() {
+		t.Error("Authenticate destroyed a borrowed token")
 	}
 }
 

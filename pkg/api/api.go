@@ -5,6 +5,9 @@ import (
 	"errors"
 	"fmt"
 
+	enclave "github.com/jeremyhahn/go-enclave"
+
+	"github.com/jeremyhahn/go-auth/pkg/internal/credential"
 	ldapauth "github.com/jeremyhahn/go-auth/pkg/ldap"
 	"github.com/jeremyhahn/go-auth/pkg/oauth"
 	"github.com/jeremyhahn/go-auth/pkg/otp"
@@ -18,15 +21,19 @@ import (
 
 // Handler defines the contract for a backend authenticator.
 // The implementation should return nil on success or an error on failure.
+//
+// password and otp are BORROWED for the length of the call and either may be
+// nil. A Handler reads them only through the backend it delegates to, must
+// not retain them, and must not destroy them: Service.Login owns them.
 type Handler interface {
-	Authenticate(ctx context.Context, username, password, otp string) error
+	Authenticate(ctx context.Context, username string, password, otp *enclave.MemoryEnclave) error
 }
 
 // HandlerFunc adapts a function to the Handler interface.
-type HandlerFunc func(ctx context.Context, username, password, otp string) error
+type HandlerFunc func(ctx context.Context, username string, password, otp *enclave.MemoryEnclave) error
 
 // Authenticate executes the underlying function.
-func (f HandlerFunc) Authenticate(ctx context.Context, username, password, otp string) error {
+func (f HandlerFunc) Authenticate(ctx context.Context, username string, password, otp *enclave.MemoryEnclave) error {
 	return f(ctx, username, password, otp)
 }
 
@@ -66,7 +73,9 @@ var (
 	ErrNoBackends = errors.New("api: no authentication backends configured")
 	// ErrBackendNotFound indicates a requested backend name does not exist.
 	ErrBackendNotFound = errors.New("api: requested backend not configured")
-	// ErrMissingCredentials indicates the request does not contain mandatory fields.
+	// ErrMissingCredentials indicates the request does not contain mandatory
+	// fields: a username and a live password enclave. A destroyed password
+	// also matches enclave.ErrEnclaveDestroyed.
 	ErrMissingCredentials = errors.New("api: username and password are required")
 	// ErrMissingPIN indicates a backend requires a PIN/secret but none was provided.
 	ErrMissingPIN = errors.New("api: pin required")
@@ -97,23 +106,44 @@ func NewService(cfg Config) (*Service, error) {
 }
 
 // LoginRequest contains the credentials and optional target backend.
+//
+// Password and OTP are go-enclave locked memory. Password carries whatever
+// single credential the target backend takes — a password, a PKCS#11 PIN, a
+// TPM authorization value or an OAuth bearer token — and OTP the one-time
+// password for backends that take one. Build them with
+// enclave.NewMemoryEnclave (which wipes the caller's slice) or, at a boundary
+// that hands out strings, enclave.NewMemoryEnclaveFromString.
+//
+// Service.Login TAKES OWNERSHIP of both: it destroys them when the attempt
+// completes, whether it succeeds, fails or is refused. Do not use or destroy
+// them after passing the request to Login, and build a new request for a
+// retry.
 type LoginRequest struct {
 	Backend  BackendName
 	Username string
-	Password string
-	OTP      string
+	Password *enclave.MemoryEnclave
+	OTP      *enclave.MemoryEnclave
 }
 
 // Login attempts authentication using the configured backends.
+//
+// It owns req.Password and req.OTP and destroys them before returning, on
+// every path. Backends borrow them for the length of their attempt.
 func (s *Service) Login(ctx context.Context, req LoginRequest) error {
+	defer req.Password.Destroy()
+	defer req.OTP.Destroy()
+
 	if s == nil || len(s.backends) == 0 {
 		return ErrNoBackends
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if req.Username == "" || req.Password == "" {
+	if req.Username == "" {
 		return ErrMissingCredentials
+	}
+	if err := credential.Require(req.Password, ErrMissingCredentials); err != nil {
+		return err
 	}
 
 	if err := ctx.Err(); err != nil {
@@ -153,55 +183,58 @@ func (s *Service) Login(ctx context.Context, req LoginRequest) error {
 	return errors.Join(errs...)
 }
 
-// passwordAuthenticator describes authenticators that only accept username/password.
+// passwordAuthenticator describes authenticators that take a username and a
+// password (or bearer token) held in an enclave.
 type passwordAuthenticator interface {
-	Authenticate(ctx context.Context, username, password string) error
+	Authenticate(ctx context.Context, username string, password *enclave.MemoryEnclave) error
 }
 
+// pinAuthenticator describes authenticators that take a single PIN or
+// authorization value held in an enclave.
 type pinAuthenticator interface {
-	Authenticate(ctx context.Context, pin string) error
+	Authenticate(ctx context.Context, pin *enclave.MemoryEnclave) error
 }
 
+// otpAuthenticator describes authenticators that take a one-time password
+// held in an enclave.
 type otpAuthenticator interface {
-	Authenticate(ctx context.Context, otp string) error
+	Authenticate(ctx context.Context, otp *enclave.MemoryEnclave) error
+}
+
+// firstLive returns primary when it holds material and fallback otherwise.
+// This is the "password, else OTP" (or the reverse) choice the adapters
+// make; it selects a borrowed enclave and copies nothing.
+func firstLive(primary, fallback *enclave.MemoryEnclave) *enclave.MemoryEnclave {
+	if primary.IsAlive() {
+		return primary
+	}
+	return fallback
 }
 
 // PAM creates a Handler that delegates to a PAM authenticator.
 func PAM(auth passwordAuthenticator) Handler {
-	return HandlerFunc(func(ctx context.Context, username, password, otp string) error {
-		secret := password
-		if secret == "" {
-			secret = otp
-		}
-		return auth.Authenticate(ctx, username, secret)
+	return HandlerFunc(func(ctx context.Context, username string, password, otp *enclave.MemoryEnclave) error {
+		return auth.Authenticate(ctx, username, firstLive(password, otp))
 	})
 }
 
 // RADIUS creates a Handler that delegates to a RADIUS authenticator.
 func RADIUS(auth passwordAuthenticator) Handler {
-	return HandlerFunc(func(ctx context.Context, username, password, otp string) error {
-		secret := password
-		if secret == "" {
-			secret = otp
-		}
-		return auth.Authenticate(ctx, username, secret)
+	return HandlerFunc(func(ctx context.Context, username string, password, otp *enclave.MemoryEnclave) error {
+		return auth.Authenticate(ctx, username, firstLive(password, otp))
 	})
 }
 
 // TACACS creates a Handler that delegates to a TACACS+ authenticator.
 func TACACS(auth passwordAuthenticator) Handler {
-	return HandlerFunc(func(ctx context.Context, username, password, otp string) error {
-		secret := password
-		if secret == "" {
-			secret = otp
-		}
-		return auth.Authenticate(ctx, username, secret)
+	return HandlerFunc(func(ctx context.Context, username string, password, otp *enclave.MemoryEnclave) error {
+		return auth.Authenticate(ctx, username, firstLive(password, otp))
 	})
 }
 
 // LDAP creates a Handler that delegates to an LDAP authenticator.
 func LDAP(auth passwordAuthenticator) Handler {
-	return HandlerFunc(func(ctx context.Context, username, password, otp string) error {
+	return HandlerFunc(func(ctx context.Context, username string, password, _ *enclave.MemoryEnclave) error {
 		return auth.Authenticate(ctx, username, password)
 	})
 }
@@ -210,13 +243,9 @@ func LDAP(auth passwordAuthenticator) Handler {
 // The token should be passed as the password or OTP field.
 // Username is ignored for OAuth token validation.
 func OAuth(auth passwordAuthenticator) Handler {
-	return HandlerFunc(func(ctx context.Context, username, password, otp string) error {
-		token := password
-		if token == "" {
-			token = otp
-		}
+	return HandlerFunc(func(ctx context.Context, _ string, password, otp *enclave.MemoryEnclave) error {
 		// Username is ignored for OAuth - token is validated directly
-		return auth.Authenticate(ctx, "", token)
+		return auth.Authenticate(ctx, "", firstLive(password, otp))
 	})
 }
 
@@ -226,12 +255,9 @@ func OAuth(auth passwordAuthenticator) Handler {
 // For TOTP, the code is validated against the current time with skew tolerance.
 // For HOTP, the code is validated against the configured counter value.
 func OTP(auth otpAuthenticator) Handler {
-	return HandlerFunc(func(ctx context.Context, username, password, otp string) error {
-		code := otp
-		if code == "" {
-			code = password
-		}
-		if code == "" {
+	return HandlerFunc(func(ctx context.Context, _ string, password, otp *enclave.MemoryEnclave) error {
+		code := firstLive(otp, password)
+		if !code.IsAlive() {
 			return ErrMissingOTP
 		}
 		return auth.Authenticate(ctx, code)
@@ -240,12 +266,9 @@ func OTP(auth otpAuthenticator) Handler {
 
 // PKCS11 adapts a PIN-based authenticator into a Handler.
 func PKCS11(auth pinAuthenticator) Handler {
-	return HandlerFunc(func(ctx context.Context, username, password, otp string) error {
-		pin := password
-		if pin == "" {
-			pin = otp
-		}
-		if pin == "" {
+	return HandlerFunc(func(ctx context.Context, _ string, password, otp *enclave.MemoryEnclave) error {
+		pin := firstLive(password, otp)
+		if !pin.IsAlive() {
 			return ErrMissingPIN
 		}
 		return auth.Authenticate(ctx, pin)
@@ -254,8 +277,8 @@ func PKCS11(auth pinAuthenticator) Handler {
 
 // YubiKey adapts an OTP-based authenticator into a Handler.
 func YubiKey(auth otpAuthenticator) Handler {
-	return HandlerFunc(func(ctx context.Context, username, password, otp string) error {
-		if otp == "" {
+	return HandlerFunc(func(ctx context.Context, _ string, _, otp *enclave.MemoryEnclave) error {
+		if !otp.IsAlive() {
 			return ErrMissingOTP
 		}
 		return auth.Authenticate(ctx, otp)
@@ -265,12 +288,9 @@ func YubiKey(auth otpAuthenticator) Handler {
 // TPM2 adapts a password-based TPM 2.0 authenticator into a Handler.
 // The password is used to authorize unsealing of data from the TPM.
 func TPM2(auth pinAuthenticator) Handler {
-	return HandlerFunc(func(ctx context.Context, username, password, otp string) error {
-		pin := password
-		if pin == "" {
-			pin = otp
-		}
-		if pin == "" {
+	return HandlerFunc(func(ctx context.Context, _ string, password, otp *enclave.MemoryEnclave) error {
+		pin := firstLive(password, otp)
+		if !pin.IsAlive() {
 			return ErrMissingPIN
 		}
 		return auth.Authenticate(ctx, pin)
