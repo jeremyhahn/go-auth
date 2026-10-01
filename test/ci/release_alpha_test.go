@@ -89,6 +89,14 @@ func newReleaseFixtureWith(t *testing.T, changelog string, fragments map[string]
 		{"config", "--global", "init.defaultBranch", "main"},
 		{"config", "--global", "commit.gpgSign", "false"},
 		{"config", "--global", "tag.gpgSign", "false"},
+		// No git process may outlive the test: a detached `gc --auto` (from a
+		// commit, or from the bare remote's receive-pack after a push) kept
+		// writing .git/objects while TempDir's cleanup removed it, and the test
+		// failed with "directory not empty" (CI on go-auth PR #54).
+		{"config", "--global", "gc.auto", "0"},
+		{"config", "--global", "gc.autoDetach", "false"},
+		{"config", "--global", "maintenance.auto", "false"},
+		{"config", "--global", "receive.autogc", "false"},
 		{"init", "-q", "--bare", f.remote},
 	} {
 		f.git(dir, args...)

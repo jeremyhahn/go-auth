@@ -397,8 +397,13 @@ func (t *tlsPacketExchanger) exchange(ctx context.Context, packet *radiuslib.Pac
 		return nil, err
 	}
 
-	var cancel context.CancelFunc
-	ctx, cancel = context.WithCancel(ctx)
+	// The retransmit goroutine stops on stopCtx; failures are judged against
+	// the caller's ctx. context closes a parent's Done channel before it
+	// cancels the children, so a peer reacting to the caller's cancellation can
+	// fail the Read while stopCtx still reads as live (go-auth#53). The
+	// caller's Err is set before its Done closes, so checking it is never
+	// behind the peer.
+	stopCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	var retryTimer <-chan time.Time
@@ -416,7 +421,7 @@ func (t *tlsPacketExchanger) exchange(ctx context.Context, packet *radiuslib.Pac
 				// Best-effort retransmit: a failed write is retried on the
 				// next tick, and the surrounding read loop reports timeout.
 				_, _ = conn.Write(wire)
-			case <-ctx.Done():
+			case <-stopCtx.Done():
 				return
 			}
 		}
@@ -428,10 +433,8 @@ func (t *tlsPacketExchanger) exchange(ctx context.Context, packet *radiuslib.Pac
 	for {
 		n, err := conn.Read(incoming)
 		if err != nil {
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			default:
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, ctxErr
 			}
 			return nil, err
 		}
