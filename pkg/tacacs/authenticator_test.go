@@ -1,7 +1,3 @@
-// Excluded from fips140only builds; see authenticator.go and docs/fips.md.
-
-//go:build !fips140only
-
 package tacacs
 
 import (
@@ -145,6 +141,7 @@ func startTestServer(t *testing.T, handler tacplus.RequestHandler) (string, func
 }
 
 func TestAuthenticateSuccess(t *testing.T) {
+	skipUnderFIPSActivation(t)
 	addr, cleanup := startTestServer(t, simpleHandler{creds: map[string]string{"user": "pass"}})
 	defer cleanup()
 
@@ -159,6 +156,7 @@ func TestAuthenticateSuccess(t *testing.T) {
 }
 
 func TestAuthenticateInvalidCredentials(t *testing.T) {
+	skipUnderFIPSActivation(t)
 	addr, cleanup := startTestServer(t, simpleHandler{creds: map[string]string{"user": "pass"}})
 	defer cleanup()
 
@@ -174,6 +172,7 @@ func TestAuthenticateInvalidCredentials(t *testing.T) {
 }
 
 func TestAuthenticateServerError(t *testing.T) {
+	skipUnderFIPSActivation(t)
 	addr, cleanup := startTestServer(t, requestHandlerFunc(func(ctx context.Context, start *tacplus.AuthenStart, session *tacplus.ServerSession) *tacplus.AuthenReply {
 		return &tacplus.AuthenReply{Status: tacplus.AuthenStatusError, ServerMsg: "boom"}
 	}))
@@ -191,6 +190,7 @@ func TestAuthenticateServerError(t *testing.T) {
 }
 
 func TestAuthenticateContextDeadline(t *testing.T) {
+	skipUnderFIPSActivation(t)
 	addr, cleanup := startTestServer(t, simpleHandler{creds: map[string]string{"user": "pass"}, delay: 200 * time.Millisecond})
 	defer cleanup()
 
@@ -208,6 +208,7 @@ func TestAuthenticateContextDeadline(t *testing.T) {
 }
 
 func TestAuthenticateInputValidation(t *testing.T) {
+	skipUnderFIPSActivation(t)
 	auth, err := NewAuthenticator("127.0.0.1:49", testSecret)
 	if err != nil {
 		t.Fatalf("NewAuthenticator error: %v", err)
@@ -223,6 +224,7 @@ func TestAuthenticateInputValidation(t *testing.T) {
 }
 
 func TestAuthenticateWithAdditionalData(t *testing.T) {
+	skipUnderFIPSActivation(t)
 	addr, cleanup := startTestServer(t, tokenHandler{})
 	defer cleanup()
 
@@ -268,6 +270,7 @@ func (*captureHandler) HandleAcctRequest(context.Context, *tacplus.AcctRequest, 
 }
 
 func TestAuthenticatorOptions(t *testing.T) {
+	skipUnderFIPSActivation(t)
 	handler := &captureHandler{}
 	addr, cleanup := startTestServer(t, handler)
 	defer cleanup()
@@ -295,6 +298,7 @@ func TestAuthenticatorOptions(t *testing.T) {
 }
 
 func TestHandleReplyNilSession(t *testing.T) {
+	skipUnderFIPSActivation(t)
 	auth, err := NewAuthenticator("127.0.0.1:0", testSecret)
 	if err != nil {
 		t.Fatalf("NewAuthenticator error: %v", err)
@@ -307,6 +311,7 @@ func TestHandleReplyNilSession(t *testing.T) {
 }
 
 func TestHandleReplyUnknownStatus(t *testing.T) {
+	skipUnderFIPSActivation(t)
 	auth, err := NewAuthenticator("127.0.0.1:0", testSecret)
 	if err != nil {
 		t.Fatalf("NewAuthenticator error: %v", err)
@@ -319,6 +324,7 @@ func TestHandleReplyUnknownStatus(t *testing.T) {
 }
 
 func TestHandleReplyRestartNilSession(t *testing.T) {
+	skipUnderFIPSActivation(t)
 	auth, err := NewAuthenticator("127.0.0.1:0", testSecret)
 	if err != nil {
 		t.Fatalf("NewAuthenticator error: %v", err)
@@ -331,6 +337,7 @@ func TestHandleReplyRestartNilSession(t *testing.T) {
 }
 
 func TestHandleReplyErrorWithoutMessage(t *testing.T) {
+	skipUnderFIPSActivation(t)
 	auth, err := NewAuthenticator("127.0.0.1:0", testSecret)
 	if err != nil {
 		t.Fatalf("NewAuthenticator error: %v", err)

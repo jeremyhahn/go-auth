@@ -48,6 +48,8 @@ func TestConfigValidate(t *testing.T) {
 
 func TestNewAuthenticatorRequiresValidator(t *testing.T) {
 	cfg := Config{ClientID: "id", APIKey: "secret"}
+	restore := systemValidator
+	t.Cleanup(func() { systemValidator = restore })
 	systemValidator = nil
 	if _, err := NewAuthenticator(cfg, nil); !errors.Is(err, errSystemValidatorUnavailable) {
 		t.Fatalf("expected errSystemValidatorUnavailable, got %v", err)

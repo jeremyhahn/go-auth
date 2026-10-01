@@ -15,8 +15,10 @@ RADIUS is a networking protocol that provides centralized authentication, author
 > authenticated with MD5 (RFC 2865 §3) and the Message-Authenticator is
 > HMAC-MD5 (RFC 2869 §5.14), so this backend cannot run under
 > `GODEBUG=fips140=only` — RadSec included, since it tunnels the same
-> MD5-authenticated packet. Building with `-tags fips140only` excludes it.
-> See [FIPS 140-3 compliance](fips.md).
+> MD5-authenticated packet. The backend is in every build; when FIPS is
+> activated, `NewAuthenticator` and `NewAuthenticatorWithSecret` return
+> `radius.ErrFIPSUnsupported` instead of constructing it. Check for it with
+> `errors.Is`. See [FIPS 140-3 compliance](fips.md).
 
 ## Features
 

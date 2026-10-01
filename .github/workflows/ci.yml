@@ -105,19 +105,20 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      # The fips140only tag drops the code whose protocols mandate a
-      # non-approved primitive and so cannot run under fips140=only at all:
-      # the RADIUS and TACACS+ backends (MD5 — RFC 2865 §3, RFC 8907 §4.5) and
-      # the YubiCloud validator (HMAC-SHA-1 — Yubico Validation Protocol 2.0).
-      # These are the documented exemptions in docs/fips.md, not a way to make
-      # the gate test less: that code is still built, linted, scanned and
-      # tested by every other job, and everything that CAN be FIPS-140-only
-      # compliant is exercised here.
+      # One artifact (FIPS boundary ruling 1): the same packages every other
+      # job builds, compiled FIPS-capable with GOFIPS140=latest and run with
+      # FIPS activated through GODEBUG. There is no FIPS-only build shape.
+      # Code whose protocol mandates a non-approved primitive refuses at
+      # runtime with a typed ErrFIPSUnsupported instead of panicking: the
+      # RADIUS and TACACS+ backends (MD5 — RFC 2865 §3, RFC 8907 §4.5) and
+      # the YubiCloud validator (HMAC-SHA-1 — Yubico Validation Protocol
+      # 2.0). Their refusal tests run here, so this job proves every backend
+      # either works or refuses cleanly under fips140=only; see docs/fips.md.
       - name: Build all packages (FIPS mode)
-        run: go build -tags fips140only ./...
+        run: go build ./...
 
       - name: Unit tests (FIPS mode)
-        run: go test -count=1 -timeout=900s -tags fips140only ./...
+        run: go test -count=1 -timeout=900s ./...
 
   test:
     name: Unit Tests

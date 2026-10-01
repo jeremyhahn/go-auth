@@ -1,7 +1,3 @@
-// Excluded from fips140only builds; see authenticator.go and docs/fips.md.
-
-//go:build !fips140only
-
 package radius
 
 import (
@@ -36,6 +32,7 @@ func (f *fakeExchanger) exchange(ctx context.Context, packet *radiuslib.Packet, 
 }
 
 func TestNewAuthenticatorValidatesInputs(t *testing.T) {
+	skipUnderFIPSActivation(t)
 	_, err := NewAuthenticator("", "secret")
 	if err == nil {
 		t.Fatalf("expected error for empty address")
@@ -48,6 +45,7 @@ func TestNewAuthenticatorValidatesInputs(t *testing.T) {
 }
 
 func TestNewAuthenticatorUsesDefaultClient(t *testing.T) {
+	skipUnderFIPSActivation(t)
 	auth, err := NewAuthenticator("127.0.0.1:1812", "secret")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -58,6 +56,7 @@ func TestNewAuthenticatorUsesDefaultClient(t *testing.T) {
 }
 
 func TestNewAuthenticatorAppliesClientOptions(t *testing.T) {
+	skipUnderFIPSActivation(t)
 	retry := 250 * time.Millisecond
 	dialTimeout := 42 * time.Second
 	auth, err := NewAuthenticator(
@@ -95,6 +94,7 @@ func TestNewAuthenticatorAppliesClientOptions(t *testing.T) {
 }
 
 func TestRadiusClientExchange(t *testing.T) {
+	skipUnderFIPSActivation(t)
 	secret := []byte("shared")
 	listener, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
@@ -138,6 +138,7 @@ func TestRadiusClientExchange(t *testing.T) {
 }
 
 func TestAuthenticateSuccess(t *testing.T) {
+	skipUnderFIPSActivation(t)
 	response := radiuslib.New(radiuslib.CodeAccessAccept, []byte("secret"))
 	ex := &fakeExchanger{resp: response}
 	auth, err := NewAuthenticator("127.0.0.1:1812", "secret", WithPacketExchanger(ex))
@@ -157,6 +158,7 @@ func TestAuthenticateSuccess(t *testing.T) {
 }
 
 func TestAuthenticateRejectsEmptyCredentials(t *testing.T) {
+	skipUnderFIPSActivation(t)
 	auth, err := NewAuthenticator("127.0.0.1:1812", "secret", WithPacketExchanger(&fakeExchanger{}))
 	if err != nil {
 		t.Fatalf("unexpected error creating authenticator: %v", err)
@@ -182,6 +184,7 @@ func TestAuthenticateRejectsEmptyCredentials(t *testing.T) {
 }
 
 func TestAuthenticatePropagatesExchangeError(t *testing.T) {
+	skipUnderFIPSActivation(t)
 	ex := &fakeExchanger{err: errors.New("boom")}
 	auth, err := NewAuthenticator("127.0.0.1:1812", "secret", WithPacketExchanger(ex))
 	if err != nil {
@@ -195,6 +198,7 @@ func TestAuthenticatePropagatesExchangeError(t *testing.T) {
 }
 
 func TestAuthenticateRejectResponse(t *testing.T) {
+	skipUnderFIPSActivation(t)
 	response := radiuslib.New(radiuslib.CodeAccessReject, []byte("secret"))
 	ex := &fakeExchanger{resp: response}
 	auth, err := NewAuthenticator("127.0.0.1:1812", "secret", WithPacketExchanger(ex))
@@ -209,6 +213,7 @@ func TestAuthenticateRejectResponse(t *testing.T) {
 }
 
 func TestAuthenticateUnexpectedCode(t *testing.T) {
+	skipUnderFIPSActivation(t)
 	response := radiuslib.New(radiuslib.CodeAccountingResponse, []byte("secret"))
 	ex := &fakeExchanger{resp: response}
 	auth, err := NewAuthenticator("127.0.0.1:1812", "secret", WithPacketExchanger(ex))
@@ -223,6 +228,7 @@ func TestAuthenticateUnexpectedCode(t *testing.T) {
 }
 
 func TestAuthenticateHonorsContextCancellation(t *testing.T) {
+	skipUnderFIPSActivation(t)
 	ex := &fakeExchanger{}
 	auth, err := NewAuthenticator("127.0.0.1:1812", "secret", WithPacketExchanger(ex))
 	if err != nil {
@@ -242,6 +248,7 @@ func TestAuthenticateHonorsContextCancellation(t *testing.T) {
 }
 
 func TestAuthenticateAllowsNilContext(t *testing.T) {
+	skipUnderFIPSActivation(t)
 	response := radiuslib.New(radiuslib.CodeAccessAccept, []byte("secret"))
 	ex := &fakeExchanger{resp: response}
 	auth, err := NewAuthenticator("127.0.0.1:1812", "secret", WithPacketExchanger(ex))
@@ -255,6 +262,7 @@ func TestAuthenticateAllowsNilContext(t *testing.T) {
 }
 
 func TestNewAuthenticatorWithTLSConfigRequiresConfig(t *testing.T) {
+	skipUnderFIPSActivation(t)
 	_, err := NewAuthenticator("127.0.0.1:1812", "secret", WithTLSConfig(nil))
 	if err == nil {
 		t.Fatalf("expected error when TLS config is nil")
@@ -262,6 +270,7 @@ func TestNewAuthenticatorWithTLSConfigRequiresConfig(t *testing.T) {
 }
 
 func TestNewAuthenticatorWithTLSAndCustomExchanger(t *testing.T) {
+	skipUnderFIPSActivation(t)
 	response := radiuslib.New(radiuslib.CodeAccessAccept, []byte("secret"))
 	ex := &fakeExchanger{resp: response}
 	tlsConfig := &tls.Config{InsecureSkipVerify: true}
@@ -297,6 +306,7 @@ func TestNewTLSPacketExchangerUsesDefaultDialer(t *testing.T) {
 }
 
 func TestTLSPacketExchangerSuccess(t *testing.T) {
+	skipUnderFIPSActivation(t)
 	secret := "shared"
 	dialer := &fakeTLSDialer{secret: []byte(secret), responseCode: radiuslib.CodeAccessAccept}
 	auth, err := NewAuthenticator(
@@ -315,6 +325,7 @@ func TestTLSPacketExchangerSuccess(t *testing.T) {
 }
 
 func TestTLSPacketExchangerReject(t *testing.T) {
+	skipUnderFIPSActivation(t)
 	secret := "shared"
 	dialer := &fakeTLSDialer{secret: []byte(secret), responseCode: radiuslib.CodeAccessReject}
 	auth, err := NewAuthenticator(
@@ -334,6 +345,7 @@ func TestTLSPacketExchangerReject(t *testing.T) {
 }
 
 func TestTLSPacketExchangerNonAuthenticResponse(t *testing.T) {
+	skipUnderFIPSActivation(t)
 	secret := "shared"
 	dialer := &fakeTLSDialer{secret: []byte(secret), responseCode: radiuslib.CodeAccessAccept, tamper: true}
 	auth, err := NewAuthenticator(
@@ -355,6 +367,7 @@ func TestTLSPacketExchangerNonAuthenticResponse(t *testing.T) {
 }
 
 func TestTLSPacketExchangerParseError(t *testing.T) {
+	skipUnderFIPSActivation(t)
 	secret := "shared"
 	dialer := &fakeTLSDialer{secret: []byte(secret), responseCode: radiuslib.CodeAccessAccept, malformed: true}
 	auth, err := NewAuthenticator(
@@ -375,6 +388,7 @@ func TestTLSPacketExchangerParseError(t *testing.T) {
 }
 
 func TestTLSPacketExchangerDialError(t *testing.T) {
+	skipUnderFIPSActivation(t)
 	secret := "shared"
 	dialer := &fakeTLSDialer{secret: []byte(secret), dialErr: errors.New("dial failure")}
 	auth, err := NewAuthenticator(
@@ -394,6 +408,7 @@ func TestTLSPacketExchangerDialError(t *testing.T) {
 }
 
 func TestTLSPacketExchangerReadError(t *testing.T) {
+	skipUnderFIPSActivation(t)
 	secret := "shared"
 	dialer := &fakeTLSDialer{secret: []byte(secret), closeWithoutResponse: true}
 	auth, err := NewAuthenticator(
@@ -413,6 +428,7 @@ func TestTLSPacketExchangerReadError(t *testing.T) {
 }
 
 func TestTLSPacketExchangerContextCancel(t *testing.T) {
+	skipUnderFIPSActivation(t)
 	secret := "shared"
 	dialer := &fakeTLSDialer{secret: []byte(secret), responseDelay: 200 * time.Millisecond}
 	auth, err := NewAuthenticator(
@@ -434,6 +450,7 @@ func TestTLSPacketExchangerContextCancel(t *testing.T) {
 }
 
 func TestTLSPacketExchangerRetry(t *testing.T) {
+	skipUnderFIPSActivation(t)
 	secret := "shared"
 	dialer := &fakeTLSDialer{secret: []byte(secret), responseCode: radiuslib.CodeAccessAccept, responseDelay: 30 * time.Millisecond}
 	auth, err := NewAuthenticator(

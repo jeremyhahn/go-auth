@@ -1,7 +1,3 @@
-// Excluded from fips140only builds; see authenticator.go and docs/fips.md.
-
-//go:build !fips140only
-
 package radius
 
 import (
@@ -75,6 +71,7 @@ func TestEAPAttributeChunking(t *testing.T) {
 }
 
 func TestMessageAuthenticatorSetVerify(t *testing.T) {
+	skipUnderFIPSActivation(t)
 	secret := []byte("sharedsecret")
 	packet := radiuslib.New(radiuslib.CodeAccessRequest, secret)
 	if err := setMessageAuthenticator(packet, secret); err != nil {

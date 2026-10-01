@@ -9,59 +9,50 @@ exercising MD5 or SHA-1 succeeds and the gate reports green while a regulated
 path uses prohibited cryptography. `only` makes non-approved operations panic,
 which is what a FedRAMP / PCI DSS / HIPAA gate has to do.
 
-## Building for a FIPS-140-only deployment
+## One artifact, activated at deployment
+
+Company FIPS boundary ruling 1 is one artifact for both markets. go-auth has a
+single build shape: every package is in every build, there is no FIPS build
+tag, and FIPS is a property of how the binary is *run*, not how it was built.
 
 ```sh
-GOFIPS140=latest GODEBUG=fips140=only go build -tags fips140only ./...
-GOFIPS140=latest GODEBUG=fips140=only go test -count=1 -tags fips140only ./...
+# Build FIPS-capable (the Go Cryptographic Module is linked in).
+GOFIPS140=latest go build ./...
+
+# Activate FIPS at deployment.
+GODEBUG=fips140=only ./your-service
+
+# What the CI fips job runs.
+GOFIPS140=latest GODEBUG=fips140=only go test -count=1 ./...
 ```
 
-The `fips140only` build tag selects the subset of this library that can operate
-under `fips140=only`. It is not a "skip the awkward tests" switch: it removes
-code that is *incapable* of FIPS-140-only operation, so that a FIPS build
-cannot link it at all rather than shipping a backend that panics the first
-time it is used. Everything the tag removes is still built, linted, scanned by
-gosec and unit-tested by the non-FIPS CI jobs.
+Code whose protocol mandates a non-approved primitive cannot run under
+`fips140=only`, and the runtime's answer to such code is a panic. This library
+never lets that panic reach a caller and never falls back to the primitive
+silently: under FIPS activation those components **refuse at runtime with a
+typed error**, `ErrFIPSUnsupported`, from their constructors — the company
+FIPS product ruling 7 case, "disabled with a clear typed error". Configuring
+one of them in a FIPS deployment fails at startup rather than on the first
+login. Startup code tells the two cases apart with `errors.Is`:
 
-Default builds (no tag) are unchanged and keep every backend.
+```go
+auth, err := radius.NewAuthenticator(addr, secret)
+if errors.Is(err, radius.ErrFIPSUnsupported) {
+    // FIPS is activated; RADIUS cannot be offered in this deployment.
+}
+```
 
-## Exemptions
+The FIPS job therefore covers the whole module, with nothing excluded: every
+backend either works under `fips140=only` or is proven to refuse cleanly.
 
-An exemption here means: an external format or protocol mandates a
-non-approved primitive, so its use is not a compliance defect — FedRAMP, PCI
-DSS and HIPAA govern the protection of regulated data, not every hash in the
-process. The primitive is nonetheless kept out of the FIPS-gated path.
+## Detecting activation
 
-### RADIUS — `pkg/radius`, excluded by `fips140only`
-
-| | |
-|---|---|
-| Primitive | MD5, and HMAC-MD5 |
-| Mandated by | RFC 2865 §3 (Request/Response Authenticator = `MD5(Code \|\| ID \|\| Length \|\| RequestAuth \|\| Attributes \|\| Secret)`); RFC 2869 §5.14 and RFC 3579 §3.2 (Message-Authenticator = HMAC-MD5) |
-| Scope | The whole backend. Every RADIUS packet carries an MD5 authenticator, so no code path avoids it. |
-
-RadSec (RFC 6614) does not resolve this. It carries RADIUS inside TLS, but the
-inner packet's MD5 authenticator is still computed, so a RadSec client panics
-under `fips140=only` just as a UDP one does.
-
-Deployments subject to FIPS 140-3 must not use the RADIUS backend. Two
-independent mechanisms enforce that, for the two shapes of artifact:
-
-- **Link time** — building with `-tags fips140only` removes the package, so a
-  FIPS-only artifact cannot contain MD5 at all.
-- **Run time** — an ordinary build contains the backend, and
-  `NewAuthenticator` / `NewAuthenticatorWithSecret` return
-  `radius.ErrFIPSUnsupported` when FIPS is activated. This is the company FIPS
-  product ruling 7 case ("disabled with a clear typed error"), and it is what
-  serves boundary ruling 1's model of one FIPS-capable artifact activated at
-  deployment with `GODEBUG=fips140=only`. Configuring RADIUS in such a
-  deployment fails at startup instead of panicking inside `crypto/hmac` on the
-  first login.
-
-`pkg/radius/fips.go` detects activation by computing one HMAC-MD5 over a fixed
-non-secret input and observing whether the runtime refuses. That is not the
-obvious mechanism, so the reason is worth recording. `crypto/fips140.Enabled()`
-answers a different question — measured on go1.26.6:
+Each refusing package detects activation by executing the one primitive its
+protocol needs, over a fixed non-secret input, once per process, and observing
+whether the runtime refuses (`pkg/radius/fips.go`, `pkg/tacacs/fips.go`,
+`pkg/yubikey/fips.go`). That is not the obvious mechanism, so the reason is
+worth recording. `crypto/fips140.Enabled()` answers a different question —
+measured on go1.26.6:
 
 | build | `GODEBUG` | `fips140.Enabled()` | HMAC-MD5 |
 |---|---|---|---|
@@ -73,48 +64,78 @@ answers a different question — measured on go1.26.6:
 | `GOFIPS140=latest` | `fips140=only` | true | panics |
 
 `Enabled()` reports that the FIPS module is linked in, which under ruling 1 is
-true of every binary the company ships. Gating on it would disable RADIUS in
-every deployment, including the ones entitled to use it. Nothing exported
-distinguishes `only` from `on`, and reading `GODEBUG` from the environment
-would miss a `//go:debug fips140=only` directive compiled into the main
-package. Executing the primitive measures the condition the backend actually
-depends on, however it was set.
+true of every binary the company ships. Gating on it would disable these
+backends in every deployment, including the ones entitled to use them. Reading
+`GODEBUG` from the environment would miss a `//go:debug fips140=only` directive
+compiled into the main package. Go 1.26's `fips140.Enforced()` does distinguish
+`only` from `on`, but it reports per-goroutine state that `WithoutEnforcement`
+switches off, and says nothing about which primitives the runtime refuses.
+Executing the primitive measures the condition the backend actually depends on,
+however it was set.
 
-`TestFIPSActivationRefusesRADIUS` proves it end to end by re-executing the test
-binary under `GODEBUG=fips140=only` — the plain unit-test job is enough, since
-`fips140=only` applies to an ordinary build.
+Each package proves its refusal end to end with a test that re-executes the
+test binary under `GODEBUG=fips140=only` (`TestFIPSActivationRefusesRADIUS`,
+`TestFIPSActivationRefusesTACACS`, `TestFIPSActivationRefusesYubiCloud`), so
+the plain unit-test job covers it too. Under the FIPS job, the tests that drive
+the refused primitive skip themselves and the refusal tests run instead.
 
-### TACACS+ — `pkg/tacacs`, excluded by `fips140only`
+## Exemptions
+
+An exemption here means: an external format or protocol mandates a
+non-approved primitive, so its use is not a compliance defect — FedRAMP, PCI
+DSS and HIPAA govern the protection of regulated data, not every hash in the
+process. The primitive is nonetheless kept out of the FIPS-activated path.
+
+### RADIUS — `pkg/radius`, refuses under FIPS activation
+
+| | |
+|---|---|
+| Primitive | MD5, and HMAC-MD5 |
+| Mandated by | RFC 2865 §3 (Request/Response Authenticator = `MD5(Code \|\| ID \|\| Length \|\| RequestAuth \|\| Attributes \|\| Secret)`); RFC 2869 §5.14 and RFC 3579 §3.2 (Message-Authenticator = HMAC-MD5) |
+| Scope | The whole backend. Every RADIUS packet carries an MD5 authenticator, so no code path avoids it. |
+| Refusal | `NewAuthenticator` / `NewAuthenticatorWithSecret` return `radius.ErrFIPSUnsupported`, ahead of every argument check |
+
+RadSec (RFC 6614) does not resolve this. It carries RADIUS inside TLS, but the
+inner packet's MD5 authenticator is still computed, so a RadSec client would
+panic under `fips140=only` just as a UDP one would. Deployments subject to
+FIPS 140-3 cannot use the RADIUS backend.
+
+### TACACS+ — `pkg/tacacs`, refuses under FIPS activation
 
 | | |
 |---|---|
 | Primitive | MD5 |
 | Mandated by | RFC 8907 §4.5 — the packet body is obfuscated with an MD5-based keystream (`MD5(session_id \|\| key \|\| version \|\| seq_no \|\| prev_hash)` chained and XORed over the body) |
-| Scope | The whole backend. It is the only body encoding the protocol defines. |
+| Scope | The whole backend. It is the only body encoding the protocol defines for production use. |
+| Refusal | `NewAuthenticator` / `NewAuthenticatorWithSecret` return `tacacs.ErrFIPSUnsupported`, ahead of every argument check; `Authenticate` returns it too, before any packet is built |
 
-Same conclusion: not available to FIPS 140-3 deployments, enforced by the tag.
+Same conclusion as RADIUS: not available to FIPS 140-3 deployments, refused at
+construction. The shared secret is never sealed or locked when the refusal
+fires.
 
-### YubiCloud — `pkg/yubikey/yubicloud_validator.go`, excluded by `fips140only`
+### YubiCloud — `pkg/yubikey` `HTTPValidator`, refuses under FIPS activation
 
 | | |
 |---|---|
 | Primitive | HMAC-SHA-1 |
 | Mandated by | Yubico Validation Protocol 2.0 — every request and response is signed with HMAC-SHA-1 over the sorted parameter list, and the service rejects any other digest |
 | Scope | The YubiCloud HTTP validator only, not the whole backend |
+| Refusal | `NewAuthenticator` returns `yubikey.ErrFIPSUnsupported` when the validator it would use — passed explicitly, or the package default — is the YubiCloud one; `HTTPValidator.Validate` / `ValidateProtected` return it before any request is built |
 
-`pkg/yubikey` stays in the FIPS build. Only the YubiCloud validator is
-excluded, and with it the `init()` that installed it as the package default —
-so under the tag `NewAuthenticator(cfg, nil)` fails fast with
-`errSystemValidatorUnavailable` rather than panicking mid-request. A caller
-that injects its own `OTPValidator`, pointed at a validation service that
-speaks an approved digest, keeps the full YubiKey authentication path.
+`pkg/yubikey`'s `init()` installs the YubiCloud validator as the package
+default in every build. Under FIPS activation `NewAuthenticator(cfg, nil)`
+therefore fails at construction with the typed error rather than panicking
+mid-request. A caller that injects its own `OTPValidator`, pointed at a
+validation service that speaks an approved digest, keeps the full YubiKey
+authentication path.
 
 This one is worth calling out because it is the failure mode a FIPS gate is
 worst at catching on its own: every unit test injected a fake validator, so the
 HMAC-SHA-1 path was never executed and the job passed while the artifact still
-contained a backend that would panic on first real use.
-`TestYubiCloudUnreachableUnderFIPS` guards it by asserting that package
-initialization installs no default validator.
+contained a default that would panic on first real use.
+`TestYubiCloudIsTheDefaultValidator` asserts the default is installed, and
+`TestFIPSActivationRefusesYubiCloud` asserts it refuses through the default
+path under `GODEBUG=fips140=only`.
 
 ### OTP — `pkg/otp`, partial
 

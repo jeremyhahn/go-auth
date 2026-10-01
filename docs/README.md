@@ -273,9 +273,11 @@ auth, _ := NewAuthenticator(config, mockValidator)
 
 ### FIPS 140-3
 
-See [FIPS 140-3 compliance](fips.md) for the `fips140only` build tag, the
-backends it excludes (RADIUS and TACACS+, whose wire protocols mandate MD5),
-and the OTP algorithm a FIPS deployment must provision.
+See [FIPS 140-3 compliance](fips.md) for the single-artifact model (build with
+`GOFIPS140=latest`, activate with `GODEBUG=fips140=only`), the components that
+refuse with a typed `ErrFIPSUnsupported` when FIPS is activated (RADIUS and
+TACACS+, whose wire protocols mandate MD5, and the YubiCloud validator, which
+signs with HMAC-SHA-1), and the OTP algorithm a FIPS deployment must provision.
 
 ### General Recommendations
 

@@ -1,5 +1,3 @@
-//go:build !fips140only
-
 package radius
 
 import (
@@ -15,6 +13,18 @@ import (
 // subprocessEnvKey marks the re-executed child of
 // TestFIPSActivationRefusesRADIUS.
 const subprocessEnvKey = "GO_AUTH_RADIUS_FIPS_CHILD"
+
+// skipUnderFIPSActivation skips a test that drives the MD5 or HMAC-MD5 every
+// RADIUS packet carries, which a FIPS-activated process refuses to execute.
+// Under that activation the backend's whole contract is the refusal, which the
+// tests in this file assert.
+func skipUnderFIPSActivation(t *testing.T) {
+	t.Helper()
+	if fips140OnlyActive() {
+		t.Skip("FIPS 140-only mode is active: RADIUS refuses to run (RFC 2865 §3 MD5, RFC 2869 §5.14 HMAC-MD5); " +
+			"the refusal is covered by the fips_test.go tests")
+	}
+}
 
 // TestHMACMD5IsAvailableInAnOrdinaryProcess is the false-positive guard. The
 // probe decides whether the whole backend is usable, so a probe that reported

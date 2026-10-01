@@ -1,9 +1,3 @@
-// Excluded from fips140only builds: RFC 8907 §4.5 obfuscates every packet body
-// with an MD5-based keystream, which GODEBUG=fips140=only refuses to execute,
-// so these tests cannot run in that build.
-
-//go:build !fips140only
-
 package tacacs
 
 import (
@@ -16,6 +10,7 @@ import (
 )
 
 func TestNewAuthenticatorWithSecretValidatesInputs(t *testing.T) {
+	skipUnderFIPSActivation(t)
 	sealed, err := secretpkg.NewString(testSecret)
 	if err != nil {
 		t.Fatalf("NewString: %v", err)
@@ -44,6 +39,7 @@ func TestNewAuthenticatorWithSecretValidatesInputs(t *testing.T) {
 // packet obfuscation keyed by that secret matches, so a successful login is
 // proof the sealed key reached the wire intact.
 func TestAuthenticateWithProtectedSecret(t *testing.T) {
+	skipUnderFIPSActivation(t)
 	addr, cleanup := startTestServer(t, simpleHandler{creds: map[string]string{"user": "pass"}})
 	defer cleanup()
 
@@ -73,6 +69,7 @@ func TestAuthenticateWithProtectedSecret(t *testing.T) {
 // stores its secret the protected way, and that a session keyed from it still
 // authenticates.
 func TestStringConstructorSealsTheSecret(t *testing.T) {
+	skipUnderFIPSActivation(t)
 	addr, cleanup := startTestServer(t, simpleHandler{creds: map[string]string{"user": "pass"}})
 	defer cleanup()
 
@@ -93,6 +90,7 @@ func TestStringConstructorSealsTheSecret(t *testing.T) {
 // only in a locked buffer, so nothing in its rendered form is the secret, and
 // there is no exported way to reach it.
 func TestSecretIsNeverPlaintextInTheAuthenticator(t *testing.T) {
+	skipUnderFIPSActivation(t)
 	addr, cleanup := startTestServer(t, simpleHandler{creds: map[string]string{"user": "pass"}})
 	defer cleanup()
 
@@ -122,6 +120,7 @@ func TestSecretIsNeverPlaintextInTheAuthenticator(t *testing.T) {
 // reads the key from goroutines nothing joins, so the bytes must stay mapped
 // for as long as the authenticator can be used.
 func TestAuthenticatorCopiesTheSecret(t *testing.T) {
+	skipUnderFIPSActivation(t)
 	addr, cleanup := startTestServer(t, simpleHandler{creds: map[string]string{"user": "pass"}})
 	defer cleanup()
 

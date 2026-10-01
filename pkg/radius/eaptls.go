@@ -1,7 +1,3 @@
-// Excluded from fips140only builds; see authenticator.go and docs/fips.md.
-
-//go:build !fips140only
-
 package radius
 
 import (

@@ -1,17 +1,15 @@
-// The YubiCloud validator is excluded from fips140only builds.
+// The YubiCloud validator is in every build and refuses to run when FIPS is
+// activated.
 //
 // Yubico Validation Protocol 2.0 signs every request and response with
 // HMAC-SHA-1 over the sorted parameter list (computeSignature below), and the
 // service rejects any other digest. Go's fips140=only mode admits HMAC over
-// SHA-2 and SHA-3 only, so this validator panics the first time it is used.
-//
-// Excluding the file also removes the init() that installs it as the package
-// default, so under the tag NewAuthenticator(cfg, nil) fails fast with
-// errSystemValidatorUnavailable instead of panicking mid-request. The rest of
-// pkg/yubikey stays in the FIPS build: an injected OTPValidator that speaks to
-// an approved validation service works normally. See docs/fips.md.
-
-//go:build !fips140only
+// SHA-2 and SHA-3 only, so under that activation every entry point here
+// returns ErrFIPSUnsupported (fips.go) instead of reaching the HMAC, and
+// NewAuthenticator refuses to construct around this validator. init() still
+// installs it as the package default in every build. The rest of pkg/yubikey
+// is unaffected: an injected OTPValidator that speaks to an approved
+// validation service works normally. See docs/fips.md.
 
 package yubikey
 
@@ -67,6 +65,10 @@ func init() {
 // before doing any work, so the exposure is limited to the string the caller
 // already holds.
 func (v *HTTPValidator) Validate(ctx context.Context, clientID, apiKey, otp string) error {
+	// Ahead of sealing: under FIPS activation the key has no use.
+	if fips140OnlyActive() {
+		return ErrFIPSUnsupported
+	}
 	sealed, err := secretpkg.NewString(apiKey)
 	if err != nil {
 		return err
@@ -78,7 +80,13 @@ func (v *HTTPValidator) Validate(ctx context.Context, clientID, apiKey, otp stri
 // ValidateProtected implements ProtectedOTPValidator: it signs the request and
 // verifies the response signature with the API key opened from protected
 // memory, and never materializes the key as a string.
+//
+// Under FIPS activation it returns ErrFIPSUnsupported before any request is
+// built or sent.
 func (v *HTTPValidator) ValidateProtected(ctx context.Context, clientID string, apiKey *secretpkg.Secret, otp string) error {
+	if fips140OnlyActive() {
+		return ErrFIPSUnsupported
+	}
 	nonce, err := randomNonce()
 	if err != nil {
 		return err
@@ -141,7 +149,13 @@ func (v *HTTPValidator) ValidateProtected(ctx context.Context, clientID string, 
 // computeSignature signs the sorted parameter list with the API key, which is
 // opened from protected memory and decoded into a locked scratch buffer for
 // the HMAC. Neither the base64 key nor the decoded key reaches ordinary heap.
+//
+// It is the one path to the HMAC-SHA-1, so it carries the FIPS gate itself and
+// no caller can reach the primitive's panic.
 func computeSignature(values url.Values, apiKey *secretpkg.Secret) (string, error) {
+	if fips140OnlyActive() {
+		return "", ErrFIPSUnsupported
+	}
 	var signature string
 	err := apiKey.Open(func(encoded []byte) error {
 		return withDecodedAPIKey(encoded, func(key []byte) error {

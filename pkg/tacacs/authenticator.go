@@ -1,13 +1,11 @@
-// TACACS+ is excluded from fips140only builds.
+// TACACS+ is in every build and refuses to run when FIPS is activated.
 //
 // RFC 8907 §4.5 obfuscates every packet body with an MD5-based keystream
 // (a chain of MD5(session_id || key || version || seq_no || prev_hash) blocks
 // XORed over the body). It is the only body encoding the protocol defines, so
-// a conforming TACACS+ client cannot avoid MD5. This backend is therefore kept
-// out of FIPS-140-only builds rather than shipped as one that panics on first
-// use. See docs/fips.md.
-
-//go:build !fips140only
+// a conforming TACACS+ client cannot avoid MD5. Under GODEBUG=fips140=only the
+// constructors therefore return ErrFIPSUnsupported (fips.go) rather than
+// shipping a backend that panics on first use. See docs/fips.md.
 
 package tacacs
 
@@ -92,7 +90,16 @@ func WithDialContext(dial func(ctx context.Context, network, addr string) (net.C
 // protected memory and never requires it to exist as a Go string. This
 // constructor is still supported and will be removed in the coordinated
 // breaking release.
+//
+// Under FIPS activation this returns ErrFIPSUnsupported ahead of every argument
+// check, so startup code can branch on errors.Is(err, ErrFIPSUnsupported) to
+// learn the backend is unavailable.
 func NewAuthenticator(addr, secret string, opts ...Option) (*Authenticator, error) {
+	// Ahead of sealing the secret too: under FIPS activation there is nothing
+	// the secret could be used for, so it is never copied into protected memory.
+	if fips140OnlyActive() {
+		return nil, ErrFIPSUnsupported
+	}
 	if secret == "" {
 		return nil, errors.New("tacacs: secret must not be empty")
 	}
@@ -116,7 +123,13 @@ func NewAuthenticator(addr, secret string, opts ...Option) (*Authenticator, erro
 // using it is done. Its own copy is held for the life of the authenticator and
 // has no release point — see the Authenticator type for why, and construct one
 // authenticator per server rather than one per authentication.
+//
+// Under FIPS activation this returns ErrFIPSUnsupported ahead of every argument
+// check, and the secret is never locked.
 func NewAuthenticatorWithSecret(addr string, sharedSecret *secretpkg.Secret, opts ...Option) (*Authenticator, error) {
+	if fips140OnlyActive() {
+		return nil, ErrFIPSUnsupported
+	}
 	if addr == "" {
 		return nil, errors.New("tacacs: address must not be empty")
 	}
@@ -146,7 +159,14 @@ func NewAuthenticatorWithSecret(addr string, sharedSecret *secretpkg.Secret, opt
 var ErrAuthenticationFailed = errors.New("tacacs: authentication failed")
 
 // Authenticate verifies username/password credentials against the TACACS+ server.
+//
+// Under FIPS activation it returns ErrFIPSUnsupported before any packet is
+// built; the constructors already refuse, so this only matters for an
+// authenticator that did not come from one.
 func (a *Authenticator) Authenticate(ctx context.Context, username, password string) error {
+	if fips140OnlyActive() {
+		return ErrFIPSUnsupported
+	}
 	if username == "" {
 		return errors.New("tacacs: username must not be empty")
 	}

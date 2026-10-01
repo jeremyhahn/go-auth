@@ -87,16 +87,24 @@ type Authenticator struct {
 }
 
 // NewAuthenticator constructs a YubiKey authenticator. If validator is nil the
-// package-level system validator is used which must be initialized by platform code.
+// package-level system validator is used — the YubiCloud HTTPValidator unless
+// SetSystemValidator replaced it.
+//
+// Under FIPS activation it returns ErrFIPSUnsupported, ahead of the
+// configuration checks, when the validator it would use is the YubiCloud one.
+// Any other validator is accepted as usual.
 func NewAuthenticator(cfg Config, validator OTPValidator) (*Authenticator, error) {
+	if validator == nil {
+		validator = systemValidator
+	}
+	if refusedUnderFIPS(validator) {
+		return nil, ErrFIPSUnsupported
+	}
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
 	if validator == nil {
-		if systemValidator == nil {
-			return nil, errSystemValidatorUnavailable
-		}
-		validator = systemValidator
+		return nil, errSystemValidatorUnavailable
 	}
 	return &Authenticator{cfg: cfg, validator: validator}, nil
 }

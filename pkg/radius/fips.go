@@ -13,12 +13,9 @@
 // panics inside crypto/hmac on the first Access-Request — a runtime crash on a
 // login path instead of a refusal at startup.
 //
-// It is separate from, and does not replace, the `fips140only` build tag that
-// removes this package from a FIPS-only artifact. The tag serves a build that
-// must not *contain* MD5 at all; this gate serves ruling 1's single artifact,
-// which contains RADIUS and must refuse to run it when FIPS is activated.
-
-//go:build !fips140only
+// It is the only FIPS mechanism in this package. There is no FIPS-only build
+// shape: ruling 1's single artifact contains RADIUS and refuses to run it when
+// FIPS is activated.
 
 package radius
 
@@ -64,10 +61,13 @@ var fips140OnlyActive = sync.OnceValue(hmacMD5Unavailable)
 // Enabled() reports that the FIPS module is in use, which under ruling 1 is
 // true of every binary the company ships whether or not FIPS was activated.
 // Gating on it would disable RADIUS in every deployment, including the ones
-// entitled to it. Nothing exported distinguishes `only` from `on`, and reading
-// GODEBUG from the environment would miss a //go:debug directive compiled into
-// the main package. Executing the primitive is the only signal that measures
-// the condition the backend actually depends on, whatever set it.
+// entitled to it. Reading GODEBUG from the environment would miss a //go:debug
+// directive compiled into the main package. Go 1.26's Enforced() does
+// distinguish `only` from `on`, but it reports whether enforcement is on for
+// the calling goroutine (WithoutEnforcement switches it off inside a callback)
+// and says nothing about which primitives the runtime refuses. Executing the
+// primitive is the signal that measures the condition the backend actually
+// depends on, whatever set it.
 //
 // The key is 32 bytes deliberately: under fips140=only a shorter one panics
 // first for its length, which would make the probe report the right answer for

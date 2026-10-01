@@ -1,9 +1,3 @@
-// The YubiCloud signature tests are excluded from fips140only builds: Yubico
-// Validation Protocol 2.0 signs every request and response with HMAC-SHA-1,
-// which GODEBUG=fips140=only refuses to execute.
-
-//go:build !fips140only
-
 package yubikey
 
 import (
@@ -28,6 +22,7 @@ import (
 // parameter list, keyed by the base64-decoded API key (Yubico Validation
 // Protocol 2.0 §Generating signatures).
 func TestComputeSignatureMatchesTheProtocol(t *testing.T) {
+	skipUnderFIPSActivation(t)
 	values := url.Values{}
 	values.Set("id", "1234")
 	values.Set("otp", "ccccccbdefgh")
@@ -74,6 +69,7 @@ func TestComputeSignatureMatchesTheProtocol(t *testing.T) {
 // allocation failing first. Config.validate accepts such a key, so rejecting it
 // here would break every authentication for that configuration.
 func TestComputeSignatureWithShortRawKey(t *testing.T) {
+	skipUnderFIPSActivation(t)
 	values := url.Values{}
 	values.Set("id", "1234")
 	values.Set("otp", "ccccccbdefgh")
@@ -99,6 +95,7 @@ func TestComputeSignatureWithShortRawKey(t *testing.T) {
 }
 
 func TestComputeSignatureWithDestroyedKey(t *testing.T) {
+	skipUnderFIPSActivation(t)
 	sealed, err := secretpkg.NewString("bXktYXBpLWtleQ==")
 	if err != nil {
 		t.Fatalf("NewString: %v", err)
@@ -114,6 +111,7 @@ func TestComputeSignatureWithDestroyedKey(t *testing.T) {
 // against a server that checks the request signature and signs its reply, with
 // the API key never leaving protected memory on this side.
 func TestValidateProtectedRoundTrip(t *testing.T) {
+	skipUnderFIPSActivation(t)
 	rawKey := []byte("my-api-key-bytes")
 	encoded := base64.StdEncoding.EncodeToString(rawKey)
 	const otp = "ccccccbdefgh"

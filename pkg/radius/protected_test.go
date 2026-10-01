@@ -1,9 +1,3 @@
-// Excluded from fips140only builds: every RADIUS exchange is authenticated
-// with MD5 (RFC 2865 §3, RFC 2869 §5.14), which GODEBUG=fips140=only refuses
-// to execute, so these tests cannot run in that build.
-
-//go:build !fips140only
-
 package radius
 
 import (
@@ -36,6 +30,7 @@ func (e *secretCapturingExchanger) exchange(_ context.Context, packet *radiuslib
 }
 
 func TestNewAuthenticatorWithSecretValidatesInputs(t *testing.T) {
+	skipUnderFIPSActivation(t)
 	sealed, err := secretpkg.NewString("shared-secret")
 	if err != nil {
 		t.Fatalf("NewString: %v", err)
@@ -60,6 +55,7 @@ func TestNewAuthenticatorWithSecretValidatesInputs(t *testing.T) {
 }
 
 func TestAuthenticateWithProtectedSecret(t *testing.T) {
+	skipUnderFIPSActivation(t)
 	const shared = "shared-secret"
 
 	sealed, err := secretpkg.NewString(shared)
@@ -89,6 +85,7 @@ func TestAuthenticateWithProtectedSecret(t *testing.T) {
 // string constructor now stores the secret the protected way, so both paths
 // put the same bytes on the wire and neither keeps a string field.
 func TestStringConstructorSealsTheSecret(t *testing.T) {
+	skipUnderFIPSActivation(t)
 	const shared = "shared-secret"
 
 	ex := &secretCapturingExchanger{resp: radiuslib.New(radiuslib.CodeAccessAccept, []byte(shared))}
@@ -112,6 +109,7 @@ func TestStringConstructorSealsTheSecret(t *testing.T) {
 // plaintext copy of the shared secret: once the caller releases it, no packet
 // can be built.
 func TestAuthenticateAfterSecretDestroyed(t *testing.T) {
+	skipUnderFIPSActivation(t)
 	sealed, err := secretpkg.NewString("shared-secret")
 	if err != nil {
 		t.Fatalf("NewString: %v", err)

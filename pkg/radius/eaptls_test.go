@@ -1,7 +1,3 @@
-// Excluded from fips140only builds; see authenticator.go and docs/fips.md.
-
-//go:build !fips140only
-
 package radius
 
 import (
@@ -21,6 +17,7 @@ import (
 )
 
 func TestAuthenticateEAPTLSSuccess(t *testing.T) {
+	skipUnderFIPSActivation(t)
 	secret := []byte("sharedsecret")
 
 	serverCfg, clientCfg := mustLoadTLSConfigs(t)
@@ -50,6 +47,7 @@ func TestAuthenticateEAPTLSSuccess(t *testing.T) {
 // The conversation is bounded by maxEAPTLSRoundTrips rather than by a clock,
 // so this test carries no timing assumption.
 func TestAuthenticateEAPTLSRequiresAccessAccept(t *testing.T) {
+	skipUnderFIPSActivation(t)
 	secret := []byte("sharedsecret")
 	serverCfg, clientCfg := mustLoadTLSConfigs(t)
 
@@ -73,6 +71,7 @@ func TestAuthenticateEAPTLSRequiresAccessAccept(t *testing.T) {
 // these may authenticate, and a completed TLS handshake does not rescue any
 // of them.
 func TestAuthenticateEAPTLSRejectsBadFinalPacket(t *testing.T) {
+	skipUnderFIPSActivation(t)
 	tests := []struct {
 		name     string
 		decision finalDecision
@@ -113,6 +112,7 @@ func TestAuthenticateEAPTLSRejectsBadFinalPacket(t *testing.T) {
 // RFC 3579 §3.2 has the packet discarded, so the conversation carries on and
 // ends on the round-trip bound instead.
 func TestAuthenticateEAPTLSDiscardsForgedReject(t *testing.T) {
+	skipUnderFIPSActivation(t)
 	secret := []byte("sharedsecret")
 	serverCfg, clientCfg := mustLoadTLSConfigs(t)
 
@@ -134,6 +134,7 @@ func TestAuthenticateEAPTLSDiscardsForgedReject(t *testing.T) {
 // challenge path. Verification happens before any field is read, so a forged
 // challenge cannot plant the State attribute either.
 func TestAuthenticateEAPTLSDiscardsForgedChallenge(t *testing.T) {
+	skipUnderFIPSActivation(t)
 	secret := []byte("sharedsecret")
 	serverCfg, clientCfg := mustLoadTLSConfigs(t)
 
@@ -167,6 +168,7 @@ func mustEAPTLSAuthenticator(t *testing.T, secret []byte, srv *fakeEAPTLSServer,
 }
 
 func TestAuthenticateEAPTLSMissingTLSConfig(t *testing.T) {
+	skipUnderFIPSActivation(t)
 	auth, err := NewAuthenticator(
 		"127.0.0.1:1812",
 		"secret",

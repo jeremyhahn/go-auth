@@ -15,7 +15,9 @@ TACACS+ is a Cisco-developed protocol that provides centralized authentication, 
 > **Not available in FIPS 140-3 deployments.** TACACS+ obfuscates every packet
 > body with an MD5 keystream (RFC 8907 §4.5), the only body encoding the
 > protocol defines, so this backend cannot run under `GODEBUG=fips140=only`.
-> Building with `-tags fips140only` excludes it.
+> The backend is in every build; when FIPS is activated, `NewAuthenticator`
+> and `NewAuthenticatorWithSecret` return `tacacs.ErrFIPSUnsupported` instead
+> of constructing it. Check for it with `errors.Is`.
 > See [FIPS 140-3 compliance](fips.md).
 
 TACACS+ is commonly used for:
@@ -245,6 +247,26 @@ err := auth.Authenticate(ctx, "", "password")
 err := auth.Authenticate(ctx, "user", "")
 // Error: "tacacs: password must not be empty"
 ```
+
+### FIPS activation
+
+Both constructors return `tacacs.ErrFIPSUnsupported` — ahead of any argument
+check, and before the shared secret is sealed or locked — when the process runs
+under `GODEBUG=fips140=only`. RFC 8907 §4.5 obfuscates every packet body with
+an MD5 keystream, so no configuration or option makes this backend usable
+there. `Authenticate` returns the same error before building a packet.
+
+```go
+auth, err := tacacs.NewAuthenticator("server:49", "secret")
+if errors.Is(err, tacacs.ErrFIPSUnsupported) {
+    // FIPS is activated in this deployment. Use a different backend;
+    // there is no TACACS+ configuration that satisfies FIPS 140-3.
+}
+```
+
+The refusal is deliberate and final: without it the process would start and
+then panic inside `crypto/md5` on the first authentication. See
+[fips.md](fips.md) for the full rationale and how activation is detected.
 
 ## Context Management
 
