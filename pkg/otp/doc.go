@@ -6,52 +6,71 @@
 // HOTP (HMAC-based One-Time Password) generates codes based on a counter value,
 // used in hardware tokens and some mobile apps.
 //
-// # TOTP Example
+// Both are implemented in this package over the seed's raw bytes, borrowed
+// from a go-enclave MemoryEnclave for the duration of one HMAC; there is no
+// third-party OTP dependency and no plaintext copy of the seed outside locked
+// memory.
 //
-// Time-based OTP for use with authenticator apps:
+// # Seeds and ownership
 //
-//	config := otp.Config{
+// The shared key ("seed") lives only in a *enclave.MemoryEnclave. Generate a
+// new one straight into locked memory, or decode a stored base32 one into it:
+//
+//	seed, err := otp.GenerateProtectedSecret() // or otp.DecodeSeed(stored)
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//
+// NewAuthenticator takes ownership of Config.Seed on every return path —
+// it destroys the seed itself if the configuration is refused — and Close
+// destroys it otherwise:
+//
+//	auth, err := otp.NewAuthenticator(otp.Config{
 //	    Type:        otp.TypeTOTP,
-//	    Secret:      "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+//	    Seed:        seed,
 //	    Issuer:      "MyApp",
 //	    AccountName: "user@example.com",
 //	    Digits:      6,
 //	    Period:      30,
 //	    Algorithm:   otp.AlgorithmSHA1,
 //	    Skew:        1, // Allow 1 period of clock skew
-//	}
-//
-//	auth, err := otp.NewAuthenticator(config)
+//	})
 //	if err != nil {
 //	    log.Fatal(err)
 //	}
+//	defer auth.Close()
 //
 //	// Validate a code from user's authenticator app
-//	err = auth.Authenticate(ctx, "123456")
-//	if err != nil {
+//	if err := auth.Authenticate(ctx, "123456"); err != nil {
 //	    log.Printf("Authentication failed: %v", err)
 //	}
 //
-//	// Generate provisioning URI for QR code
-//	uri := auth.GetProvisioningURI()
-//	// Display uri as QR code for user to scan
+// # Enrollment
+//
+// ProvisioningURI returns the otpauth:// URI (Google Authenticator Key URI
+// Format) to render as a QR code, and EncodeSecret returns the bare base32
+// seed for storage. Both necessarily produce an unwipeable string copy of the
+// key; that is the documented residue of enrollment. Render or store it and
+// drop it.
+//
+//	uri, err := auth.ProvisioningURI()
+//	if err != nil {
+//	    log.Fatal(err) // the seed could not be read — never show a seed-less URI
+//	}
 //
 // # HOTP Example
 //
 // Counter-based OTP for hardware tokens:
 //
-//	config := otp.Config{
-//	    Type:        otp.TypeHOTP,
-//	    Secret:      "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
-//	    Issuer:      "MyApp",
-//	    AccountName: "user@example.com",
-//	    Counter:     0,
-//	}
-//
-//	auth, err := otp.NewAuthenticator(config)
+//	auth, err := otp.NewAuthenticator(otp.Config{
+//	    Type:    otp.TypeHOTP,
+//	    Seed:    seed,
+//	    Counter: 0,
+//	})
 //	if err != nil {
 //	    log.Fatal(err)
 //	}
+//	defer auth.Close()
 //
 //	// Validate code and get new counter value
 //	newCounter, err := auth.ValidateCounter(ctx, "123456", currentCounter)
@@ -62,58 +81,27 @@
 //	    currentCounter = newCounter
 //	}
 //
-// # Secret Generation
-//
-// Generate a cryptographically random secret:
-//
-//	secret, err := otp.GenerateSecret()
-//	if err != nil {
-//	    log.Fatal(err)
-//	}
-//	// Use secret in Config.Secret
-//
-// # Protected Memory
-//
-// The shared secret is a long-lived key, and Config.Secret keeps it in a Go
-// string that cannot be wiped. Config.SecretKey is the replacement: the key is
-// held in a secret.Secret — a locked, guard-paged enclave — and is read only
-// for the moment a code is derived.
-//
-//	key, err := otp.GenerateProtectedSecret() // or otp.NewProtectedSecret(base32)
-//	if err != nil {
-//	    log.Fatal(err)
-//	}
-//	defer key.Destroy()
-//
-//	auth, err := otp.NewAuthenticator(otp.Config{
-//	    Type:        otp.TypeTOTP,
-//	    SecretKey:   key,
-//	    Issuer:      "MyApp",
-//	    AccountName: "user@example.com",
-//	})
-//
-// With SecretKey set, codes are derived in this package from the opened
-// enclave (RFC 4226 §5.3, RFC 6238 §4.2) rather than by
-// github.com/pquerna/otp, which takes the secret as a string and decodes it on
-// every call. Both paths produce identical codes.
-//
-// The authenticator borrows the secret and does not take ownership of it:
-// destroy it when the last component using it is done. See package
-// github.com/jeremyhahn/go-auth/pkg/secret for the rule and its limits.
-//
-// # Hash Algorithms
+// # Hash Algorithms and FIPS 140-3
 //
 // The package supports multiple hash algorithms:
 //   - AlgorithmSHA1 (default, widely supported)
-//   - AlgorithmSHA256 (more secure)
-//   - AlgorithmSHA512 (most secure)
+//   - AlgorithmSHA256
+//   - AlgorithmSHA512
 //
 // Note that not all authenticator apps support SHA256 and SHA512.
+//
+// Under GODEBUG=fips140=only, crypto/hmac panics on SHA-1 and on keys shorter
+// than 112 bits. When the process runs in that mode, NewAuthenticator refuses
+// both with ErrFIPSUnsupported, refuses an omitted Algorithm too — set SHA256
+// or SHA512 explicitly — and the derivation re-checks before every HMAC, so no
+// configuration reaches that panic. There is no build tag: the same binary
+// serves both deployments. See docs/fips.md.
 //
 // # Thread Safety
 //
 // The Authenticator type is safe for concurrent use. Multiple goroutines
-// can call its methods simultaneously.
+// can call its methods simultaneously, and Close waits for in-flight calls
+// to finish with the seed before wiping it.
 //
 // # Context Support
 //

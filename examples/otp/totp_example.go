@@ -6,38 +6,43 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"time"
 
 	"github.com/jeremyhahn/go-auth/pkg/otp"
 )
 
 func main() {
-	// Example 1: Generate a new secret
-	secret, err := otp.GenerateSecret()
+	// Example 1: Generate a new seed straight into locked memory. It never
+	// exists as a Go string or an ordinary []byte.
+	seed, err := otp.GenerateProtectedSecret()
 	if err != nil {
-		log.Fatalf("Failed to generate secret: %v", err)
+		log.Fatalf("Failed to generate seed: %v", err)
 	}
-	fmt.Printf("Generated secret: %s\n\n", secret)
 
-	// Example 2: Setup TOTP authenticator
-	config := otp.Config{
+	// Example 2: Setup TOTP authenticator. NewAuthenticator takes ownership
+	// of the seed — on success Close destroys it, on failure it is destroyed
+	// before NewAuthenticator returns — so there is no seed.Destroy here.
+	auth, err := otp.NewAuthenticator(otp.Config{
 		Type:        otp.TypeTOTP,
-		Secret:      secret,
+		Seed:        seed,
 		Issuer:      "ExampleApp",
 		AccountName: "user@example.com",
 		Digits:      6,
 		Period:      30,
-		Algorithm:   otp.AlgorithmSHA1,
-		Skew:        1, // Allow 1 period of clock skew
-	}
-
-	auth, err := otp.NewAuthenticator(config)
+		Algorithm:   otp.AlgorithmSHA1, // use SHA256/SHA512 under FIPS 140-only mode
+		Skew:        1,                 // Allow 1 period of clock skew
+	})
 	if err != nil {
 		log.Fatalf("Failed to create authenticator: %v", err)
 	}
+	defer auth.Close()
 
-	// Example 3: Get provisioning URI for QR code
-	uri := auth.GetProvisioningURI()
+	// Example 3: Get provisioning URI for QR code. It carries the seed — that
+	// is what enrollment is — so render it and drop it; never log it in a
+	// real application.
+	uri, err := auth.ProvisioningURI()
+	if err != nil {
+		log.Fatalf("Failed to build provisioning URI: %v", err)
+	}
 	fmt.Printf("Provisioning URI (scan with authenticator app):\n%s\n\n", uri)
 
 	// Example 4: Generate current OTP code
@@ -54,27 +59,8 @@ func main() {
 	}
 	fmt.Println("Authentication successful!")
 
-	// Example 6: Show code expiration
-	fmt.Println("\nWaiting for code to expire...")
-	time.Sleep(2 * time.Second)
-
-	// Generate new code
-	newCode, err := auth.Generate()
-	if err != nil {
-		log.Fatalf("Failed to generate new code: %v", err)
+	// Example 6: A wrong code is rejected
+	if err := auth.Authenticate(ctx, "000000"); err != nil {
+		fmt.Printf("Wrong code rejected: %v\n", err)
 	}
-	fmt.Printf("New TOTP code: %s\n", newCode)
-
-	// Old code might still work due to skew tolerance
-	if err := auth.Authenticate(ctx, code); err != nil {
-		fmt.Printf("Old code rejected: %v\n", err)
-	} else {
-		fmt.Println("Old code still accepted (within skew tolerance)")
-	}
-
-	// New code should definitely work
-	if err := auth.Authenticate(ctx, newCode); err != nil {
-		log.Fatalf("New code authentication failed: %v", err)
-	}
-	fmt.Println("New code authenticated successfully!")
 }

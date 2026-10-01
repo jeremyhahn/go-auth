@@ -17,16 +17,15 @@ import (
 	"time"
 )
 
-// This file is the RFC 4226 / RFC 6238 core used by the protected-secret path.
+// This file is the RFC 4226 / RFC 6238 core: HOTP and TOTP derived in-repo
+// from the seed's raw bytes.
 //
-// It exists because github.com/pquerna/otp takes the shared secret as a Go
-// string and base32-decodes it internally on every call, which puts a fresh
-// plaintext key on the heap per authentication and keeps one resident for the
-// lifetime of the authenticator. No amount of care on this side of that API
-// can protect a key that has to be handed over as a string. The functions
-// below take the decoded key as a []byte instead, so a caller holding it in a
-// secret.Secret can open the enclave, derive a code, and have the plaintext
-// unmapped again before the call returns.
+// It takes the seed as a []byte borrowed from the enclave's WithBytes, so the
+// plaintext key is never anywhere but the enclave's locked pages: the
+// authenticator opens the enclave, derives a code, and the borrow ends before
+// the call returns. A dependency that took the seed as a string — as
+// github.com/pquerna/otp did — would have put a fresh decoded copy on the heap
+// per authentication; that is why this package derives codes itself.
 //
 // The one copy that remains is crypto/hmac's: New derives its ipad/opad blocks
 // from the key and holds them in the hash state until the collector reclaims
@@ -36,36 +35,49 @@ import (
 // hash state here is a local of deriveCode and is unreachable the moment it
 // returns.
 
-// hashFor returns the digest constructor for algo.
-func hashFor(algo Algorithm) (func() hash.Hash, error) {
-	switch algo {
-	case AlgorithmSHA1:
-		return sha1.New, nil
-	case AlgorithmSHA256:
-		return sha256.New, nil
-	case AlgorithmSHA512:
-		return sha512.New, nil
-	default:
-		return nil, fmt.Errorf("%w: unsupported algorithm %q", ErrInvalidConfig, algo)
-	}
+// hashes maps each supported Algorithm to its digest constructor. It is also
+// the set of algorithms the package accepts.
+var hashes = map[Algorithm]func() hash.Hash{
+	AlgorithmSHA1:   sha1.New,
+	AlgorithmSHA256: sha256.New,
+	AlgorithmSHA512: sha512.New,
+}
+
+// digitsModulus maps each supported code length to 10^digits. It is also the
+// set of lengths the package accepts: RFC 4226 §5.3 requires a code of at
+// least six digits and names seven and eight as the alternatives.
+var digitsModulus = map[uint]uint32{
+	6: 1_000_000,
+	7: 10_000_000,
+	8: 100_000_000,
 }
 
 // deriveCode implements the HOTP construction of RFC 4226 §5.3: HMAC the
-// counter as a 8-byte big-endian value under the shared secret, take the
+// counter as a 8-byte big-endian value under the shared seed, take the
 // dynamic-truncation offset from the low nibble of the last byte of the MAC,
 // read a 31-bit integer from there, and render it modulo 10^digits.
 //
 // key is borrowed for the duration of the call and is neither retained nor
 // copied.
+//
+// The FIPS check runs here as well as in NewAuthenticator. Construction is
+// where a refused configuration is reported, but this is the only place HMAC
+// is keyed, so the guard sits beside it: no path that reaches crypto/hmac —
+// including one added later that forgets to validate — can reach the panic
+// fips140=only raises for SHA-1 or a short key.
 func deriveCode(key []byte, counter uint64, digits uint, algo Algorithm) (string, error) {
 	if len(key) == 0 {
-		return "", fmt.Errorf("%w: secret must not be empty", ErrInvalidConfig)
+		return "", fmt.Errorf("%w: seed must not be empty", ErrInvalidConfig)
 	}
-	if digits < 6 || digits > 8 {
+	modulus, ok := digitsModulus[digits]
+	if !ok {
 		return "", fmt.Errorf("%w: digits must be 6, 7, or 8", ErrInvalidConfig)
 	}
-	newHash, err := hashFor(algo)
-	if err != nil {
+	newHash, ok := hashes[algo]
+	if !ok {
+		return "", fmt.Errorf("%w: unsupported algorithm %q", ErrInvalidConfig, algo)
+	}
+	if err := checkFIPS(algo, len(key)); err != nil {
 		return "", err
 	}
 
@@ -87,11 +99,6 @@ func deriveCode(key []byte, counter uint64, digits uint, algo Algorithm) (string
 		uint32(sum[offset+1])<<16 |
 		uint32(sum[offset+2])<<8 |
 		uint32(sum[offset+3])
-
-	modulus := uint32(1)
-	for i := uint(0); i < digits; i++ {
-		modulus *= 10
-	}
 
 	return fmt.Sprintf("%0*d", digits, truncated%modulus), nil
 }

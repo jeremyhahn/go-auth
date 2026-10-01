@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log"
 
+	"github.com/jeremyhahn/go-enclave"
+
 	"github.com/jeremyhahn/go-auth/pkg/api"
 	"github.com/jeremyhahn/go-auth/pkg/oauth"
 	"github.com/jeremyhahn/go-auth/pkg/otp"
@@ -32,7 +34,7 @@ func otpExample(ctx context.Context) {
 	// Create OTP authenticator for TOTP
 	otpAuth, err := otp.NewAuthenticator(otp.Config{
 		Type:        otp.TypeTOTP,
-		Secret:      "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+		Seed:        mustDecodeSeed("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"),
 		Issuer:      "MyApp",
 		AccountName: "user@example.com",
 		Digits:      6,
@@ -44,6 +46,7 @@ func otpExample(ctx context.Context) {
 		log.Printf("Failed to create OTP authenticator: %v", err)
 		return
 	}
+	defer otpAuth.Close()
 
 	// Create API service with OTP backend
 	service, err := api.NewService(api.Config{
@@ -98,7 +101,7 @@ func multiBackendExample(ctx context.Context) {
 	// Create OTP authenticator
 	otpAuth, err := otp.NewAuthenticator(otp.Config{
 		Type:        otp.TypeTOTP,
-		Secret:      "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+		Seed:        mustDecodeSeed("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"),
 		Issuer:      "MyApp",
 		AccountName: "user@example.com",
 	})
@@ -106,6 +109,7 @@ func multiBackendExample(ctx context.Context) {
 		log.Printf("Failed to create OTP authenticator: %v", err)
 		return
 	}
+	defer otpAuth.Close()
 
 	// Create OAuth authenticator
 	oauthAuth, err := oauth.NewAuthenticator(&oauth.Config{
@@ -161,7 +165,7 @@ func targetedBackendExample(ctx context.Context) {
 	// Create HOTP authenticator (counter-based)
 	hotpAuth, err := otp.NewAuthenticator(otp.Config{
 		Type:        otp.TypeHOTP,
-		Secret:      "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+		Seed:        mustDecodeSeed("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"),
 		Issuer:      "MyApp",
 		AccountName: "user@example.com",
 		Counter:     0, // Initial counter value
@@ -172,11 +176,12 @@ func targetedBackendExample(ctx context.Context) {
 		log.Printf("Failed to create HOTP authenticator: %v", err)
 		return
 	}
+	defer hotpAuth.Close()
 
 	// Create TOTP authenticator (time-based)
 	totpAuth, err := otp.NewAuthenticator(otp.Config{
 		Type:        otp.TypeTOTP,
-		Secret:      "HXDMVJECJJWSRB3HWIZR4IFUGFTMXBOZ",
+		Seed:        mustDecodeSeed("HXDMVJECJJWSRB3HWIZR4IFUGFTMXBOZ"),
 		Issuer:      "MyApp",
 		AccountName: "user@example.com",
 	})
@@ -184,6 +189,7 @@ func targetedBackendExample(ctx context.Context) {
 		log.Printf("Failed to create TOTP authenticator: %v", err)
 		return
 	}
+	defer totpAuth.Close()
 
 	// Create service with both HOTP and TOTP as separate OTP backends
 	// Note: In practice, you'd use different backend names or custom naming
@@ -243,4 +249,15 @@ func targetedBackendExample(ctx context.Context) {
 	}
 
 	fmt.Println("HOTP authentication successful!")
+}
+
+// mustDecodeSeed decodes a stored base32 OTP seed into locked memory. The
+// literal seeds here are demonstration values; a real application reads them
+// from its credential store. NewAuthenticator takes ownership of the result.
+func mustDecodeSeed(encoded string) *enclave.MemoryEnclave {
+	seed, err := otp.DecodeSeed(encoded)
+	if err != nil {
+		log.Fatalf("Failed to decode OTP seed: %v", err)
+	}
+	return seed
 }

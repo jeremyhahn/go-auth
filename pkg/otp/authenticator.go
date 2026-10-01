@@ -2,19 +2,14 @@ package otp
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/base32"
 	"errors"
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
-	"github.com/pquerna/otp"
-	"github.com/pquerna/otp/hotp"
-	"github.com/pquerna/otp/totp"
-
-	"github.com/jeremyhahn/go-auth/pkg/secret"
+	"github.com/jeremyhahn/go-enclave"
 )
 
 // Type represents the OTP algorithm type.
@@ -27,17 +22,36 @@ const (
 	TypeHOTP Type = "hotp"
 )
 
+// validTypes is the set of OTP types the package accepts.
+var validTypes = map[Type]bool{TypeTOTP: true, TypeHOTP: true}
+
 // Algorithm represents the hash algorithm used for OTP generation.
 type Algorithm string
 
 const (
-	// AlgorithmSHA1 uses SHA1 hash algorithm.
+	// AlgorithmSHA1 uses SHA1 hash algorithm. It is RFC 6238's default and
+	// what mainstream authenticator apps enroll with, and it is refused under
+	// FIPS 140-only mode; see ErrFIPSUnsupported.
 	AlgorithmSHA1 Algorithm = "SHA1"
 	// AlgorithmSHA256 uses SHA256 hash algorithm.
 	AlgorithmSHA256 Algorithm = "SHA256"
 	// AlgorithmSHA512 uses SHA512 hash algorithm.
 	AlgorithmSHA512 Algorithm = "SHA512"
 )
+
+// Defaults applied by NewAuthenticator to zero-valued Config fields.
+const (
+	defaultDigits = 6
+	defaultPeriod = 30
+	defaultSkew   = 1
+)
+
+// defaultAlgorithm is the digest an omitted Config.Algorithm resolves to
+// outside FIPS 140-only mode: HMAC-SHA-1, RFC 6238 §1.2's TOTP default and RFC
+// 4226 §5.1's HOTP digest, and what mainstream authenticator apps enroll with.
+// Under FIPS 140-only mode an omitted algorithm is refused instead; see
+// checkFIPSAlgorithmNamed.
+const defaultAlgorithm = AlgorithmSHA1
 
 // Common errors returned by the OTP authenticator.
 var (
@@ -49,35 +63,25 @@ var (
 	ErrExpiredCode = errors.New("otp: code expired")
 	// ErrNilAuthenticator indicates a nil authenticator was used.
 	ErrNilAuthenticator = errors.New("otp: authenticator is nil")
+	// ErrCounterRequired indicates Generate was called on an HOTP
+	// authenticator without a counter.
+	ErrCounterRequired = errors.New("otp: counter required for HOTP generation")
 )
 
 // Config holds OTP authenticator configuration.
 type Config struct {
 	// Type specifies the OTP type (TOTP or HOTP).
 	Type Type
-	// Secret is the base32-encoded shared secret key.
+	// Seed is the shared HMAC key — RFC 4226's K — held in locked memory.
+	// Build one with GenerateProtectedSecret for a new enrollment, or with
+	// DecodeSeed from a stored base32 seed.
 	//
-	// Deprecated: a Go string cannot be wiped, so a secret set here stays
-	// resident for the lifetime of the process that read it, and
-	// github.com/pquerna/otp — which this field is passed to — decodes it into
-	// a fresh plaintext key on every Generate and Authenticate. Use SecretKey
-	// with NewProtectedSecret or GenerateProtectedSecret instead, which keeps
-	// the key in protected memory and decrypts it only for the moment a code
-	// is derived. Still honored, and still the default when SecretKey is
-	// unset, but it will be removed in the coordinated breaking release.
-	Secret string
-	// SecretKey is the shared secret held in protected memory. It is the
-	// replacement for Secret: build one with NewProtectedSecret from an
-	// existing base32 secret, or GenerateProtectedSecret for a new key.
-	//
-	// Exactly one of Secret and SecretKey may be set. When SecretKey is used
-	// the authenticator derives codes from the sealed key directly (RFC 4226
-	// §5.3, RFC 6238 §4.2) rather than handing the secret to a dependency that
-	// takes it as a string.
-	//
-	// The authenticator borrows the secret and does not take ownership of it:
-	// destroy it when the last component using it is done.
-	SecretKey *secret.Secret
+	// NewAuthenticator TAKES OWNERSHIP of the seed on every return path,
+	// success or failure, the same contract enclave.NewMemoryEnclave has for
+	// its input: on success the authenticator destroys it in Close, and on
+	// failure NewAuthenticator destroys it before returning. Two authenticators
+	// over the same key therefore need two enclaves.
+	Seed *enclave.MemoryEnclave
 	// Issuer is the name of the issuing organization (e.g., "MyApp").
 	Issuer string
 	// AccountName is the account identifier (e.g., "user@example.com").
@@ -92,7 +96,9 @@ type Config struct {
 	// Default: 0
 	Counter uint64
 	// Algorithm specifies the hash algorithm to use.
-	// Default: SHA1
+	// Default: SHA1 (RFC 6238 §1.2). Under FIPS 140-only mode it must be set
+	// explicitly to SHA256 or SHA512: SHA1 and an omitted algorithm are both
+	// refused with ErrFIPSUnsupported.
 	Algorithm Algorithm
 	// Skew specifies the number of time periods to check before and after
 	// the current time for TOTP validation (tolerance for clock skew).
@@ -103,155 +109,120 @@ type Config struct {
 	Skew uint
 }
 
-// validate checks that the configuration is valid.
+// withDefaults returns c with every zero-valued tunable replaced by its
+// default.
+func (c Config) withDefaults() Config {
+	if c.Digits == 0 {
+		c.Digits = defaultDigits
+	}
+	if c.Period == 0 {
+		c.Period = defaultPeriod
+	}
+	if c.Algorithm == "" {
+		c.Algorithm = defaultAlgorithm
+	}
+	if c.Skew == 0 {
+		c.Skew = defaultSkew
+	}
+	return c
+}
+
+// validate checks that a defaulted configuration is valid. It reads the seed's
+// size and liveness, never its contents.
 func (c Config) validate() error {
-	// Validate type
-	if c.Type != TypeTOTP && c.Type != TypeHOTP {
+	if !validTypes[c.Type] {
 		return fmt.Errorf("%w: type must be 'totp' or 'hotp'", ErrInvalidConfig)
 	}
 
-	// Validate the secret and measure its strength. The protected path has
-	// already decoded and sealed its key, so its size is known without touching
-	// the key at all; the string path still has to prove the secret is
-	// well-formed base32, and decodes into protected memory to do it.
-	var secretBits int
-	if c.SecretKey != nil {
-		if strings.TrimSpace(c.Secret) != "" {
-			return fmt.Errorf("%w: set either Secret or SecretKey, not both", ErrInvalidConfig)
-		}
-		if c.SecretKey.Size() == 0 {
-			return fmt.Errorf("%w: secret key must not be empty", ErrInvalidConfig)
-		}
-		secretBits = c.SecretKey.Size() * 8
-	} else {
-		if strings.TrimSpace(c.Secret) == "" {
-			return fmt.Errorf("%w: secret must not be empty", ErrInvalidConfig)
-		}
-
-		// Prove the secret is well-formed base32 and measure its strength.
-		// decodedSecretBits does both without putting the decoded key on the
-		// heap; it also accepts the unpadded form, matching what the protected
-		// path and provisioning tools use.
-		bits, err := decodedSecretBits(c.Secret)
-		if err != nil {
-			return err
-		}
-		secretBits = bits
+	if c.Seed == nil {
+		return fmt.Errorf("%w: seed must not be nil", ErrInvalidConfig)
+	}
+	if !c.Seed.IsAlive() {
+		return fmt.Errorf("%w: %w", ErrInvalidConfig, enclave.ErrEnclaveDestroyed)
 	}
 
-	// Reject a key this build cannot use to key HMAC.
-	if err := checkSecretSupported(secretBits); err != nil {
-		return err
-	}
-
-	// Validate digits (if specified)
-	if c.Digits != 0 && c.Digits != 6 && c.Digits != 7 && c.Digits != 8 {
+	if _, ok := digitsModulus[c.Digits]; !ok {
 		return fmt.Errorf("%w: digits must be 6, 7, or 8", ErrInvalidConfig)
 	}
 
-	// Validate skew. An unbounded window is both a security choice made by
-	// accident — every extra step keeps a code valid for another period — and
-	// an amount of HMAC work proportional to it; see maxSkew.
+	// An unbounded window is both a security choice made by accident — every
+	// extra step keeps a code valid for another period — and an amount of HMAC
+	// work proportional to it; see maxSkew.
 	if c.Skew > maxSkew {
 		return fmt.Errorf("%w: skew must be at most %d time steps (got %d); "+
 			"clock drift beyond that is a clock problem, not a validation window",
 			ErrInvalidConfig, maxSkew, c.Skew)
 	}
 
-	// Validate algorithm (if specified)
-	if c.Algorithm != "" && c.Algorithm != AlgorithmSHA1 &&
-		c.Algorithm != AlgorithmSHA256 && c.Algorithm != AlgorithmSHA512 {
+	if _, ok := hashes[c.Algorithm]; !ok {
 		return fmt.Errorf("%w: algorithm must be SHA1, SHA256, or SHA512", ErrInvalidConfig)
 	}
 
-	// Reject a digest this build cannot execute. Runs before defaults are
-	// applied, so it only ever sees an explicit choice.
-	if err := checkAlgorithmSupported(c.Algorithm); err != nil {
-		return err
+	// Refuse what would panic crypto/hmac in this process, now rather than at
+	// the first login. Runs after defaults, so it judges the digest that will
+	// actually be used.
+	if err := checkFIPS(c.Algorithm, c.Seed.Size()); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidConfig, err)
 	}
 
 	return nil
 }
 
-// decodedSecretBits reports the strength, in bits, of a base32-encoded shared
-// secret, and reports an error if the encoding is malformed.
-//
-// The decoded bytes are the key itself, so they never reach ordinary memory:
-// NewProtectedSecret decodes straight into a locked enclave, the
-// length is read from there, and the enclave is destroyed on every exit path.
-// Only a count leaves this function. base32.DecodeString, which this replaces,
-// would instead hand back a plaintext key for the collector to keep.
-//
-// This narrows the deprecated string path; it does not close it.
-// Config.Secret is a Go string, resident and unzeroable for the
-// Authenticator's lifetime, and github.com/pquerna/otp decodes it again
-// internally on every operation. Config.SecretKey is the path that has neither
-// property, and is what a caller handling key material should use.
-func decodedSecretBits(base32Secret string) (int, error) {
-	// Malformed input — including a trailing group too short to encode a whole
-	// byte, which Go's unpadded decoder would discard silently — is rejected by
-	// NewProtectedSecret itself. This function only measures.
-	key, err := NewProtectedSecret(base32Secret)
-	if err != nil {
-		return 0, err
-	}
-	defer key.Destroy()
-
-	return key.Size() * 8, nil
-}
-
 // Authenticator validates OTP codes.
-// It is safe for concurrent use.
+// It is safe for concurrent use, including Close against in-flight calls:
+// Close waits for every borrow of the seed to end before wiping it.
 type Authenticator struct {
-	cfg       Config
-	otpAlgo   otp.Algorithm
-	otpDigits otp.Digits
-	// key is the sealed shared secret when the authenticator was built from
-	// Config.SecretKey, and nil when it was built from the deprecated
-	// Config.Secret string. It is what every method branches on: with a key
-	// the code is derived here from the opened enclave, without one the
-	// secret string is handed to github.com/pquerna/otp as before.
-	key *secret.Secret
+	cfg Config
+	// seed is the shared key, owned by the authenticator. Every derivation
+	// borrows it through WithBytes for exactly as long as one HMAC takes; no
+	// plaintext copy is held anywhere in the type.
+	seed *enclave.MemoryEnclave
 }
 
 // NewAuthenticator creates a new OTP authenticator.
 // The configuration is validated and an error is returned if invalid.
-func NewAuthenticator(cfg Config) (*Authenticator, error) {
+//
+// It takes ownership of cfg.Seed on every return path: the seed is destroyed
+// here if the configuration is refused, and by Close otherwise. The caller
+// must not use or destroy it after this call.
+func NewAuthenticator(cfg Config) (auth *Authenticator, err error) {
+	seed := cfg.Seed
+	defer func() {
+		if err != nil {
+			seed.Destroy()
+		}
+	}()
+
+	// Judged before defaults are applied, while an omitted algorithm can still
+	// be told apart from an explicit one.
+	if err := checkFIPSAlgorithmNamed(cfg.Algorithm); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInvalidConfig, err)
+	}
+
+	cfg = cfg.withDefaults()
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
 
-	// Apply defaults
-	if cfg.Digits == 0 {
-		cfg.Digits = 6
-	}
-	if cfg.Period == 0 {
-		cfg.Period = 30
-	}
-	if cfg.Algorithm == "" {
-		cfg.Algorithm = defaultAlgorithm
-	}
-	if cfg.Skew == 0 {
-		cfg.Skew = 1
-	}
+	// The authenticator's copy of the configuration does not carry the seed:
+	// there is one reference to it, and it is the one Close destroys.
+	cfg.Seed = nil
+	return &Authenticator{cfg: cfg, seed: seed}, nil
+}
 
-	// Convert algorithm to otp.Algorithm
-	var otpAlgo otp.Algorithm
-	switch cfg.Algorithm {
-	case AlgorithmSHA1:
-		otpAlgo = otp.AlgorithmSHA1
-	case AlgorithmSHA256:
-		otpAlgo = otp.AlgorithmSHA256
-	case AlgorithmSHA512:
-		otpAlgo = otp.AlgorithmSHA512
+// Close destroys the seed the authenticator owns: the locked pages are wiped
+// and released, and every later Generate, Authenticate, ValidateCounter and
+// ProvisioningURI fails with an error matching enclave.ErrEnclaveDestroyed.
+// It waits for in-flight calls to finish with the seed, and is idempotent.
+//
+// The error is go-enclave's teardown report: nil for an ordinary release, or
+// enclave.ErrReleasedWithoutWipe when a sandbox denied the mprotect the wipe
+// needs and the pages had to be unmapped without it.
+func (a *Authenticator) Close() error {
+	if a == nil {
+		return ErrNilAuthenticator
 	}
-
-	return &Authenticator{
-		cfg:       cfg,
-		otpAlgo:   otpAlgo,
-		otpDigits: otp.Digits(cfg.Digits),
-		key:       cfg.SecretKey,
-	}, nil
+	return a.seed.DestroyErr()
 }
 
 // Authenticate validates an OTP code.
@@ -275,47 +246,9 @@ func (a *Authenticator) Authenticate(ctx context.Context, code string) error {
 	}
 
 	if a.cfg.Type == TypeTOTP {
-		if a.key != nil {
-			return a.authenticateProtectedTOTP(code, time.Now().UTC())
-		}
-		valid, err := totp.ValidateCustom(code, a.cfg.Secret, time.Now().UTC(),
-			totp.ValidateOpts{
-				Period:    a.cfg.Period,
-				Skew:      a.cfg.Skew,
-				Digits:    a.otpDigits,
-				Algorithm: a.otpAlgo,
-			})
-		if err != nil {
-			return fmt.Errorf("%w: validation failed: %v", ErrInvalidCode, err)
-		}
-		if !valid {
-			return ErrInvalidCode
-		}
-		return nil
+		return a.authenticateTOTP(code, time.Now().UTC())
 	}
-
-	// HOTP validation using configured counter.
-	if a.key != nil {
-		return a.authenticateProtectedHOTP(code, a.cfg.Counter)
-	}
-
-	// hotp.Validate hardcodes 6 digits and SHA-1 regardless of how the
-	// authenticator was built, so a SHA-256/SHA-512 or 7/8-digit HOTP secret
-	// would never validate the codes Generate produced for it. Pass the
-	// configured options explicitly.
-	valid, err := hotp.ValidateCustom(code, a.cfg.Counter, a.cfg.Secret,
-		hotp.ValidateOpts{
-			Digits:    a.otpDigits,
-			Algorithm: a.otpAlgo,
-		})
-	if err != nil {
-		return fmt.Errorf("%w: validation failed: %v", ErrInvalidCode, err)
-	}
-	if !valid {
-		return ErrInvalidCode
-	}
-
-	return nil
+	return a.authenticateHOTP(code, a.cfg.Counter)
 }
 
 // ValidateCounter validates an HOTP code and returns the new counter value.
@@ -342,27 +275,9 @@ func (a *Authenticator) ValidateCounter(ctx context.Context, code string, counte
 		return 0, fmt.Errorf("%w: code must not be empty", ErrInvalidCode)
 	}
 
-	if a.key != nil {
-		if err := a.authenticateProtectedHOTP(code, counter); err != nil {
-			return 0, err
-		}
-		return counter + 1, nil
+	if err := a.authenticateHOTP(code, counter); err != nil {
+		return 0, err
 	}
-
-	// Same as Authenticate: hotp.Validate would pin this to 6-digit SHA-1.
-	valid, err := hotp.ValidateCustom(code, counter, a.cfg.Secret,
-		hotp.ValidateOpts{
-			Digits:    a.otpDigits,
-			Algorithm: a.otpAlgo,
-		})
-	if err != nil {
-		return 0, fmt.Errorf("%w: validation failed: %v", ErrInvalidCode, err)
-	}
-	if !valid {
-		return 0, ErrInvalidCode
-	}
-
-	// Return incremented counter
 	return counter + 1, nil
 }
 
@@ -375,111 +290,96 @@ func (a *Authenticator) Generate(counter ...uint64) (string, error) {
 	}
 
 	if a.cfg.Type == TypeTOTP {
-		if a.key != nil {
-			return a.generateProtected(totpCounter(time.Now().UTC(), a.cfg.Period))
-		}
-		code, err := totp.GenerateCodeCustom(a.cfg.Secret, time.Now().UTC(),
-			totp.ValidateOpts{
-				Period:    a.cfg.Period,
-				Skew:      0,
-				Digits:    a.otpDigits,
-				Algorithm: a.otpAlgo,
-			})
-		if err != nil {
-			return "", fmt.Errorf("otp: failed to generate TOTP code: %w", err)
-		}
-		return code, nil
+		return a.derive(totpCounter(time.Now().UTC(), a.cfg.Period))
 	}
 
-	// HOTP requires counter
 	if len(counter) == 0 {
-		return "", fmt.Errorf("otp: counter required for HOTP generation")
+		return "", ErrCounterRequired
 	}
+	return a.derive(counter[0])
+}
 
-	if a.key != nil {
-		return a.generateProtected(counter[0])
-	}
-
-	code, err := hotp.GenerateCodeCustom(a.cfg.Secret, counter[0],
-		hotp.ValidateOpts{
-			Digits:    a.otpDigits,
-			Algorithm: a.otpAlgo,
-		})
+// derive computes the code at counter from the borrowed seed.
+func (a *Authenticator) derive(counter uint64) (string, error) {
+	var code string
+	err := a.seed.WithBytes(func(key []byte) error {
+		derived, err := deriveCode(key, counter, a.cfg.Digits, a.cfg.Algorithm)
+		code = derived
+		return err
+	})
 	if err != nil {
-		return "", fmt.Errorf("otp: failed to generate HOTP code: %w", err)
+		return "", err
 	}
-
 	return code, nil
 }
 
-// ProvisioningURI returns the otpauth:// URI for QR code generation.
-// This URI can be encoded as a QR code and scanned by authenticator apps.
+// authenticateTOTP validates a TOTP code at now against the borrowed seed.
+func (a *Authenticator) authenticateTOTP(code string, now time.Time) error {
+	var valid bool
+	err := a.seed.WithBytes(func(key []byte) error {
+		var err error
+		valid, err = validateTOTP(key, code, now, a.cfg.Period, a.cfg.Skew, a.cfg.Digits, a.cfg.Algorithm)
+		return err
+	})
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidCode, err)
+	}
+	if !valid {
+		return ErrInvalidCode
+	}
+	return nil
+}
+
+// authenticateHOTP validates an HOTP code at counter against the borrowed
+// seed, comparing in constant time.
+func (a *Authenticator) authenticateHOTP(code string, counter uint64) error {
+	derived, err := a.derive(counter)
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidCode, err)
+	}
+	if !codesMatch(derived, code) {
+		return ErrInvalidCode
+	}
+	return nil
+}
+
+// ProvisioningURI returns the otpauth:// URI for QR code generation, in the
+// Google Authenticator Key URI Format:
 //
-// It reports an error when the secret cannot be read: with Config.SecretKey
-// the key has to be opened to be encoded, and that fails if the caller has
-// destroyed it. A URI carrying no secret
-// would still look like an enrollment, which is the one thing it must not do.
+//	otpauth://TYPE/ISSUER:ACCOUNT?secret=BASE32&issuer=ISSUER&algorithm=…&digits=…&period=…|counter=…
+//
+// The URI necessarily carries the seed — that is what enrollment is — so it
+// is built from EncodeSecret and inherits its residue: the returned string is
+// an unwipeable copy of the key. Render it and drop it; do not log or store it.
+//
+// It reports an error rather than a seed-less URI when the seed cannot be
+// read, because a URI without a usable seed still looks like an enrollment.
 func (a *Authenticator) ProvisioningURI() (string, error) {
 	if a == nil {
 		return "", ErrNilAuthenticator
 	}
 
-	provisioningSecret, err := a.provisioningSecret()
+	encoded, err := EncodeSecret(a.seed)
 	if err != nil {
 		return "", err
 	}
 
-	// Build otpauth:// URI manually to ensure correct secret
 	v := url.Values{}
-	v.Set("secret", provisioningSecret)
+	// Residue: the URI carries the seed as text, because enrollment is
+	// handing the seed to the user's authenticator app.
+	v.Set("secret", encoded)
 	v.Set("issuer", a.cfg.Issuer)
 	v.Set("algorithm", string(a.cfg.Algorithm))
-	v.Set("digits", fmt.Sprintf("%d", a.cfg.Digits))
+	v.Set("digits", strconv.FormatUint(uint64(a.cfg.Digits), 10))
+	provisioningCounter[a.cfg.Type](a.cfg, v)
 
-	if a.cfg.Type == TypeTOTP {
-		v.Set("period", fmt.Sprintf("%d", a.cfg.Period))
-		label := url.PathEscape(fmt.Sprintf("%s:%s", a.cfg.Issuer, a.cfg.AccountName))
-		return fmt.Sprintf("otpauth://totp/%s?%s", label, v.Encode()), nil
-	}
-
-	v.Set("counter", fmt.Sprintf("%d", a.cfg.Counter))
-	label := url.PathEscape(fmt.Sprintf("%s:%s", a.cfg.Issuer, a.cfg.AccountName))
-	return fmt.Sprintf("otpauth://hotp/%s?%s", label, v.Encode()), nil
+	label := url.PathEscape(a.cfg.Issuer + ":" + a.cfg.AccountName)
+	return "otpauth://" + string(a.cfg.Type) + "/" + label + "?" + v.Encode(), nil
 }
 
-// GetProvisioningURI returns the otpauth:// URI for QR code generation.
-// This URI can be encoded as a QR code and scanned by authenticator apps.
-//
-// It returns an empty string when the URI cannot be built — including when a
-// protected secret cannot be opened — because it has no way to say why.
-//
-// Deprecated: use ProvisioningURI, which reports the reason. This method is
-// still supported and will be removed in the coordinated breaking release.
-func (a *Authenticator) GetProvisioningURI() string {
-	uri, err := a.ProvisioningURI()
-	if err != nil {
-		return ""
-	}
-	return uri
-}
-
-// GenerateSecret generates a cryptographically random secret key.
-// The secret is returned as a base32-encoded string suitable for use
-// in the Config.Secret field.
-//
-// Deprecated: the generated key exists as a Go string, which cannot be wiped.
-// Use GenerateProtectedSecret, which writes the key straight into protected
-// memory, and EncodeSecret when the base32 form is genuinely needed for
-// enrollment or storage. This function is still supported and will be removed
-// in the coordinated breaking release.
-func GenerateSecret() (string, error) {
-	// Generate 20 bytes (160 bits) of random data
-	secret := make([]byte, 20)
-	if _, err := rand.Read(secret); err != nil {
-		return "", fmt.Errorf("otp: failed to generate random secret: %w", err)
-	}
-
-	// Encode as base32 without padding
-	encoded := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(secret)
-	return encoded, nil
+// provisioningCounter sets the type-specific Key URI parameter: the time step
+// for TOTP, the initial counter for HOTP.
+var provisioningCounter = map[Type]func(Config, url.Values){
+	TypeTOTP: func(c Config, v url.Values) { v.Set("period", strconv.FormatUint(uint64(c.Period), 10)) },
+	TypeHOTP: func(c Config, v url.Values) { v.Set("counter", strconv.FormatUint(c.Counter, 10)) },
 }

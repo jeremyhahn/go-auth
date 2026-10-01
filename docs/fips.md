@@ -122,48 +122,60 @@ initialization installs no default validator.
 |---|---|
 | Primitive | HMAC-SHA-1 |
 | Mandated by | RFC 4226 §5.3 (HOTP is HMAC-SHA-1); RFC 6238 §1.2 (SHA-1 is TOTP's default and what mainstream authenticator apps implement) |
-| Scope | `Algorithm: AlgorithmSHA1`, and secrets below the 112-bit HMAC key floor |
+| Scope | `Algorithm: AlgorithmSHA1`, an omitted `Algorithm` (whose RFC default is SHA-1), and seeds below the 112-bit HMAC key floor |
 
-This package is **not** excluded from FIPS builds. RFC 6238 §1.2 also permits
-SHA-256 and SHA-512, `pkg/otp` supports both, and Go's `fips140=only` admits
-HMAC over SHA-2 and SHA-3 — so approved OTP works. Only `AlgorithmSHA1` is
-unusable.
+This package is **not** excluded from anything, and carries no build tag. RFC
+6238 §1.2 also permits SHA-256 and SHA-512, `pkg/otp` supports both, and Go's
+`fips140=only` admits HMAC over SHA-2 and SHA-3 — so approved OTP works. Only
+`AlgorithmSHA1` and short seeds are unusable, and the algorithm must be named.
 
-Under the tag the package fails closed rather than leaving that to the runtime:
+FIPS activation is detected at runtime, by executing HMAC-SHA-1 once per
+process and treating a runtime refusal as "activated" — the same probe
+`pkg/radius/fips.go` uses, for the same reason: `crypto/fips140.Enabled()` is
+true of every `GOFIPS140` binary whether or not FIPS was activated, and gating
+on it would refuse SHA-1 TOTP to every deployment. When the probe reports
+activation the package fails closed rather than leaving that to the runtime:
 
-- `Algorithm: AlgorithmSHA1` is rejected by `NewAuthenticator` with an
-  `ErrInvalidConfig`-wrapped error naming the approved alternatives.
-- An omitted `Algorithm` defaults to SHA-256 instead of RFC 6238's SHA-1, and
-  `GetProvisioningURI` advertises SHA-256 so enrollment matches validation.
-- A secret that decodes to fewer than **112 bits** is rejected too. FIPS 140-3
-  sets that floor for HMAC keys; measured against the toolchain, 13 bytes
-  panics and 14 does not. This applies to both ways of supplying a secret:
-  `Config.SecretKey` is measured from the sealed enclave with `Size()`, and the
-  deprecated `Config.Secret` string is decoded *into* an enclave to be measured
-  and destroyed there, so establishing the key's strength never puts the key
-  itself in ordinary memory (see [secret.md](secret.md)).
+- `Algorithm: AlgorithmSHA1` is rejected by `NewAuthenticator` with
+  `ErrFIPSUnsupported` (wrapped in `ErrInvalidConfig`) naming the approved
+  alternatives.
+- An omitted `Algorithm` is rejected too, with `ErrFIPSUnsupported` saying the
+  algorithm must be set explicitly to SHA256 or SHA512. RFC 6238's default is
+  SHA-1, and silently substituting an approved digest would validate seeds
+  enrolled under that default with the wrong one — every login failing, with
+  nothing at startup to say why. Refusing makes the choice, and any
+  re-enrollment it implies, deliberate.
+- A seed shorter than **112 bits** is rejected with `ErrFIPSUnsupported` too.
+  FIPS 140-3 sets that floor for HMAC keys; measured against the toolchain, 13
+  bytes panics and 14 does not. The length is read from the seed's enclave
+  with `Size()`, so measuring it never opens the key.
 
-Both checks have to happen at construction. `crypto/hmac` does not return an
+These checks have to happen at construction. `crypto/hmac` does not return an
 error for SHA-1 or for a short key under `fips140=only` — it **panics**.
 Accepting either configuration would put that panic behind `Generate`,
 `Authenticate` and `ValidateCounter`, so an ordinary authentication attempt,
 which is attacker-reachable traffic, would crash the process instead of failing
-a login.
+a login. The derivation re-checks immediately before keying HMAC as well, so
+no path can reach the panic.
 
 The key-length rule has an operational consequence worth planning for: an
-application holding secrets enrolled from the 80-bit `JBSWY3DPEHPK3PXP` example
-(or any provisioning tool that emitted short secrets) must **re-enroll those
-users** before it can run under `fips140only`. Failing at construction is what
-surfaces that at startup rather than at a login attempt. Secrets this package
-issued are unaffected — `GenerateSecret` has always emitted 160 bits.
+application holding seeds enrolled from the 80-bit `JBSWY3DPEHPK3PXP` example
+(or any provisioning tool that emitted short seeds) must **re-enroll those
+users** before FIPS can be activated. Failing at construction is what surfaces
+that at startup rather than at a login attempt. Seeds this package issues are
+unaffected — `GenerateProtectedSecret` emits 160 bits.
 
-A FIPS deployment must therefore enroll users with SHA-256 or SHA-512, and must
+A FIPS deployment must therefore set `Algorithm` explicitly to SHA-256 or
+SHA-512, enroll users with it — re-enrolling anyone enrolled under SHA-1 — and
 accept that authenticator apps which only speak SHA-1 will not interoperate.
 
-The FIPS job runs the entire OTP suite — no test excluded — against SHA-256.
-The digest is chosen by `pkg/otp/algorithm_default_test.go` /
-`algorithm_fips140only_test.go`, so each test covers the same code path in both
-builds and only the digest differs.
+The FIPS job runs the entire OTP suite with no tag. Tests whose digest is
+incidental pick it from the same probe — SHA-1 normally, SHA-256 when FIPS is
+activated — so each covers the same code path in both modes; the RFC 4226 and
+RFC 6238 SHA-1 vectors, and an omitted algorithm, assert the typed refusal
+instead. `TestFIPSActivation`
+also re-executes the test binary under `GODEBUG=fips140=only`, so every
+ordinary test run exercises the real runtime refusal, not just the FIPS job.
 
 ## Not exemptions — fixed in place
 
@@ -172,22 +184,22 @@ rather than exempted.
 
 - **`pkg/otp` HOTP validation ignored the configured algorithm.** Both
   validation entry points — `Authenticate` and `ValidateCounter` — called
-  `hotp.Validate`, which hardcodes 6 digits and SHA-1
+  `github.com/pquerna/otp`'s `hotp.Validate`, which hardcodes 6 digits and SHA-1
   regardless of how the authenticator was built, while `Generate` honoured the
   configuration. A SHA-256 or 7/8-digit HOTP secret could therefore never
-  validate a code it had just generated. Both call sites now use
-  `hotp.ValidateCustom` with the configured options.
+  validate a code it had just generated. The dependency has since been removed
+  ([#46]); HOTP and TOTP are derived in-repo from the configured options.
 - **The OTP test fixture used an 80-bit secret.** `JBSWY3DPEHPK3PXP` is the
   widely copied Google Authenticator doc example; it base32-decodes to 10
   bytes, below the 112-bit floor FIPS 140-3 sets for HMAC keys. Every fixture
   the FIPS job runs now uses the RFC 4226 Appendix D reference seed (20 bytes /
-  160 bits), which is also what `GenerateSecret` emits. The algorithm was never
-  the problem, only the key length of the fixture.
+  160 bits), which is also what `GenerateProtectedSecret` emits. The algorithm
+  was never the problem, only the key length of the fixture.
 
-  The example is still used deliberately elsewhere, as a subject rather than a
-  convenience: `algorithm_fips140only_test.go` checks that a secret of that
-  length is *rejected* under the tag, and the `!fips140only` tests keep using
-  it because a default build has no key-length floor and must go on working for
+  The example's length is still used deliberately elsewhere, as a subject
+  rather than a convenience: `pkg/otp/fips_test.go` checks that a seed of that
+  length is *rejected* when FIPS is activated, and accepted otherwise, because
+  an ordinary deployment has no key-length floor and must go on working for
   callers who enrolled against it.
 
 ## What is *not* an acceptable response to a red FIPS job
@@ -196,3 +208,5 @@ Setting `GODEBUG` back to `fips140=on`, adding a tag that skips the job, or
 narrowing the test scope so a failing package is simply not covered. A gate
 that cannot fail on the thing it exists to catch is decoration. If a failure
 cannot be fixed or honestly exempted, it gets escalated, not silenced.
+
+[#46]: https://github.com/jeremyhahn/go-auth/issues/46

@@ -141,10 +141,12 @@ func main() {
         },
     })
 
-    // Configure OTP authentication
+    // Configure OTP authentication. The seed lives in locked memory and the
+    // authenticator owns it from here; otpAuth.Close() destroys it.
+    seed, _ := otp.DecodeSeed(storedSeed)
     otpAuth, _ := otp.NewAuthenticator(otp.Config{
         Type:        otp.TypeTOTP,
-        Secret:      "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+        Seed:        seed,
         Issuer:      "MyApp",
         AccountName: "user@example.com",
     })
@@ -511,7 +513,6 @@ See [LICENSE](../LICENSE) for details.
 - [go-ldap](https://github.com/go-ldap/ldap) - LDAP client
 - [layeh/radius](https://github.com/layeh/radius) - RADIUS protocol
 - [nwaples/tacplus](https://github.com/nwaples/tacplus) - TACACS+ client
-- [pquerna/otp](https://github.com/pquerna/otp) - OTP library
 - [google/go-tpm](https://github.com/google/go-tpm) - TPM 2.0 library
 - [miekg/pkcs11](https://github.com/miekg/pkcs11) - PKCS#11 bindings
 

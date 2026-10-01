@@ -13,33 +13,35 @@ import (
 func main() {
 	// Example: HOTP (Counter-based OTP)
 	fmt.Println("HOTP Example - Counter-based OTP")
-	fmt.Println("=================================\n")
+	fmt.Print("=================================\n\n")
 
-	// Generate a secret
-	secret, err := otp.GenerateSecret()
+	// Generate a seed straight into locked memory
+	seed, err := otp.GenerateProtectedSecret()
 	if err != nil {
-		log.Fatalf("Failed to generate secret: %v", err)
+		log.Fatalf("Failed to generate seed: %v", err)
 	}
-	fmt.Printf("Generated secret: %s\n\n", secret)
 
-	// Setup HOTP authenticator
-	config := otp.Config{
+	// Setup HOTP authenticator. It takes ownership of the seed; Close
+	// destroys it.
+	auth, err := otp.NewAuthenticator(otp.Config{
 		Type:        otp.TypeHOTP,
-		Secret:      secret,
+		Seed:        seed,
 		Issuer:      "ExampleApp",
 		AccountName: "user@example.com",
 		Counter:     0,
 		Digits:      6,
-		Algorithm:   otp.AlgorithmSHA1,
-	}
-
-	auth, err := otp.NewAuthenticator(config)
+		Algorithm:   otp.AlgorithmSHA1, // use SHA256/SHA512 under FIPS 140-only mode
+	})
 	if err != nil {
 		log.Fatalf("Failed to create authenticator: %v", err)
 	}
+	defer auth.Close()
 
-	// Get provisioning URI
-	uri := auth.GetProvisioningURI()
+	// Get provisioning URI. It carries the seed; render it and drop it.
+	uri, err := auth.ProvisioningURI()
+	if err != nil {
+		log.Fatalf("Failed to build provisioning URI: %v", err)
+	}
 	fmt.Printf("Provisioning URI:\n%s\n\n", uri)
 
 	ctx := context.Background()

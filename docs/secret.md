@@ -87,7 +87,7 @@ lifetime.
 
 | Package | Protected API | Deprecated plain path |
 |---|---|---|
-| `pkg/otp` | `Config.SecretKey`, `NewProtectedSecret`, `GenerateProtectedSecret`, `ProvisioningURI` | `Config.Secret`, `GenerateSecret`, `GetProvisioningURI` |
+| `pkg/otp` | `Config.Seed` (`*enclave.MemoryEnclave`, go-enclave directly), `DecodeSeed`, `GenerateProtectedSecret`, `ProvisioningURI` | none — removed in [#46] |
 | `pkg/radius` | `NewAuthenticatorWithSecret` | `NewAuthenticator` |
 | `pkg/tacacs` | `NewAuthenticatorWithSecret` | `NewAuthenticator` |
 | `pkg/ldap` | `WithProtectedServiceAccount` | `WithServiceAccount` |
@@ -129,10 +129,9 @@ taken by code this library calls:
   locked and undumpable — for the authenticator's lifetime, with no safe
   release point, so a TACACS+ authenticator should be constructed once per
   server and reused.
-- **`github.com/pquerna/otp`** takes the OTP secret as a `string` and decodes it
-  on every call. That is the reason `pkg/otp` derives codes itself (RFC 4226
-  §5.3, RFC 6238 §4.2) when `Config.SecretKey` is used; the dependency is still
-  used for the deprecated `Config.Secret` path.
+- **`github.com/pquerna/otp`** took the OTP secret as a `string` and decoded it
+  on every call. It has been removed ([#46]): `pkg/otp` derives codes itself
+  (RFC 4226 §5.3, RFC 6238 §4.2) from a go-enclave `MemoryEnclave` seed.
 
 ## Operational requirements
 
@@ -181,3 +180,5 @@ the protected-memory layer touches a cryptographic primitive, approved or
 otherwise. What a FIPS build restricts is only the primitive a backend keys with
 the opened credential. The package builds and its tests pass under
 `GOFIPS140=latest` with `fips140=only`.
+
+[#46]: https://github.com/jeremyhahn/go-auth/issues/46

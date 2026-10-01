@@ -12,7 +12,6 @@ require (
 	github.com/miekg/pkcs11 v1.1.2
 	github.com/msteinert/pam/v2 v2.1.0
 	github.com/nwaples/tacplus v0.0.3
-	github.com/pquerna/otp v1.5.0
 	golang.org/x/oauth2 v0.37.0
 	golang.org/x/sys v0.48.0
 	gopkg.in/yaml.v3 v3.0.1
@@ -23,7 +22,6 @@ require (
 	github.com/Azure/go-ntlmssp v0.1.1 // indirect
 	github.com/MicahParks/jwkset v0.11.3 // indirect
 	github.com/awnumar/memcall v0.5.0 // indirect
-	github.com/boombuler/barcode v1.1.0 // indirect
 	github.com/google/go-tpm-tools v0.4.10 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/stretchr/testify v1.12.1 // indirect

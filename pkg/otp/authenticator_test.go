@@ -2,148 +2,107 @@ package otp
 
 import (
 	"context"
-	"encoding/base32"
 	"errors"
 	"fmt"
+	"net/url"
+	"strings"
+	"sync"
 	"testing"
 	"time"
-)
 
-// testSecret is the RFC 4226 Appendix D reference seed ("12345678901234567890")
-// in base32 — 20 bytes / 160 bits, which is also what GenerateSecret emits.
-//
-// It replaces the widely copied 80-bit "JBSWY3DPEHPK3PXP" doc example: FIPS
-// 140-3 rejects HMAC keys shorter than 112 bits, so under the CI FIPS job's
-// GODEBUG=fips140=only the shorter fixture panics inside crypto/hmac. The
-// algorithm was never the problem, only the key length of the fixture.
-const testSecret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"
+	"github.com/jeremyhahn/go-enclave"
+)
 
 // TestNewAuthenticator tests authenticator construction
 func TestNewAuthenticator(t *testing.T) {
 	tests := []struct {
 		name    string
-		cfg     Config
+		cfg     func(t *testing.T) Config
 		wantErr error
 	}{
 		{
 			name: "valid TOTP config",
-			cfg: Config{
-				Type:        TypeTOTP,
-				Secret:      testSecret,
-				Issuer:      "TestApp",
-				AccountName: "user@example.com",
-				Digits:      6,
-				Period:      30,
-				Algorithm:   testAlgorithm,
-				Skew:        1,
+			cfg: func(t *testing.T) Config {
+				return Config{
+					Type: TypeTOTP, Seed: testSeed(t), Issuer: "TestApp", AccountName: "user@example.com",
+					Digits: 6, Period: 30, Algorithm: testAlgorithm(), Skew: 1,
+				}
 			},
-			wantErr: nil,
 		},
 		{
 			name: "valid HOTP config",
-			cfg: Config{
-				Type:        TypeHOTP,
-				Secret:      testSecret,
-				Issuer:      "TestApp",
-				AccountName: "user@example.com",
-				Digits:      6,
-				Counter:     0,
-				Algorithm:   testAlgorithm,
+			cfg: func(t *testing.T) Config {
+				return Config{
+					Type: TypeHOTP, Seed: testSeed(t), Issuer: "TestApp", AccountName: "user@example.com",
+					Digits: 6, Counter: 0, Algorithm: testAlgorithm(),
+				}
 			},
-			wantErr: nil,
 		},
 		{
 			name: "valid SHA256 config",
-			cfg: Config{
-				Type:        TypeTOTP,
-				Secret:      testSecret,
-				Issuer:      "TestApp",
-				AccountName: "user@example.com",
-				Algorithm:   AlgorithmSHA256,
+			cfg: func(t *testing.T) Config {
+				return Config{Type: TypeTOTP, Seed: testSeed(t), Algorithm: AlgorithmSHA256}
 			},
-			wantErr: nil,
 		},
 		{
 			name: "valid SHA512 config",
-			cfg: Config{
-				Type:        TypeTOTP,
-				Secret:      testSecret,
-				Issuer:      "TestApp",
-				AccountName: "user@example.com",
-				Algorithm:   AlgorithmSHA512,
+			cfg: func(t *testing.T) Config {
+				return Config{Type: TypeTOTP, Seed: testSeed(t), Algorithm: AlgorithmSHA512}
 			},
-			wantErr: nil,
 		},
 		{
 			name: "valid 7 digit config",
-			cfg: Config{
-				Type:        TypeTOTP,
-				Secret:      testSecret,
-				Issuer:      "TestApp",
-				AccountName: "user@example.com",
-				Digits:      7,
+			cfg: func(t *testing.T) Config {
+				return Config{Type: TypeTOTP, Seed: testSeed(t), Algorithm: testAlgorithm(), Digits: 7}
 			},
-			wantErr: nil,
 		},
 		{
 			name: "valid 8 digit config",
-			cfg: Config{
-				Type:        TypeTOTP,
-				Secret:      testSecret,
-				Issuer:      "TestApp",
-				AccountName: "user@example.com",
-				Digits:      8,
+			cfg: func(t *testing.T) Config {
+				return Config{Type: TypeTOTP, Seed: testSeed(t), Algorithm: testAlgorithm(), Digits: 8}
 			},
-			wantErr: nil,
 		},
 		{
-			name: "missing secret",
-			cfg: Config{
-				Type:        TypeTOTP,
-				Issuer:      "TestApp",
-				AccountName: "user@example.com",
+			name: "missing seed",
+			cfg: func(t *testing.T) Config {
+				return Config{Type: TypeTOTP, Algorithm: testAlgorithm()}
 			},
 			wantErr: ErrInvalidConfig,
 		},
 		{
+			name: "destroyed seed",
+			cfg: func(t *testing.T) Config {
+				seed := testSeed(t)
+				seed.Destroy()
+				return Config{Type: TypeTOTP, Seed: seed, Algorithm: testAlgorithm()}
+			},
+			wantErr: enclave.ErrEnclaveDestroyed,
+		},
+		{
 			name: "invalid type",
-			cfg: Config{
-				Type:        "invalid",
-				Secret:      testSecret,
-				Issuer:      "TestApp",
-				AccountName: "user@example.com",
+			cfg: func(t *testing.T) Config {
+				return Config{Type: "invalid", Seed: testSeed(t), Algorithm: testAlgorithm()}
 			},
 			wantErr: ErrInvalidConfig,
 		},
 		{
 			name: "invalid digits",
-			cfg: Config{
-				Type:        TypeTOTP,
-				Secret:      testSecret,
-				Issuer:      "TestApp",
-				AccountName: "user@example.com",
-				Digits:      5,
+			cfg: func(t *testing.T) Config {
+				return Config{Type: TypeTOTP, Seed: testSeed(t), Algorithm: testAlgorithm(), Digits: 5}
 			},
 			wantErr: ErrInvalidConfig,
 		},
 		{
 			name: "invalid algorithm",
-			cfg: Config{
-				Type:        TypeTOTP,
-				Secret:      testSecret,
-				Issuer:      "TestApp",
-				AccountName: "user@example.com",
-				Algorithm:   "MD5",
+			cfg: func(t *testing.T) Config {
+				return Config{Type: TypeTOTP, Seed: testSeed(t), Algorithm: "MD5"}
 			},
 			wantErr: ErrInvalidConfig,
 		},
 		{
-			name: "invalid base32 secret",
-			cfg: Config{
-				Type:        TypeTOTP,
-				Secret:      "invalid@secret!",
-				Issuer:      "TestApp",
-				AccountName: "user@example.com",
+			name: "skew above the bound",
+			cfg: func(t *testing.T) Config {
+				return Config{Type: TypeTOTP, Seed: testSeed(t), Algorithm: testAlgorithm(), Skew: maxSkew + 1}
 			},
 			wantErr: ErrInvalidConfig,
 		},
@@ -151,13 +110,13 @@ func TestNewAuthenticator(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			auth, err := NewAuthenticator(tt.cfg)
+			auth, err := NewAuthenticator(tt.cfg(t))
 			if tt.wantErr != nil {
-				if err == nil {
-					t.Fatalf("expected error %v, got nil", tt.wantErr)
-				}
 				if !errors.Is(err, tt.wantErr) {
-					t.Errorf("expected error %v, got %v", tt.wantErr, err)
+					t.Fatalf("expected error %v, got %v", tt.wantErr, err)
+				}
+				if auth != nil {
+					t.Errorf("expected no authenticator alongside the error, got %v", auth)
 				}
 				return
 			}
@@ -167,29 +126,158 @@ func TestNewAuthenticator(t *testing.T) {
 			if auth == nil {
 				t.Fatal("expected authenticator, got nil")
 			}
+			if err := auth.Close(); err != nil {
+				t.Errorf("Close: %v", err)
+			}
 		})
+	}
+}
+
+// TestNewAuthenticatorTakesOwnership pins the ownership contract: the seed
+// passes to the authenticator on every return path. A caller that has handed
+// a seed to NewAuthenticator never has to work out whether it is still theirs
+// to destroy — it never is.
+func TestNewAuthenticatorTakesOwnership(t *testing.T) {
+	t.Run("success, then Close destroys the seed", func(t *testing.T) {
+		seed := testSeed(t)
+		auth, err := NewAuthenticator(Config{Type: TypeTOTP, Seed: seed, Algorithm: testAlgorithm()})
+		if err != nil {
+			t.Fatalf("NewAuthenticator: %v", err)
+		}
+		if !seed.IsAlive() {
+			t.Fatal("seed destroyed by a successful construction")
+		}
+		if err := auth.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+		if seed.IsAlive() {
+			t.Fatal("seed still alive after Close: the authenticator owns it and must wipe it")
+		}
+		// Close is idempotent, so it can be deferred alongside an explicit call.
+		if err := auth.Close(); err != nil {
+			t.Fatalf("second Close: %v", err)
+		}
+	})
+
+	t.Run("rejected configuration destroys the seed", func(t *testing.T) {
+		seed := testSeed(t)
+		if _, err := NewAuthenticator(Config{Type: "invalid", Seed: seed}); !errors.Is(err, ErrInvalidConfig) {
+			t.Fatalf("NewAuthenticator = %v, want ErrInvalidConfig", err)
+		}
+		if seed.IsAlive() {
+			t.Fatal("seed survived a rejected configuration: ownership passes on every path")
+		}
+	})
+
+	t.Run("nil authenticator", func(t *testing.T) {
+		var auth *Authenticator
+		if err := auth.Close(); !errors.Is(err, ErrNilAuthenticator) {
+			t.Fatalf("nil Close = %v, want ErrNilAuthenticator", err)
+		}
+	})
+}
+
+// TestClosedAuthenticatorFailsClosed proves nothing in the authenticator can
+// derive a code once its seed is gone. A cached plaintext copy anywhere in the
+// type — a decoded []byte, a string field, a memoised HMAC state — would let
+// these calls keep succeeding.
+func TestClosedAuthenticatorFailsClosed(t *testing.T) {
+	auth, err := NewAuthenticator(Config{
+		Type: TypeHOTP, Seed: testSeed(t), Algorithm: testAlgorithm(), Counter: 1,
+		Issuer: "TestApp", AccountName: "user@example.com",
+	})
+	if err != nil {
+		t.Fatalf("NewAuthenticator: %v", err)
+	}
+
+	code, err := auth.Generate(1)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if err := auth.Authenticate(context.Background(), code); err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+
+	// The rendered authenticator must not carry the seed in any form.
+	rendered := fmt.Sprintf("%#v %+v %v", auth, auth, auth)
+	for _, form := range []string{rfcKeySHA1, testSeedBase32} {
+		if strings.Contains(rendered, form) {
+			t.Errorf("authenticator rendered the seed %q: %s", form, rendered)
+		}
+	}
+
+	if err := auth.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	if _, err := auth.Generate(1); !errors.Is(err, enclave.ErrEnclaveDestroyed) {
+		t.Errorf("Generate after Close = %v, want ErrEnclaveDestroyed", err)
+	}
+	err = auth.Authenticate(context.Background(), code)
+	if !errors.Is(err, ErrInvalidCode) || !errors.Is(err, enclave.ErrEnclaveDestroyed) {
+		t.Errorf("Authenticate after Close = %v, want ErrInvalidCode and ErrEnclaveDestroyed", err)
+	}
+	if _, err := auth.ValidateCounter(context.Background(), code, 1); !errors.Is(err, ErrInvalidCode) {
+		t.Errorf("ValidateCounter after Close = %v, want ErrInvalidCode", err)
+	}
+	if uri, err := auth.ProvisioningURI(); !errors.Is(err, enclave.ErrEnclaveDestroyed) || uri != "" {
+		t.Errorf("ProvisioningURI after Close = %q, %v; want empty and ErrEnclaveDestroyed", uri, err)
+	}
+}
+
+// TestCloseDuringAuthentication runs Close against in-flight validations. The
+// enclave's read lock makes Close wait out every borrow, so each validation
+// either completes against the live seed or fails cleanly against a destroyed
+// one — never reads unmapped pages. Run under -race by the root test-race
+// target.
+func TestCloseDuringAuthentication(t *testing.T) {
+	auth, err := NewAuthenticator(Config{Type: TypeTOTP, Seed: testSeed(t), Algorithm: testAlgorithm()})
+	if err != nil {
+		t.Fatalf("NewAuthenticator: %v", err)
+	}
+	code, err := auth.Generate()
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	const workers = 16
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	errs := make(chan error, workers)
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			err := auth.Authenticate(context.Background(), code)
+			if err != nil && !errors.Is(err, enclave.ErrEnclaveDestroyed) {
+				errs <- err
+			}
+		}()
+	}
+
+	close(start)
+	if err := auth.Close(); err != nil {
+		t.Errorf("Close: %v", err)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Errorf("validation racing Close failed for a reason other than the closed seed: %v", err)
 	}
 }
 
 // TestAuthenticateTOTP tests TOTP validation
 func TestAuthenticateTOTP(t *testing.T) {
-	cfg := Config{
-		Type:        TypeTOTP,
-		Secret:      testSecret,
-		Issuer:      "TestApp",
-		AccountName: "user@example.com",
-		Digits:      6,
-		Period:      30,
-		Algorithm:   testAlgorithm,
-		Skew:        1,
-	}
-
-	auth, err := NewAuthenticator(cfg)
+	auth, err := NewAuthenticator(Config{
+		Type: TypeTOTP, Seed: testSeed(t), Issuer: "TestApp", AccountName: "user@example.com",
+		Digits: 6, Period: 30, Algorithm: testAlgorithm(), Skew: 1,
+	})
 	if err != nil {
 		t.Fatalf("failed to create authenticator: %v", err)
 	}
+	t.Cleanup(func() { _ = auth.Close() })
 
-	// Generate current TOTP code
 	code, err := auth.Generate()
 	if err != nil {
 		t.Fatalf("failed to generate code: %v", err)
@@ -201,47 +289,20 @@ func TestAuthenticateTOTP(t *testing.T) {
 		code    string
 		wantErr error
 	}{
-		{
-			name:    "valid code",
-			ctx:     context.Background(),
-			code:    code,
-			wantErr: nil,
-		},
-		{
-			name:    "nil context",
-			ctx:     nil,
-			code:    code,
-			wantErr: nil,
-		},
-		{
-			name:    "invalid code",
-			ctx:     context.Background(),
-			code:    "000000",
-			wantErr: ErrInvalidCode,
-		},
-		{
-			name:    "empty code",
-			ctx:     context.Background(),
-			code:    "",
-			wantErr: ErrInvalidCode,
-		},
-		{
-			name:    "wrong length code",
-			ctx:     context.Background(),
-			code:    "12345",
-			wantErr: ErrInvalidCode,
-		},
+		{name: "valid code", ctx: context.Background(), code: code},
+		{name: "nil context", ctx: nil, code: code},
+		{name: "invalid code", ctx: context.Background(), code: wrongCode(code), wantErr: ErrInvalidCode},
+		{name: "empty code", ctx: context.Background(), code: "", wantErr: ErrInvalidCode},
+		{name: "blank code", ctx: context.Background(), code: "   ", wantErr: ErrInvalidCode},
+		{name: "wrong length code", ctx: context.Background(), code: "12345", wantErr: ErrInvalidCode},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := auth.Authenticate(tt.ctx, tt.code)
+			err := auth.Authenticate(tt.ctx, tt.code) //nolint:staticcheck // nil context is part of the contract under test
 			if tt.wantErr != nil {
-				if err == nil {
-					t.Fatalf("expected error %v, got nil", tt.wantErr)
-				}
 				if !errors.Is(err, tt.wantErr) {
-					t.Errorf("expected error %v, got %v", tt.wantErr, err)
+					t.Fatalf("expected error %v, got %v", tt.wantErr, err)
 				}
 				return
 			}
@@ -252,60 +313,36 @@ func TestAuthenticateTOTP(t *testing.T) {
 	}
 }
 
-// TestAuthenticateTOTPWithSkew tests TOTP time skew tolerance
-func TestAuthenticateTOTPWithSkew(t *testing.T) {
-	cfg := Config{
-		Type:        TypeTOTP,
-		Secret:      testSecret,
-		Issuer:      "TestApp",
-		AccountName: "user@example.com",
-		Digits:      6,
-		Period:      30,
-		Algorithm:   testAlgorithm,
-		Skew:        2, // Allow 2 periods of skew
+// wrongCode returns a code of the same length that differs from code in every
+// digit, so the test cannot be satisfied by the one-in-a-million chance that a
+// fixed "000000" happens to be current.
+func wrongCode(code string) string {
+	b := []byte(code)
+	for i := range b {
+		b[i] = '0' + (b[i]-'0'+1)%10
 	}
-
-	auth, err := NewAuthenticator(cfg)
-	if err != nil {
-		t.Fatalf("failed to create authenticator: %v", err)
-	}
-
-	// Generate current code
-	code, err := auth.Generate()
-	if err != nil {
-		t.Fatalf("failed to generate code: %v", err)
-	}
-
-	// Should accept current code
-	if err := auth.Authenticate(context.Background(), code); err != nil {
-		t.Errorf("failed to authenticate with current code: %v", err)
-	}
+	return string(b)
 }
 
 // TestAuthenticateHOTP tests HOTP validation
 func TestAuthenticateHOTP(t *testing.T) {
-	cfg := Config{
-		Type:        TypeHOTP,
-		Secret:      testSecret,
-		Issuer:      "TestApp",
-		AccountName: "user@example.com",
-		Digits:      6,
-		Counter:     0,
-		Algorithm:   testAlgorithm,
-	}
-
-	auth, err := NewAuthenticator(cfg)
+	auth, err := NewAuthenticator(Config{
+		Type: TypeHOTP, Seed: testSeed(t), Digits: 6, Counter: 0, Algorithm: testAlgorithm(),
+	})
 	if err != nil {
 		t.Fatalf("failed to create authenticator: %v", err)
 	}
+	t.Cleanup(func() { _ = auth.Close() })
 
-	// Generate code for counter 0
 	code, err := auth.Generate(0)
 	if err != nil {
 		t.Fatalf("failed to generate code: %v", err)
 	}
 
-	// Test ValidateCounter
+	if err := auth.Authenticate(context.Background(), code); err != nil {
+		t.Errorf("Authenticate at the configured counter: %v", err)
+	}
+
 	newCounter, err := auth.ValidateCounter(context.Background(), code, 0)
 	if err != nil {
 		t.Errorf("failed to validate counter: %v", err)
@@ -314,334 +351,209 @@ func TestAuthenticateHOTP(t *testing.T) {
 		t.Errorf("expected new counter 1, got %d", newCounter)
 	}
 
-	// Test with wrong counter
-	_, err = auth.ValidateCounter(context.Background(), code, 5)
-	if err == nil {
-		t.Error("expected error validating with wrong counter")
+	if _, err = auth.ValidateCounter(context.Background(), code, 5); !errors.Is(err, ErrInvalidCode) {
+		t.Errorf("ValidateCounter at the wrong counter = %v, want ErrInvalidCode", err)
 	}
 }
 
 // TestValidateCounter tests HOTP counter validation
 func TestValidateCounter(t *testing.T) {
-	cfg := Config{
-		Type:        TypeHOTP,
-		Secret:      testSecret,
-		Issuer:      "TestApp",
-		AccountName: "user@example.com",
-		Algorithm:   testAlgorithm,
-	}
-
-	auth, err := NewAuthenticator(cfg)
+	auth, err := NewAuthenticator(Config{Type: TypeHOTP, Seed: testSeed(t), Algorithm: testAlgorithm()})
 	if err != nil {
 		t.Fatalf("failed to create authenticator: %v", err)
 	}
+	t.Cleanup(func() { _ = auth.Close() })
 
-	tests := []struct {
-		name        string
-		ctx         context.Context
-		counter     uint64
-		wantCounter uint64
-		wantErr     error
-	}{
-		{
-			name:        "valid counter 0",
-			ctx:         context.Background(),
-			counter:     0,
-			wantCounter: 1,
-			wantErr:     nil,
-		},
-		{
-			name:        "valid counter 5",
-			ctx:         context.Background(),
-			counter:     5,
-			wantCounter: 6,
-			wantErr:     nil,
-		},
-		{
-			name:        "valid counter 100",
-			ctx:         context.Background(),
-			counter:     100,
-			wantCounter: 101,
-			wantErr:     nil,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			code, err := auth.Generate(tt.counter)
+	for _, counter := range []uint64{0, 5, 100} {
+		t.Run(fmt.Sprintf("counter %d", counter), func(t *testing.T) {
+			code, err := auth.Generate(counter)
 			if err != nil {
 				t.Fatalf("failed to generate code: %v", err)
 			}
-
-			newCounter, err := auth.ValidateCounter(tt.ctx, code, tt.counter)
-			if tt.wantErr != nil {
-				if err == nil {
-					t.Fatalf("expected error %v, got nil", tt.wantErr)
-				}
-				if !errors.Is(err, tt.wantErr) {
-					t.Errorf("expected error %v, got %v", tt.wantErr, err)
-				}
-				return
-			}
+			next, err := auth.ValidateCounter(context.Background(), code, counter)
 			if err != nil {
-				t.Errorf("unexpected error: %v", err)
+				t.Fatalf("unexpected error: %v", err)
 			}
-			if newCounter != tt.wantCounter {
-				t.Errorf("expected counter %d, got %d", tt.wantCounter, newCounter)
+			if next != counter+1 {
+				t.Errorf("expected counter %d, got %d", counter+1, next)
+			}
+		})
+	}
+
+	t.Run("empty code", func(t *testing.T) {
+		if _, err := auth.ValidateCounter(context.Background(), "", 0); !errors.Is(err, ErrInvalidCode) {
+			t.Errorf("expected ErrInvalidCode, got %v", err)
+		}
+	})
+
+	t.Run("nil context", func(t *testing.T) {
+		code, err := auth.Generate(0)
+		if err != nil {
+			t.Fatalf("Generate: %v", err)
+		}
+		//nolint:staticcheck // nil context is part of the contract under test
+		if next, err := auth.ValidateCounter(nil, code, 0); err != nil || next != 1 {
+			t.Errorf("ValidateCounter(nil ctx) = %d, %v; want 1, nil", next, err)
+		}
+	})
+
+	t.Run("canceled context", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if _, err := auth.ValidateCounter(ctx, "123456", 0); !errors.Is(err, context.Canceled) {
+			t.Errorf("expected context.Canceled, got %v", err)
+		}
+	})
+}
+
+// TestTOTPValidateCounterError tests TOTP ValidateCounter returns error
+func TestTOTPValidateCounterError(t *testing.T) {
+	auth, err := NewAuthenticator(Config{Type: TypeTOTP, Seed: testSeed(t), Algorithm: testAlgorithm()})
+	if err != nil {
+		t.Fatalf("failed to create authenticator: %v", err)
+	}
+	t.Cleanup(func() { _ = auth.Close() })
+
+	if _, err := auth.ValidateCounter(context.Background(), "123456", 0); !errors.Is(err, ErrInvalidConfig) {
+		t.Errorf("expected ErrInvalidConfig, got %v", err)
+	}
+}
+
+// TestGenerate tests code generation lengths
+func TestGenerate(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		typ    Type
+		digits uint
+	}{
+		{"TOTP", TypeTOTP, 6},
+		{"HOTP", TypeHOTP, 6},
+		{"7 digits", TypeTOTP, 7},
+		{"8 digits", TypeTOTP, 8},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			auth, err := NewAuthenticator(Config{
+				Type: tc.typ, Seed: testSeed(t), Algorithm: testAlgorithm(), Digits: tc.digits,
+			})
+			if err != nil {
+				t.Fatalf("failed to create authenticator: %v", err)
+			}
+			t.Cleanup(func() { _ = auth.Close() })
+
+			code, err := auth.Generate(0)
+			if err != nil {
+				t.Fatalf("failed to generate code: %v", err)
+			}
+			if uint(len(code)) != tc.digits {
+				t.Errorf("expected %d digit code, got %q", tc.digits, code)
 			}
 		})
 	}
 }
 
-// TestGenerate tests code generation
-func TestGenerate(t *testing.T) {
-	t.Run("TOTP", func(t *testing.T) {
-		cfg := Config{
-			Type:        TypeTOTP,
-			Secret:      testSecret,
-			Issuer:      "TestApp",
-			AccountName: "user@example.com",
-			Algorithm:   testAlgorithm,
-			Digits:      6,
-		}
+// TestHOTPWithoutCounter tests HOTP generate without counter
+func TestHOTPWithoutCounter(t *testing.T) {
+	auth, err := NewAuthenticator(Config{Type: TypeHOTP, Seed: testSeed(t), Algorithm: testAlgorithm()})
+	if err != nil {
+		t.Fatalf("failed to create authenticator: %v", err)
+	}
+	t.Cleanup(func() { _ = auth.Close() })
 
-		auth, err := NewAuthenticator(cfg)
-		if err != nil {
-			t.Fatalf("failed to create authenticator: %v", err)
-		}
-
-		code, err := auth.Generate()
-		if err != nil {
-			t.Fatalf("failed to generate code: %v", err)
-		}
-
-		if len(code) != 6 {
-			t.Errorf("expected 6 digit code, got %d digits", len(code))
-		}
-	})
-
-	t.Run("HOTP", func(t *testing.T) {
-		cfg := Config{
-			Type:        TypeHOTP,
-			Secret:      testSecret,
-			Issuer:      "TestApp",
-			AccountName: "user@example.com",
-			Algorithm:   testAlgorithm,
-			Digits:      6,
-		}
-
-		auth, err := NewAuthenticator(cfg)
-		if err != nil {
-			t.Fatalf("failed to create authenticator: %v", err)
-		}
-
-		code, err := auth.Generate(0)
-		if err != nil {
-			t.Fatalf("failed to generate code: %v", err)
-		}
-
-		if len(code) != 6 {
-			t.Errorf("expected 6 digit code, got %d digits", len(code))
-		}
-	})
-
-	t.Run("7 digits", func(t *testing.T) {
-		cfg := Config{
-			Type:        TypeTOTP,
-			Secret:      testSecret,
-			Issuer:      "TestApp",
-			AccountName: "user@example.com",
-			Algorithm:   testAlgorithm,
-			Digits:      7,
-		}
-
-		auth, err := NewAuthenticator(cfg)
-		if err != nil {
-			t.Fatalf("failed to create authenticator: %v", err)
-		}
-
-		code, err := auth.Generate()
-		if err != nil {
-			t.Fatalf("failed to generate code: %v", err)
-		}
-
-		if len(code) != 7 {
-			t.Errorf("expected 7 digit code, got %d digits", len(code))
-		}
-	})
-
-	t.Run("8 digits", func(t *testing.T) {
-		cfg := Config{
-			Type:        TypeTOTP,
-			Secret:      testSecret,
-			Issuer:      "TestApp",
-			AccountName: "user@example.com",
-			Algorithm:   testAlgorithm,
-			Digits:      8,
-		}
-
-		auth, err := NewAuthenticator(cfg)
-		if err != nil {
-			t.Fatalf("failed to create authenticator: %v", err)
-		}
-
-		code, err := auth.Generate()
-		if err != nil {
-			t.Fatalf("failed to generate code: %v", err)
-		}
-
-		if len(code) != 8 {
-			t.Errorf("expected 8 digit code, got %d digits", len(code))
-		}
-	})
+	if _, err := auth.Generate(); !errors.Is(err, ErrCounterRequired) {
+		t.Fatalf("Generate without a counter = %v, want ErrCounterRequired", err)
+	}
 }
 
-// TestGetProvisioningURI tests provisioning URI generation
-func TestGetProvisioningURI(t *testing.T) {
+// TestProvisioningURI checks the Key URI Format output field by field.
+func TestProvisioningURI(t *testing.T) {
 	tests := []struct {
-		name        string
-		cfg         Config
-		wantContain []string
+		name     string
+		cfg      Config
+		wantPath string
+		want     map[string]string
 	}{
 		{
-			name: "TOTP URI",
-			cfg: Config{
-				Type:        TypeTOTP,
-				Secret:      testSecret,
-				Issuer:      "TestApp",
-				AccountName: "user@example.com",
-			},
-			wantContain: []string{
-				"otpauth://totp/",
-				"TestApp:user@example.com",
-				"secret=" + testSecret,
-				"issuer=TestApp",
+			name:     "TOTP",
+			cfg:      Config{Type: TypeTOTP, Issuer: "TestApp", AccountName: "user@example.com", Algorithm: AlgorithmSHA256},
+			wantPath: "/TestApp:user@example.com",
+			want: map[string]string{
+				"secret": testSeedBase32, "issuer": "TestApp", "algorithm": "SHA256",
+				"digits": "6", "period": "30",
 			},
 		},
 		{
-			name: "HOTP URI",
-			cfg: Config{
-				Type:        TypeHOTP,
-				Secret:      testSecret,
-				Issuer:      "TestApp",
-				AccountName: "user@example.com",
-				Counter:     0,
-			},
-			wantContain: []string{
-				"otpauth://hotp/",
-				"TestApp:user@example.com",
-				"secret=" + testSecret,
-				"issuer=TestApp",
-				"counter=0",
+			name:     "HOTP",
+			cfg:      Config{Type: TypeHOTP, Issuer: "TestApp", AccountName: "user@example.com", Algorithm: AlgorithmSHA512, Counter: 42, Digits: 8},
+			wantPath: "/TestApp:user@example.com",
+			want: map[string]string{
+				"secret": testSeedBase32, "issuer": "TestApp", "algorithm": "SHA512",
+				"digits": "8", "counter": "42",
 			},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			tt.cfg.Seed = testSeed(t)
 			auth, err := NewAuthenticator(tt.cfg)
 			if err != nil {
 				t.Fatalf("failed to create authenticator: %v", err)
 			}
+			t.Cleanup(func() { _ = auth.Close() })
 
-			uri := auth.GetProvisioningURI()
-			if uri == "" {
-				t.Fatal("expected non-empty URI")
+			uri, err := auth.ProvisioningURI()
+			if err != nil {
+				t.Fatalf("ProvisioningURI: %v", err)
 			}
-
-			for _, want := range tt.wantContain {
-				if !contains(uri, want) {
-					t.Errorf("URI %q does not contain %q", uri, want)
+			parsed, err := url.Parse(uri)
+			if err != nil {
+				t.Fatalf("parse %q: %v", uri, err)
+			}
+			if parsed.Scheme != "otpauth" || parsed.Host != string(tt.cfg.Type) {
+				t.Errorf("URI %q: scheme/type = %s/%s, want otpauth/%s", uri, parsed.Scheme, parsed.Host, tt.cfg.Type)
+			}
+			if parsed.Path != tt.wantPath {
+				t.Errorf("URI label = %q, want %q", parsed.Path, tt.wantPath)
+			}
+			q := parsed.Query()
+			for k, v := range tt.want {
+				if got := q.Get(k); got != v {
+					t.Errorf("URI parameter %s = %q, want %q", k, got, v)
 				}
 			}
 		})
 	}
-}
 
-// TestGenerateSecret tests secret generation
-func TestGenerateSecret(t *testing.T) {
-	secret, err := GenerateSecret()
-	if err != nil {
-		t.Fatalf("failed to generate secret: %v", err)
-	}
-
-	if secret == "" {
-		t.Fatal("expected non-empty secret")
-	}
-
-	// Secret should be base32 encoded (only uppercase letters and digits 2-7)
-	for _, c := range secret {
-		if !((c >= 'A' && c <= 'Z') || (c >= '2' && c <= '7') || c == '=') {
-			t.Errorf("invalid character in secret: %c", c)
-		}
-	}
-
-	// Generate multiple secrets to ensure randomness
-	secret2, err := GenerateSecret()
-	if err != nil {
-		t.Fatalf("failed to generate second secret: %v", err)
-	}
-
-	if secret == secret2 {
-		t.Error("generated secrets should be different")
+	var nilAuth *Authenticator
+	if _, err := nilAuth.ProvisioningURI(); !errors.Is(err, ErrNilAuthenticator) {
+		t.Fatalf("nil ProvisioningURI = %v, want ErrNilAuthenticator", err)
 	}
 }
 
-// TestContextCancellation tests context cancellation
+// TestContextCancellation tests context cancellation and expiry
 func TestContextCancellation(t *testing.T) {
-	cfg := Config{
-		Type:        TypeTOTP,
-		Secret:      testSecret,
-		Issuer:      "TestApp",
-		AccountName: "user@example.com",
-		Algorithm:   testAlgorithm,
-	}
-
-	auth, err := NewAuthenticator(cfg)
+	auth, err := NewAuthenticator(Config{Type: TypeTOTP, Seed: testSeed(t), Algorithm: testAlgorithm()})
 	if err != nil {
 		t.Fatalf("failed to create authenticator: %v", err)
 	}
+	t.Cleanup(func() { _ = auth.Close() })
 
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // Cancel immediately
-
-	code, _ := auth.Generate()
-	err = auth.Authenticate(ctx, code)
-	if err == nil {
-		t.Error("expected error with canceled context")
-	}
-	if !errors.Is(err, context.Canceled) {
-		t.Errorf("expected context.Canceled error, got %v", err)
-	}
-}
-
-// TestContextTimeout tests context timeout
-func TestContextTimeout(t *testing.T) {
-	cfg := Config{
-		Type:        TypeTOTP,
-		Secret:      testSecret,
-		Issuer:      "TestApp",
-		AccountName: "user@example.com",
-		Algorithm:   testAlgorithm,
-	}
-
-	auth, err := NewAuthenticator(cfg)
+	code, err := auth.Generate()
 	if err != nil {
-		t.Fatalf("failed to create authenticator: %v", err)
+		t.Fatalf("Generate: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Nanosecond)
-	defer cancel()
-
-	time.Sleep(10 * time.Millisecond) // Ensure timeout
-
-	code, _ := auth.Generate()
-	err = auth.Authenticate(ctx, code)
-	if err == nil {
-		t.Error("expected error with timed out context")
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := auth.Authenticate(canceled, code); !errors.Is(err, context.Canceled) {
+		t.Errorf("expected context.Canceled, got %v", err)
 	}
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Errorf("expected context.DeadlineExceeded error, got %v", err)
+
+	// A deadline already in the past has expired by construction; no waiting.
+	expired, cancelExpired := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancelExpired()
+	if err := auth.Authenticate(expired, code); !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("expected context.DeadlineExceeded, got %v", err)
 	}
 }
 
@@ -649,275 +561,54 @@ func TestContextTimeout(t *testing.T) {
 func TestNilAuthenticator(t *testing.T) {
 	var auth *Authenticator
 
-	t.Run("Authenticate", func(t *testing.T) {
-		err := auth.Authenticate(context.Background(), "123456")
-		if err == nil {
-			t.Fatal("expected error with nil authenticator")
-		}
-		if !errors.Is(err, ErrNilAuthenticator) {
-			t.Errorf("expected ErrNilAuthenticator, got %v", err)
-		}
-	})
-
-	t.Run("ValidateCounter", func(t *testing.T) {
-		_, err := auth.ValidateCounter(context.Background(), "123456", 0)
-		if err == nil {
-			t.Fatal("expected error with nil authenticator")
-		}
-		if !errors.Is(err, ErrNilAuthenticator) {
-			t.Errorf("expected ErrNilAuthenticator, got %v", err)
-		}
-	})
-
-	t.Run("Generate", func(t *testing.T) {
-		_, err := auth.Generate()
-		if err == nil {
-			t.Fatal("expected error with nil authenticator")
-		}
-		if !errors.Is(err, ErrNilAuthenticator) {
-			t.Errorf("expected ErrNilAuthenticator, got %v", err)
-		}
-	})
-
-	t.Run("GetProvisioningURI", func(t *testing.T) {
-		uri := auth.GetProvisioningURI()
-		if uri != "" {
-			t.Errorf("expected empty URI with nil authenticator, got %q", uri)
-		}
-	})
+	if err := auth.Authenticate(context.Background(), "123456"); !errors.Is(err, ErrNilAuthenticator) {
+		t.Errorf("Authenticate: expected ErrNilAuthenticator, got %v", err)
+	}
+	if _, err := auth.ValidateCounter(context.Background(), "123456", 0); !errors.Is(err, ErrNilAuthenticator) {
+		t.Errorf("ValidateCounter: expected ErrNilAuthenticator, got %v", err)
+	}
+	if _, err := auth.Generate(); !errors.Is(err, ErrNilAuthenticator) {
+		t.Errorf("Generate: expected ErrNilAuthenticator, got %v", err)
+	}
 }
 
-// TestAlgorithms tests different hash algorithms
+// TestAlgorithms round-trips every digest this process can execute.
 func TestAlgorithms(t *testing.T) {
-	algorithms := testAlgorithms
-
-	for _, algo := range algorithms {
+	for _, algo := range testAlgorithms() {
 		t.Run(string(algo), func(t *testing.T) {
-			cfg := Config{
-				Type:        TypeTOTP,
-				Secret:      testSecret,
-				Issuer:      "TestApp",
-				AccountName: "user@example.com",
-				Algorithm:   algo,
-			}
-
-			auth, err := NewAuthenticator(cfg)
+			auth, err := NewAuthenticator(Config{Type: TypeTOTP, Seed: testSeed(t), Algorithm: algo})
 			if err != nil {
 				t.Fatalf("failed to create authenticator: %v", err)
 			}
+			t.Cleanup(func() { _ = auth.Close() })
 
 			code, err := auth.Generate()
 			if err != nil {
 				t.Fatalf("failed to generate code: %v", err)
 			}
-
-			err = auth.Authenticate(context.Background(), code)
-			if err != nil {
+			if err := auth.Authenticate(context.Background(), code); err != nil {
 				t.Errorf("failed to authenticate: %v", err)
 			}
 		})
 	}
 }
 
-// Helper function
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
-		(len(s) > 0 && len(substr) > 0 && indexOf(s, substr) >= 0))
-}
-
-func indexOf(s, substr string) int {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return i
-		}
-	}
-	return -1
-}
-
-// TestHOTPWithoutCounter tests HOTP generate without counter
-func TestHOTPWithoutCounter(t *testing.T) {
-	cfg := Config{
-		Type:        TypeHOTP,
-		Secret:      testSecret,
-		Issuer:      "TestApp",
-		AccountName: "user@example.com",
-	}
-
-	auth, err := NewAuthenticator(cfg)
-	if err != nil {
-		t.Fatalf("failed to create authenticator: %v", err)
-	}
-
-	// HOTP Generate without counter should error
-	_, err = auth.Generate()
-	if err == nil {
-		t.Fatal("expected error when generating HOTP without counter")
-	}
-}
-
-// TestTOTPValidateCounterError tests TOTP ValidateCounter returns error
-func TestTOTPValidateCounterError(t *testing.T) {
-	cfg := Config{
-		Type:        TypeTOTP,
-		Secret:      testSecret,
-		Issuer:      "TestApp",
-		AccountName: "user@example.com",
-	}
-
-	auth, err := NewAuthenticator(cfg)
-	if err != nil {
-		t.Fatalf("failed to create authenticator: %v", err)
-	}
-
-	// ValidateCounter should only work with HOTP
-	_, err = auth.ValidateCounter(context.Background(), "123456", 0)
-	if err == nil {
-		t.Fatal("expected error when calling ValidateCounter on TOTP authenticator")
-	}
-	if !errors.Is(err, ErrInvalidConfig) {
-		t.Errorf("expected ErrInvalidConfig, got %v", err)
-	}
-}
-
-// TestValidateCounterWithEmptyCode tests ValidateCounter with empty code
-func TestValidateCounterWithEmptyCode(t *testing.T) {
-	cfg := Config{
-		Type:        TypeHOTP,
-		Secret:      testSecret,
-		Issuer:      "TestApp",
-		AccountName: "user@example.com",
-	}
-
-	auth, err := NewAuthenticator(cfg)
-	if err != nil {
-		t.Fatalf("failed to create authenticator: %v", err)
-	}
-
-	_, err = auth.ValidateCounter(context.Background(), "", 0)
-	if err == nil {
-		t.Fatal("expected error with empty code")
-	}
-	if !errors.Is(err, ErrInvalidCode) {
-		t.Errorf("expected ErrInvalidCode, got %v", err)
-	}
-}
-
-// TestValidateCounterWithNilContext tests ValidateCounter with nil context
-func TestValidateCounterWithNilContext(t *testing.T) {
-	cfg := Config{
-		Type:        TypeHOTP,
-		Secret:      testSecret,
-		Issuer:      "TestApp",
-		AccountName: "user@example.com",
-		Algorithm:   testAlgorithm,
-	}
-
-	auth, err := NewAuthenticator(cfg)
-	if err != nil {
-		t.Fatalf("failed to create authenticator: %v", err)
-	}
-
-	code, err := auth.Generate(0)
-	if err != nil {
-		t.Fatalf("failed to generate code: %v", err)
-	}
-
-	// Should work with nil context
-	counter, err := auth.ValidateCounter(nil, code, 0)
-	if err != nil {
-		t.Errorf("unexpected error with nil context: %v", err)
-	}
-	if counter != 1 {
-		t.Errorf("expected counter 1, got %d", counter)
-	}
-}
-
-// TestValidateCounterWithCancelledContext tests ValidateCounter with canceled context
-func TestValidateCounterWithCancelledContext(t *testing.T) {
-	cfg := Config{
-		Type:        TypeHOTP,
-		Secret:      testSecret,
-		Issuer:      "TestApp",
-		AccountName: "user@example.com",
-		Algorithm:   testAlgorithm,
-	}
-
-	auth, err := NewAuthenticator(cfg)
-	if err != nil {
-		t.Fatalf("failed to create authenticator: %v", err)
-	}
-
-	code, err := auth.Generate(0)
-	if err != nil {
-		t.Fatalf("failed to generate code: %v", err)
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	_, err = auth.ValidateCounter(ctx, code, 0)
-	if err == nil {
-		t.Fatal("expected error with canceled context")
-	}
-	if !errors.Is(err, context.Canceled) {
-		t.Errorf("expected context.Canceled, got %v", err)
-	}
-}
-
-// TestAuthenticateHOTPWithContext tests HOTP authentication with valid code
-func TestAuthenticateHOTPWithContext(t *testing.T) {
-	cfg := Config{
-		Type:        TypeHOTP,
-		Secret:      testSecret,
-		Issuer:      "TestApp",
-		AccountName: "user@example.com",
-		Algorithm:   testAlgorithm,
-		Counter:     0,
-	}
-
-	auth, err := NewAuthenticator(cfg)
-	if err != nil {
-		t.Fatalf("failed to create authenticator: %v", err)
-	}
-
-	code, err := auth.Generate(0)
-	if err != nil {
-		t.Fatalf("failed to generate code: %v", err)
-	}
-
-	// Test with valid code at configured counter
-	err = auth.Authenticate(context.Background(), code)
-	if err != nil {
-		t.Errorf("failed to authenticate with valid HOTP code: %v", err)
-	}
-}
-
 // TestHOTPRoundTripHonoursConfig is the regression test for HOTP validation
-// ignoring the configured algorithm and digit count.
-//
-// Generate has always used the configured options, but both validation paths
-// called hotp.Validate, which hardcodes 6 digits and SHA-1. Any HOTP
-// authenticator configured with SHA-256/SHA-512 or 7/8 digits therefore
-// rejected the very codes it had just generated. Only the 6-digit SHA-1
-// combination — the one the old tests happened to use — worked.
+// ignoring the configured algorithm and digit count: every combination must
+// validate the codes it generates, through both validation entry points.
 func TestHOTPRoundTripHonoursConfig(t *testing.T) {
 	const counter = 7
 
-	for _, algo := range testAlgorithms {
+	for _, algo := range testAlgorithms() {
 		for _, digits := range []uint{6, 7, 8} {
 			t.Run(fmt.Sprintf("%s/%d", algo, digits), func(t *testing.T) {
 				auth, err := NewAuthenticator(Config{
-					Type:        TypeHOTP,
-					Secret:      testSecret,
-					Issuer:      "TestApp",
-					AccountName: "user@example.com",
-					Algorithm:   algo,
-					Digits:      digits,
-					Counter:     counter,
+					Type: TypeHOTP, Seed: testSeed(t), Algorithm: algo, Digits: digits, Counter: counter,
 				})
 				if err != nil {
 					t.Fatalf("failed to create authenticator: %v", err)
 				}
+				t.Cleanup(func() { _ = auth.Close() })
 
 				code, err := auth.Generate(counter)
 				if err != nil {
@@ -926,11 +617,9 @@ func TestHOTPRoundTripHonoursConfig(t *testing.T) {
 				if uint(len(code)) != digits {
 					t.Fatalf("expected %d digit code, got %d", digits, len(code))
 				}
-
 				if err := auth.Authenticate(context.Background(), code); err != nil {
 					t.Errorf("Authenticate rejected a code it generated: %v", err)
 				}
-
 				next, err := auth.ValidateCounter(context.Background(), code, counter)
 				if err != nil {
 					t.Errorf("ValidateCounter rejected a code it generated: %v", err)
@@ -943,141 +632,70 @@ func TestHOTPRoundTripHonoursConfig(t *testing.T) {
 	}
 }
 
-// TestDefaults tests default configuration values
+// TestDefaults tests default configuration values. The omitted algorithm
+// resolves to RFC 6238's SHA-1 default; under FIPS 140-only mode it is refused
+// instead, which TestOmittedAlgorithmRefusedUnderFIPS and TestFIPSActivation
+// cover.
 func TestDefaults(t *testing.T) {
-	cfg := Config{
-		Type:        TypeTOTP,
-		Secret:      testSecret,
-		Issuer:      "TestApp",
-		AccountName: "user@example.com",
-		// No digits, period, algorithm, or skew specified
+	if fips140OnlyActive() {
+		t.Skip("FIPS 140-only mode is active: an omitted algorithm is refused (TestFIPSActivation)")
 	}
 
-	auth, err := NewAuthenticator(cfg)
+	auth, err := NewAuthenticator(Config{Type: TypeTOTP, Seed: testSeed(t)})
 	if err != nil {
 		t.Fatalf("failed to create authenticator: %v", err)
+	}
+	t.Cleanup(func() { _ = auth.Close() })
+
+	if auth.cfg.Algorithm != AlgorithmSHA1 || auth.cfg.Digits != 6 || auth.cfg.Period != 30 || auth.cfg.Skew != 1 {
+		t.Errorf("defaults = %s/%d digits/%ds/skew %d; want SHA1/6/30/1",
+			auth.cfg.Algorithm, auth.cfg.Digits, auth.cfg.Period, auth.cfg.Skew)
 	}
 
 	code, err := auth.Generate()
 	if err != nil {
 		t.Fatalf("failed to generate code: %v", err)
 	}
-
-	// Default is 6 digits
-	if len(code) != 6 {
-		t.Errorf("expected 6 digit code (default), got %d digits", len(code))
-	}
-
-	// Should be able to authenticate
-	err = auth.Authenticate(context.Background(), code)
-	if err != nil {
+	if err := auth.Authenticate(context.Background(), code); err != nil {
 		t.Errorf("failed to authenticate with defaults: %v", err)
 	}
 }
 
-// TestDecodedSecretBits checks the secret-strength measurement against
-// encoding/base32 itself, so the streaming decode that keeps the plaintext key
-// out of a single allocation cannot silently disagree with a plain
-// DecodeString about how long a secret is, or about which secrets are
-// well-formed.
-func TestDecodedSecretBits(t *testing.T) {
-	// Padding is optional, as it is for NewProtectedSecret, which decodes for
-	// both paths: an unpadded final group is what provisioning tools emit, so
-	// "…QOJ" is a 19-byte secret rather than a malformed 20-byte one.
-	valid := map[string]int{
-		"MZXW6===":                        3,
-		"MZXW6YTBOI======":                6,
-		"JBSWY3DPEHPK3PXP":                10, // the old 80-bit doc example
-		testSecret:                        20,
-		"GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJ": 19, // unpadded, final group of 7
-		"GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ": 40,
+// TestTOTPSkewThroughAuthenticator drives the skew window through the public
+// path, deriving neighboring time steps with an HOTP authenticator over the
+// same seed — RFC 6238 §4 defines TOTP as HOTP over the time step, so this
+// needs no clock control.
+func TestTOTPSkewThroughAuthenticator(t *testing.T) {
+	const period = 30
+	totp, err := NewAuthenticator(Config{Type: TypeTOTP, Seed: testSeed(t), Algorithm: testAlgorithm(), Period: period, Skew: 2, Digits: 8})
+	if err != nil {
+		t.Fatalf("NewAuthenticator(TOTP): %v", err)
 	}
-	for secret, wantBytes := range valid {
-		t.Run("valid/"+secret, func(t *testing.T) {
-			got, err := decodedSecretBits(secret)
-			if err != nil {
-				t.Fatalf("decodedSecretBits(%q) returned error: %v", secret, err)
-			}
-			if got != wantBytes*8 {
-				t.Errorf("decodedSecretBits(%q) = %d bits, want %d", secret, got, wantBytes*8)
-			}
-		})
+	t.Cleanup(func() { _ = totp.Close() })
+	hotp, err := NewAuthenticator(Config{Type: TypeHOTP, Seed: testSeed(t), Algorithm: testAlgorithm(), Digits: 8})
+	if err != nil {
+		t.Fatalf("NewAuthenticator(HOTP): %v", err)
 	}
+	t.Cleanup(func() { _ = hotp.Close() })
 
-	// A trailing group of 1, 3 or 6 characters cannot encode a whole byte.
-	// Go's unpadded decoder drops it silently — "…QOJQA" decodes to the same
-	// key as "…QOJQ" — so these assert the guard in NewProtectedSecret, which
-	// decodedSecretBits decodes through, not the decoder.
-	malformed := map[string]string{
-		"illegal characters":    "INVALID@SECRET!",
-		"misplaced padding":     "MZ=XW6YTB",
-		"valid prefix then bad": testSecret + "@@@@@@@@",
-		"stray trailing char":   testSecret + "A",
-		"three trailing chars":  testSecret + "ABC",
-		"six trailing chars":    testSecret + "ABCDEF",
-	}
-	for name, secret := range malformed {
-		t.Run("malformed/"+name, func(t *testing.T) {
-			if _, err := base32.StdEncoding.DecodeString(secret); err == nil {
-				t.Fatalf("fixture %q is actually valid base32", secret)
-			}
-			bits, err := decodedSecretBits(secret)
-			if err == nil {
-				t.Fatalf("decodedSecretBits(%q) = %d bits, want an error", secret, bits)
-			}
-			// A malformed secret must not report a usable strength: the
-			// prefix the decoder managed to emit has been wiped, so there is
-			// nothing to measure.
-			if bits != 0 {
-				t.Errorf("decodedSecretBits(%q) = %d bits on error, want 0", secret, bits)
-			}
-		})
-	}
-}
-
-// TestSecretPathsAgreeOnTrailingGroup gives the same base32 secret to the
-// deprecated string path, Config.Secret, and to NewProtectedSecret, the
-// constructor for its replacement, over every final-group length. The two
-// must accept and reject the same inputs with the same class of error: a
-// trailing group of 1, 3 or 6 characters encodes no whole byte, and Go's
-// unpadded decoder would drop it silently, turning a corrupt stored secret
-// into a key that quietly derives the wrong codes.
-func TestSecretPathsAgreeOnTrailingGroup(t *testing.T) {
-	const suffix = "ABCDEFG"
-
-	for rem := 0; rem < 8; rem++ {
-		secretText := testSecret + suffix[:rem]
-		wantAccept := rem != 1 && rem != 3 && rem != 6
-
-		t.Run(fmt.Sprintf("len mod 8 = %d", rem), func(t *testing.T) {
-			if got := len(secretText) % 8; got != rem {
-				t.Fatalf("fixture %q has length mod 8 = %d, want %d", secretText, got, rem)
-			}
-
-			_, stringErr := NewAuthenticator(Config{Type: TypeTOTP, Secret: secretText})
-
-			key, protectedErr := NewProtectedSecret(secretText)
-			if protectedErr == nil {
-				defer key.Destroy()
-				_, protectedErr = NewAuthenticator(Config{Type: TypeTOTP, SecretKey: key})
-			}
-
-			if (stringErr == nil) != (protectedErr == nil) {
-				t.Fatalf("paths disagree on %q: string path %v, protected path %v",
-					secretText, stringErr, protectedErr)
-			}
-			if wantAccept {
-				if stringErr != nil {
-					t.Fatalf("%q rejected by both paths, want accepted: %v", secretText, stringErr)
-				}
-				return
-			}
-			if !errors.Is(stringErr, ErrInvalidConfig) {
-				t.Errorf("string path on %q = %v, want ErrInvalidConfig", secretText, stringErr)
-			}
-			if !errors.Is(protectedErr, ErrInvalidConfig) {
-				t.Errorf("protected path on %q = %v, want ErrInvalidConfig", secretText, protectedErr)
-			}
-		})
+	now := totpCounter(time.Now(), period)
+	// ±1 stays inside a skew of 2 even if the step rolls over mid-test; ±5 stays
+	// outside it for the same reason. Eight digits make a chance collision
+	// between an outside code and one inside the window negligible.
+	for _, tc := range []struct {
+		offset int64
+		accept bool
+	}{{-1, true}, {0, true}, {1, true}, {-5, false}, {5, false}} {
+		code, err := hotp.Generate(uint64(int64(now) + tc.offset))
+		if err != nil {
+			t.Fatalf("Generate: %v", err)
+		}
+		err = totp.Authenticate(context.Background(), code)
+		if tc.accept && err != nil {
+			t.Errorf("step %+d rejected inside skew 2: %v", tc.offset, err)
+		}
+		if !tc.accept && !errors.Is(err, ErrInvalidCode) {
+			t.Errorf("step %+d = %v outside skew 2, want ErrInvalidCode", tc.offset, err)
+		}
 	}
 }

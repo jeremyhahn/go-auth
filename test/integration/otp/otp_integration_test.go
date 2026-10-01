@@ -4,179 +4,204 @@ package otp_test
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha1" // #nosec G505 -- probes whether the runtime refuses HMAC-SHA-1; never protects anything
+	"errors"
 	"fmt"
+	"net/url"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-enclave"
+
 	"github.com/jeremyhahn/go-auth/pkg/otp"
 )
 
-func TestIntegration_TOTP_EndToEnd(t *testing.T) {
-	// Test complete TOTP workflow: secret generation → provisioning URI → code validation
-	secret, err := otp.GenerateSecret()
-	if err != nil {
-		t.Fatalf("Failed to generate secret: %v", err)
-	}
+// fips140OnlyActive reports whether this process refuses HMAC-SHA-1, by
+// executing it — the same probe pkg/otp gates on (see pkg/otp/fips.go), which
+// this external test package cannot call.
+var fips140OnlyActive = sync.OnceValue(func() (unavailable bool) {
+	defer func() {
+		if recover() != nil {
+			unavailable = true
+		}
+	}()
+	hmac.New(sha1.New, make([]byte, 32)).Sum(nil)
+	return false
+})
 
-	// Test with multiple configurations
+// defaultAlgorithm is the digest these tests use where the choice is
+// incidental: RFC 6238's SHA-1 normally, SHA-256 where the process runs under
+// FIPS 140-only mode and HMAC-SHA-1 is refused.
+func defaultAlgorithm() otp.Algorithm {
+	if fips140OnlyActive() {
+		return otp.AlgorithmSHA256
+	}
+	return otp.AlgorithmSHA1
+}
+
+// newSeed generates a fresh seed straight into locked memory.
+func newSeed(t *testing.T) *enclave.MemoryEnclave {
+	t.Helper()
+	seed, err := otp.GenerateProtectedSecret()
+	if err != nil {
+		t.Fatalf("GenerateProtectedSecret: %v", err)
+	}
+	t.Cleanup(seed.Destroy)
+	return seed
+}
+
+// seedCopies returns n independent enclaves over one generated key, the way an
+// application holds the same enrolled seed in several authenticators: each
+// authenticator owns its own enclave.
+func seedCopies(t *testing.T, n int) []*enclave.MemoryEnclave {
+	t.Helper()
+	encoded, err := otp.EncodeSecret(newSeed(t))
+	if err != nil {
+		t.Fatalf("EncodeSecret: %v", err)
+	}
+	seeds := make([]*enclave.MemoryEnclave, n)
+	for i := range seeds {
+		seeds[i], err = otp.DecodeSeed(encoded)
+		if err != nil {
+			t.Fatalf("DecodeSeed: %v", err)
+		}
+		t.Cleanup(seeds[i].Destroy)
+	}
+	return seeds
+}
+
+func newAuthenticator(t *testing.T, cfg otp.Config) *otp.Authenticator {
+	t.Helper()
+	auth, err := otp.NewAuthenticator(cfg)
+	if err != nil {
+		t.Fatalf("NewAuthenticator: %v", err)
+	}
+	t.Cleanup(func() { _ = auth.Close() })
+	return auth
+}
+
+func TestIntegration_TOTP_EndToEnd(t *testing.T) {
+	// Complete TOTP workflow: seed generation → provisioning URI → code validation
 	tests := []struct {
 		name      string
 		algorithm otp.Algorithm
 		digits    uint
 	}{
-		{"SHA1_6digits", otp.AlgorithmSHA1, 6},
+		{"default_6digits", defaultAlgorithm(), 6},
 		{"SHA256_6digits", otp.AlgorithmSHA256, 6},
 		{"SHA512_6digits", otp.AlgorithmSHA512, 6},
-		{"SHA1_7digits", otp.AlgorithmSHA1, 7},
-		{"SHA1_8digits", otp.AlgorithmSHA1, 8},
+		{"default_7digits", defaultAlgorithm(), 7},
+		{"default_8digits", defaultAlgorithm(), 8},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := otp.Config{
+			auth := newAuthenticator(t, otp.Config{
 				Type:        otp.TypeTOTP,
-				Secret:      secret,
+				Seed:        newSeed(t),
 				Issuer:      "IntegrationTest",
 				AccountName: "test@example.com",
 				Algorithm:   tt.algorithm,
 				Digits:      tt.digits,
 				Period:      30,
 				Skew:        1,
-			}
+			})
 
-			auth, err := otp.NewAuthenticator(cfg)
+			uri, err := auth.ProvisioningURI()
 			if err != nil {
-				t.Fatalf("Failed to create authenticator: %v", err)
-			}
-
-			// Verify provisioning URI is generated
-			uri := auth.GetProvisioningURI()
-			if uri == "" {
-				t.Error("Provisioning URI is empty")
+				t.Fatalf("ProvisioningURI: %v", err)
 			}
 			if len(uri) < 15 || uri[:15] != "otpauth://totp/" {
 				t.Errorf("Invalid URI scheme, expected otpauth://totp/, got: %s", uri)
 			}
 
-			// Generate current TOTP code
 			code, err := auth.Generate()
 			if err != nil {
 				t.Fatalf("Failed to generate code: %v", err)
 			}
-
 			if len(code) != int(tt.digits) {
 				t.Errorf("Expected %d digit code, got %d digits: %s", tt.digits, len(code), code)
 			}
-
-			// Validate the generated code
-			ctx := context.Background()
-			if err := auth.Authenticate(ctx, code); err != nil {
+			if err := auth.Authenticate(context.Background(), code); err != nil {
 				t.Errorf("Failed to validate generated code: %v", err)
 			}
 		})
 	}
 }
 
+// TestIntegration_TOTP_TimeSkew drives the skew window without waiting on the
+// clock: RFC 6238 §4 defines TOTP as HOTP over the time step, so an HOTP
+// authenticator over the same seed derives the codes for neighboring steps.
 func TestIntegration_TOTP_TimeSkew(t *testing.T) {
-	secret, err := otp.GenerateSecret()
-	if err != nil {
-		t.Fatalf("Failed to generate secret: %v", err)
-	}
+	const period = 30
+	seeds := seedCopies(t, 2)
 
-	cfg := otp.Config{
-		Type:        otp.TypeTOTP,
-		Secret:      secret,
-		Issuer:      "SkewTest",
-		AccountName: "skew@example.com",
-		Period:      2, // Short period for faster testing
-		Skew:        2, // Allow ±2 periods
-	}
+	totp := newAuthenticator(t, otp.Config{
+		Type: otp.TypeTOTP, Seed: seeds[0], Algorithm: defaultAlgorithm(),
+		Period: period, Skew: 2, Digits: 8,
+	})
+	hotp := newAuthenticator(t, otp.Config{
+		Type: otp.TypeHOTP, Seed: seeds[1], Algorithm: defaultAlgorithm(), Digits: 8,
+	})
 
-	auth, err := otp.NewAuthenticator(cfg)
-	if err != nil {
-		t.Fatalf("Failed to create authenticator: %v", err)
-	}
-
-	ctx := context.Background()
-
-	// Generate code at current time
-	code, err := auth.Generate()
-	if err != nil {
-		t.Fatalf("Failed to generate code: %v", err)
-	}
-
-	// Code should be valid immediately
-	if err := auth.Authenticate(ctx, code); err != nil {
-		t.Errorf("Code should be valid immediately: %v", err)
-	}
-
-	// Wait for next period
-	time.Sleep(2 * time.Second)
-
-	// Code should still be valid within skew window
-	if err := auth.Authenticate(ctx, code); err != nil {
-		t.Errorf("Code should be valid within skew window: %v", err)
-	}
-
-	// Wait until code is definitely expired (beyond skew window)
-	time.Sleep(5 * time.Second)
-
-	// Code should now be expired
-	if err := auth.Authenticate(ctx, code); err == nil {
-		t.Error("Code should be expired after skew window")
+	step := time.Now().Unix() / period
+	// ±1 stays inside a skew of 2 even if the step rolls over mid-test, and ±5
+	// stays outside it.
+	for _, tc := range []struct {
+		offset int64
+		accept bool
+	}{{-1, true}, {0, true}, {1, true}, {-5, false}, {5, false}} {
+		code, err := hotp.Generate(uint64(step + tc.offset))
+		if err != nil {
+			t.Fatalf("Generate: %v", err)
+		}
+		err = totp.Authenticate(context.Background(), code)
+		if tc.accept && err != nil {
+			t.Errorf("step %+d should be inside the skew window: %v", tc.offset, err)
+		}
+		if !tc.accept && !errors.Is(err, otp.ErrInvalidCode) {
+			t.Errorf("step %+d should be outside the skew window, got %v", tc.offset, err)
+		}
 	}
 }
 
 func TestIntegration_HOTP_EndToEnd(t *testing.T) {
-	// Test complete HOTP workflow with counter management
-	secret, err := otp.GenerateSecret()
-	if err != nil {
-		t.Fatalf("Failed to generate secret: %v", err)
-	}
-
-	cfg := otp.Config{
+	// Complete HOTP workflow with counter management
+	auth := newAuthenticator(t, otp.Config{
 		Type:        otp.TypeHOTP,
-		Secret:      secret,
+		Seed:        newSeed(t),
 		Issuer:      "HOTPTest",
 		AccountName: "hotp@example.com",
+		Algorithm:   defaultAlgorithm(),
 		Counter:     0,
-	}
-
-	auth, err := otp.NewAuthenticator(cfg)
-	if err != nil {
-		t.Fatalf("Failed to create authenticator: %v", err)
-	}
+	})
 
 	ctx := context.Background()
 
-	// Test counter progression 0 → 1 → 2 → 3 → 4
 	for counter := uint64(0); counter < 5; counter++ {
 		t.Run(fmt.Sprintf("counter_%d", counter), func(t *testing.T) {
-			// Generate code for this counter
 			code, err := auth.Generate(counter)
 			if err != nil {
 				t.Fatalf("Failed to generate code for counter %d: %v", counter, err)
 			}
 
-			// Validate and get new counter
 			newCounter, err := auth.ValidateCounter(ctx, code, counter)
 			if err != nil {
 				t.Errorf("Failed to validate code for counter %d: %v", counter, err)
 			}
-
 			if newCounter != counter+1 {
 				t.Errorf("Expected counter %d, got %d", counter+1, newCounter)
 			}
 
-			// Verify code with old counter is still mathematically valid
-			// (replay prevention is handled at application level by tracking counter)
+			// The code is still mathematically valid for its counter; replay
+			// prevention is the application's, by persisting the counter.
 			if _, err := auth.ValidateCounter(ctx, code, counter); err != nil {
 				t.Errorf("Code should still be valid for counter %d: %v", counter, err)
 			}
 
-			// Verify code does NOT work with wrong counter
 			if _, err := auth.ValidateCounter(ctx, code, counter+2); err == nil {
 				t.Error("Code should not be valid for wrong counter")
 			}
@@ -185,81 +210,63 @@ func TestIntegration_HOTP_EndToEnd(t *testing.T) {
 }
 
 func TestIntegration_MultiUser(t *testing.T) {
-	// Test multiple users with different secrets
+	// Multiple users with different seeds
 	ctx := context.Background()
+	user1Seeds := seedCopies(t, 2)
+	user2Seeds := seedCopies(t, 2)
 
-	// Create two users with different secrets
-	secret1, _ := otp.GenerateSecret()
-	secret2, _ := otp.GenerateSecret()
-
-	user1Auth, err := otp.NewAuthenticator(otp.Config{
-		Type:        otp.TypeTOTP,
-		Secret:      secret1,
-		Issuer:      "MultiUser",
-		AccountName: "user1@example.com",
+	user1Auth := newAuthenticator(t, otp.Config{
+		Type: otp.TypeTOTP, Seed: user1Seeds[0], Algorithm: defaultAlgorithm(),
+		Issuer: "MultiUser", AccountName: "user1@example.com",
 	})
-	if err != nil {
-		t.Fatalf("Failed to create user1 authenticator: %v", err)
-	}
-
-	user2Auth, err := otp.NewAuthenticator(otp.Config{
-		Type:        otp.TypeTOTP,
-		Secret:      secret2,
-		Issuer:      "MultiUser",
-		AccountName: "user2@example.com",
+	user2Auth := newAuthenticator(t, otp.Config{
+		Type: otp.TypeTOTP, Seed: user2Seeds[0], Algorithm: defaultAlgorithm(),
+		Issuer: "MultiUser", AccountName: "user2@example.com",
 	})
-	if err != nil {
-		t.Fatalf("Failed to create user2 authenticator: %v", err)
-	}
 
-	// Generate codes for each user
 	code1, err := user1Auth.Generate()
 	if err != nil {
 		t.Fatalf("Failed to generate code for user1: %v", err)
 	}
-
 	code2, err := user2Auth.Generate()
 	if err != nil {
 		t.Fatalf("Failed to generate code for user2: %v", err)
 	}
 
-	// Each user's code should validate for themselves
 	if err := user1Auth.Authenticate(ctx, code1); err != nil {
 		t.Errorf("User1 code should validate for user1: %v", err)
 	}
 	if err := user2Auth.Authenticate(ctx, code2); err != nil {
 		t.Errorf("User2 code should validate for user2: %v", err)
 	}
-
-	// Cross-validation should fail
-	if err := user1Auth.Authenticate(ctx, code2); err == nil {
-		t.Error("User2 code should not validate for user1")
+	if code1 != code2 {
+		if err := user1Auth.Authenticate(ctx, code2); err == nil {
+			t.Error("User2 code should not validate for user1")
+		}
+		if err := user2Auth.Authenticate(ctx, code1); err == nil {
+			t.Error("User1 code should not validate for user2")
+		}
 	}
-	if err := user2Auth.Authenticate(ctx, code1); err == nil {
-		t.Error("User1 code should not validate for user2")
-	}
 
-	// Test HOTP counter independence
-	hotpUser1, _ := otp.NewAuthenticator(otp.Config{
-		Type:        otp.TypeHOTP,
-		Secret:      secret1,
-		Issuer:      "MultiUser",
-		AccountName: "hotp1@example.com",
-		Counter:     0,
+	// HOTP counter independence
+	hotpUser1 := newAuthenticator(t, otp.Config{
+		Type: otp.TypeHOTP, Seed: user1Seeds[1], Algorithm: defaultAlgorithm(),
+		Issuer: "MultiUser", AccountName: "hotp1@example.com",
+	})
+	hotpUser2 := newAuthenticator(t, otp.Config{
+		Type: otp.TypeHOTP, Seed: user2Seeds[1], Algorithm: defaultAlgorithm(),
+		Issuer: "MultiUser", AccountName: "hotp2@example.com",
 	})
 
-	hotpUser2, _ := otp.NewAuthenticator(otp.Config{
-		Type:        otp.TypeHOTP,
-		Secret:      secret2,
-		Issuer:      "MultiUser",
-		AccountName: "hotp2@example.com",
-		Counter:     0,
-	})
+	hotpCode1, err := hotpUser1.Generate(0)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	hotpCode2, err := hotpUser2.Generate(0)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
 
-	hotpCode1, _ := hotpUser1.Generate(0)
-	hotpCode2, _ := hotpUser2.Generate(0)
-
-	// Each HOTP should validate independently
 	if _, err := hotpUser1.ValidateCounter(ctx, hotpCode1, 0); err != nil {
 		t.Errorf("HOTP user1 should validate: %v", err)
 	}
@@ -269,114 +276,94 @@ func TestIntegration_MultiUser(t *testing.T) {
 }
 
 func TestIntegration_ConcurrentAuthentication(t *testing.T) {
-	secret, err := otp.GenerateSecret()
-	if err != nil {
-		t.Fatalf("Failed to generate secret: %v", err)
-	}
-
-	auth, err := otp.NewAuthenticator(otp.Config{
-		Type:        otp.TypeTOTP,
-		Secret:      secret,
-		Issuer:      "ConcurrentTest",
-		AccountName: "concurrent@example.com",
+	auth := newAuthenticator(t, otp.Config{
+		Type: otp.TypeTOTP, Seed: newSeed(t), Algorithm: defaultAlgorithm(),
+		Issuer: "ConcurrentTest", AccountName: "concurrent@example.com",
 	})
-	if err != nil {
-		t.Fatalf("Failed to create authenticator: %v", err)
-	}
 
-	// Generate one code
 	code, err := auth.Generate()
 	if err != nil {
 		t.Fatalf("Failed to generate code: %v", err)
 	}
 
-	// Validate concurrently from 50 goroutines
 	const numGoroutines = 50
-	var wg sync.WaitGroup
-	var successCount, failCount int32
-
-	for i := 0; i < numGoroutines; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			ctx := context.Background()
-			if err := auth.Authenticate(ctx, code); err != nil {
-				atomic.AddInt32(&failCount, 1)
-			} else {
-				atomic.AddInt32(&successCount, 1)
-			}
-		}()
-	}
-
-	wg.Wait()
-
-	// All validations should succeed (TOTP is stateless)
-	if successCount != numGoroutines {
-		t.Errorf("Expected %d successes, got %d (failures: %d)", numGoroutines, successCount, failCount)
-	}
-}
-
-func TestIntegration_ConcurrentHOTP(t *testing.T) {
-	secret, err := otp.GenerateSecret()
-	if err != nil {
-		t.Fatalf("Failed to generate secret: %v", err)
-	}
-
-	auth, err := otp.NewAuthenticator(otp.Config{
-		Type:        otp.TypeHOTP,
-		Secret:      secret,
-		Issuer:      "ConcurrentHOTP",
-		AccountName: "hotp@example.com",
-		Counter:     0,
-	})
-	if err != nil {
-		t.Fatalf("Failed to create authenticator: %v", err)
-	}
-
-	// Test concurrent reads (validation) of the same HOTP code
-	// Multiple goroutines should be able to validate the same code concurrently
-	const numGoroutines = 20
-	ctx := context.Background()
-
-	// Generate one code for counter 0
-	code, err := auth.Generate(0)
-	if err != nil {
-		t.Fatalf("Failed to generate code: %v", err)
-	}
-
-	// Validate the same code concurrently from multiple goroutines
 	var wg sync.WaitGroup
 	var successCount, failCount atomic.Int32
 
-	for i := 0; i < numGoroutines; i++ {
+	for range numGoroutines {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-
-			_, err := auth.ValidateCounter(ctx, code, 0)
-			if err != nil {
+			if err := auth.Authenticate(context.Background(), code); err != nil {
 				failCount.Add(1)
 			} else {
 				successCount.Add(1)
 			}
 		}()
 	}
-
 	wg.Wait()
 
-	// All validations should succeed (HOTP validation itself is stateless)
+	// All validations should succeed (TOTP is stateless)
+	if successCount.Load() != numGoroutines {
+		t.Errorf("Expected %d successes, got %d (failures: %d)", numGoroutines, successCount.Load(), failCount.Load())
+	}
+}
+
+func TestIntegration_ConcurrentHOTP(t *testing.T) {
+	auth := newAuthenticator(t, otp.Config{
+		Type: otp.TypeHOTP, Seed: newSeed(t), Algorithm: defaultAlgorithm(),
+		Issuer: "ConcurrentHOTP", AccountName: "hotp@example.com",
+	})
+
+	const numGoroutines = 20
+	ctx := context.Background()
+
+	code, err := auth.Generate(0)
+	if err != nil {
+		t.Fatalf("Failed to generate code: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	var successCount, failCount atomic.Int32
+	for range numGoroutines {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := auth.ValidateCounter(ctx, code, 0); err != nil {
+				failCount.Add(1)
+			} else {
+				successCount.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+
 	if successCount.Load() != numGoroutines {
 		t.Errorf("Expected %d successes, got %d (failures: %d)",
 			numGoroutines, successCount.Load(), failCount.Load())
 	}
 }
 
-func TestIntegration_ProvisioningURI(t *testing.T) {
-	secret, err := otp.GenerateSecret()
+// TestIntegration_CloseWipesSeed proves the ownership contract end to end:
+// the authenticator owns its seed, and Close wipes it.
+func TestIntegration_CloseWipesSeed(t *testing.T) {
+	seed := newSeed(t)
+	auth, err := otp.NewAuthenticator(otp.Config{Type: otp.TypeTOTP, Seed: seed, Algorithm: defaultAlgorithm()})
 	if err != nil {
-		t.Fatalf("Failed to generate secret: %v", err)
+		t.Fatalf("NewAuthenticator: %v", err)
 	}
+	if err := auth.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if seed.IsAlive() {
+		t.Fatal("seed still alive after Close")
+	}
+	if _, err := auth.Generate(); !errors.Is(err, enclave.ErrEnclaveDestroyed) {
+		t.Fatalf("Generate after Close = %v, want ErrEnclaveDestroyed", err)
+	}
+}
 
+func TestIntegration_ProvisioningURI(t *testing.T) {
 	tests := []struct {
 		name     string
 		cfg      otp.Config
@@ -385,26 +372,16 @@ func TestIntegration_ProvisioningURI(t *testing.T) {
 		{
 			name: "TOTP",
 			cfg: otp.Config{
-				Type:        otp.TypeTOTP,
-				Secret:      secret,
-				Issuer:      "TestApp",
-				AccountName: "user@test.com",
-				Algorithm:   otp.AlgorithmSHA256,
-				Digits:      8,
-				Period:      60,
+				Type: otp.TypeTOTP, Issuer: "TestApp", AccountName: "user@test.com",
+				Algorithm: otp.AlgorithmSHA256, Digits: 8, Period: 60,
 			},
 			expected: "otpauth://totp/",
 		},
 		{
 			name: "HOTP",
 			cfg: otp.Config{
-				Type:        otp.TypeHOTP,
-				Secret:      secret,
-				Issuer:      "TestApp",
-				AccountName: "user@test.com",
-				Algorithm:   otp.AlgorithmSHA512,
-				Digits:      7,
-				Counter:     100,
+				Type: otp.TypeHOTP, Issuer: "TestApp", AccountName: "user@test.com",
+				Algorithm: otp.AlgorithmSHA512, Digits: 7, Counter: 100,
 			},
 			expected: "otpauth://hotp/",
 		},
@@ -412,64 +389,52 @@ func TestIntegration_ProvisioningURI(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			auth, err := otp.NewAuthenticator(tt.cfg)
+			seed := newSeed(t)
+			want, err := otp.EncodeSecret(seed)
 			if err != nil {
-				t.Fatalf("Failed to create authenticator: %v", err)
+				t.Fatalf("EncodeSecret: %v", err)
+			}
+			tt.cfg.Seed = seed
+			auth := newAuthenticator(t, tt.cfg)
+
+			uri, err := auth.ProvisioningURI()
+			if err != nil {
+				t.Fatalf("ProvisioningURI: %v", err)
+			}
+			if len(uri) < len(tt.expected) || uri[:len(tt.expected)] != tt.expected {
+				t.Fatalf("Expected URI to start with %s, got %s", tt.expected, uri)
 			}
 
-			uri := auth.GetProvisioningURI()
-			if uri == "" {
-				t.Error("URI should not be empty")
+			parsed, err := url.Parse(uri)
+			if err != nil {
+				t.Fatalf("parse URI: %v", err)
 			}
-
-			// Verify URI starts with correct scheme
-			if uri[:len(tt.expected)] != tt.expected {
-				t.Errorf("Expected URI to start with %s, got %s", tt.expected, uri[:len(tt.expected)])
+			q := parsed.Query()
+			if q.Get("secret") != want {
+				t.Error("URI secret does not match the seed")
 			}
-
-			// Verify required components are present
-			requiredComponents := []string{
-				"secret=" + secret,
-				"issuer=TestApp",
-				"algorithm=",
-				"digits=",
+			if q.Get("issuer") != "TestApp" {
+				t.Errorf("issuer = %q", q.Get("issuer"))
 			}
-
-			for _, component := range requiredComponents {
-				if !contains(uri, component) {
-					t.Errorf("URI missing required component: %s", component)
-				}
+			if q.Get("algorithm") != string(tt.cfg.Algorithm) {
+				t.Errorf("algorithm = %q, want %q", q.Get("algorithm"), tt.cfg.Algorithm)
 			}
-
-			// Verify type-specific components
-			if tt.cfg.Type == otp.TypeTOTP {
-				if !contains(uri, "period=") {
-					t.Error("TOTP URI missing period parameter")
-				}
-			} else {
-				if !contains(uri, "counter=") {
-					t.Error("HOTP URI missing counter parameter")
-				}
+			if q.Get("digits") != fmt.Sprint(tt.cfg.Digits) {
+				t.Errorf("digits = %q, want %d", q.Get("digits"), tt.cfg.Digits)
+			}
+			typeParam := map[otp.Type]string{otp.TypeTOTP: "period", otp.TypeHOTP: "counter"}[tt.cfg.Type]
+			if q.Get(typeParam) == "" {
+				t.Errorf("%s URI missing %s parameter", tt.cfg.Type, typeParam)
 			}
 		})
 	}
 }
 
 func TestIntegration_ErrorHandling(t *testing.T) {
-	secret, err := otp.GenerateSecret()
-	if err != nil {
-		t.Fatalf("Failed to generate secret: %v", err)
-	}
-
-	auth, err := otp.NewAuthenticator(otp.Config{
-		Type:        otp.TypeTOTP,
-		Secret:      secret,
-		Issuer:      "ErrorTest",
-		AccountName: "error@test.com",
+	auth := newAuthenticator(t, otp.Config{
+		Type: otp.TypeTOTP, Seed: newSeed(t), Algorithm: defaultAlgorithm(),
+		Issuer: "ErrorTest", AccountName: "error@test.com",
 	})
-	if err != nil {
-		t.Fatalf("Failed to create authenticator: %v", err)
-	}
 
 	tests := []struct {
 		name string
@@ -492,78 +457,58 @@ func TestIntegration_ErrorHandling(t *testing.T) {
 		})
 	}
 
-	// Test context cancellation
+	code, err := auth.Generate()
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
 	t.Run("context_cancelled", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-
-		code, _ := auth.Generate()
-		if err := auth.Authenticate(ctx, code); err != context.Canceled {
+		if err := auth.Authenticate(ctx, code); !errors.Is(err, context.Canceled) {
 			t.Errorf("Expected context.Canceled, got %v", err)
 		}
 	})
 
-	// Test context timeout
 	t.Run("context_timeout", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Nanosecond)
+		// A deadline in the past has expired by construction; no waiting.
+		ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 		defer cancel()
-
-		time.Sleep(10 * time.Millisecond)
-
-		code, _ := auth.Generate()
-		if err := auth.Authenticate(ctx, code); err != context.DeadlineExceeded {
+		if err := auth.Authenticate(ctx, code); !errors.Is(err, context.DeadlineExceeded) {
 			t.Errorf("Expected context.DeadlineExceeded, got %v", err)
 		}
 	})
 }
 
-func TestIntegration_SecretGeneration(t *testing.T) {
-	// Generate multiple secrets and ensure they're unique
-	secrets := make(map[string]bool)
-	count := 100
+func TestIntegration_SeedGeneration(t *testing.T) {
+	// Generate many seeds and ensure they're unique and usable
+	seen := make(map[string]bool)
+	const count = 100
 
-	for i := 0; i < count; i++ {
-		secret, err := otp.GenerateSecret()
+	for i := range count {
+		seed := newSeed(t)
+		encoded, err := otp.EncodeSecret(seed)
 		if err != nil {
-			t.Fatalf("Failed to generate secret %d: %v", i, err)
+			t.Fatalf("EncodeSecret %d: %v", i, err)
 		}
-
-		if secret == "" {
-			t.Error("Generated secret is empty")
+		if seen[encoded] {
+			t.Fatalf("Duplicate seed generated at %d", i)
 		}
+		seen[encoded] = true
 
-		if secrets[secret] {
-			t.Errorf("Duplicate secret generated: %s", secret)
-		}
-		secrets[secret] = true
-
-		// Verify secret can be used to create authenticator
-		_, err = otp.NewAuthenticator(otp.Config{
-			Type:        otp.TypeTOTP,
-			Secret:      secret,
-			Issuer:      "SecretTest",
-			AccountName: fmt.Sprintf("test%d@example.com", i),
+		auth, err := otp.NewAuthenticator(otp.Config{
+			Type: otp.TypeTOTP, Seed: seed, Algorithm: defaultAlgorithm(),
+			Issuer: "SeedTest", AccountName: fmt.Sprintf("test%d@example.com", i),
 		})
 		if err != nil {
-			t.Errorf("Failed to create authenticator with generated secret: %v", err)
+			t.Fatalf("Failed to create authenticator with generated seed: %v", err)
+		}
+		if err := auth.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
 		}
 	}
 
-	if len(secrets) != count {
-		t.Errorf("Expected %d unique secrets, got %d", count, len(secrets))
+	if len(seen) != count {
+		t.Errorf("Expected %d unique seeds, got %d", count, len(seen))
 	}
-}
-
-// Helper function
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > len(substr) && findSubstring(s, substr))
-}
-
-func findSubstring(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }
