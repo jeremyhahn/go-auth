@@ -6,6 +6,8 @@ the release versioning of the company conventions (`release-versioning.md`).
 
 ## [Unreleased]
 
+## [0.3.0-alpha] - 2026-10-01
+
 ### Changed
 
 - The module's `go` directive is raised from `1.26.7` to `1.27.0`, the
@@ -32,6 +34,27 @@ the release versioning of the company conventions (`release-versioning.md`).
   rather than dropping the reference. The public constructors, `Open`,
   `OpenString`, `Scratch`, `Lock`, `Size` and the redaction behaviour are
   unchanged, so backends are unaffected.
+- The Go toolchain moves to `1.27.1` in one pass: the module's `go`
+  directive, `GO_VERSION` in `ci.yml` and `integration.yml`, and every
+  integration image under `pkg/` (`FROM golang:1.27.1-bookworm`) ([#43]).
+  Consumers now need Go 1.27.1, the portfolio toolchain.
+- `pkg/secret`: go-enclave is raised from `v0.3.0-alpha` to `v0.6.1-alpha`
+  ([#43]). The `MemoryEnclave` calls this package makes — `NewMemoryEnclave`,
+  `NewMemoryEnclaveSized`, `WithBytes`, `Open`, `IsAlive`, `Size` and
+  `Destroy` — have the same signatures and the same wipe-on-construct,
+  wipe-and-unmap-on-destroy semantics, so `pkg/secret` needed no code change
+  and its exported API and behaviour are unchanged. One tightening arrives
+  with it: an enclave whose release failed after its material was wiped now
+  reports itself destroyed, so `Open` on such a `Secret` returns
+  `ErrDestroyed` rather than handing back zeroes.
+- Every third-party module is brought to its latest release ([#43]):
+  `golang.org/x/crypto` `v0.57.0`, `golang.org/x/sys` `v0.48.0`,
+  `golang.org/x/oauth2` `v0.37.0`, `golang.org/x/time` `v0.16.0`,
+  `github.com/go-ldap/ldap/v3` `v3.4.14`, `github.com/go-asn1-ber/asn1-ber`
+  `v1.5.8`, `github.com/Azure/go-ntlmssp` `v0.1.1`,
+  `github.com/MicahParks/keyfunc/v3` `v3.8.2`, `github.com/MicahParks/jwkset`
+  `v0.11.3`, `github.com/google/go-tpm-tools` `v0.4.10` and
+  `github.com/stretchr/testify` `v1.12.1`.
 
 ### Fixed
 
@@ -44,6 +67,37 @@ the release versioning of the company conventions (`release-versioning.md`).
   under `pkg/` or `integration.yml`'s `GO_VERSION` differs from the go
   directive, so the per-push gate catches this drift instead of the nightly
   integration run.
+- Build: `make release-alpha` is replaced by the handbook's release-alpha
+  template v2.3.9, vendored unmodified at `mk/release-alpha.mk` with its
+  regression harness ([#22]). The old recipe guessed a patch-only bump,
+  created lightweight unsigned tags as the local git identity, pushed every
+  local tag to a `dev` remote this repo does not have, and let `|| true` hide
+  a failed VERSION commit. A release is now
+  `make release-alpha VERSION=vX.Y.Z-alpha`. It runs only on a clean `main`,
+  makes every git write through `agent-git.sh` (found on `PATH`) as
+  `go-auth`, and pushes the release commit and that one annotated tag to
+  `origin`.
+- Build: the release now assembles `changelog.d/` fragments
+  (release-versioning.md §5). `make release-changelog`, which `release-alpha`
+  runs first, folds every fragment and any existing `## [Unreleased]` content
+  into a dated `## [X.Y.Z-alpha]` section (`scripts/changelog-assemble.sh`),
+  deletes the fragments, and commits that before the tag is cut, so the
+  tagged commit carries the entries. It refuses — before any commit — a
+  misnamed fragment, a fragment with its own release heading, or fragments
+  that would be stranded beside an existing section. `test/ci` runs the real
+  Makefile against a throwaway remote, including a signing wrapper that
+  rejects each commit, plus the template's own harness.
+- CI: the `Integration` workflow is green again ([#42]). Every integration
+  image build failed at `RUN go mod download`: `go.mod` requires the private
+  `github.com/jeremyhahn/go-enclave`, and `docker build` inherits none of the
+  job's private-module configuration. The seven integration images now build
+  through `scripts/docker-build-integration.sh`. The script stages `GOPRIVATE`
+  and the `GIT_CONFIG_*` rewrite in a 0600 file outside the build context,
+  hands it over as the optional BuildKit secret `gomodauth`, and removes it on
+  every exit path. Each Dockerfile sources that secret for its single
+  `go mod download` only, so the token reaches no layer, no image metadata and
+  no command line. Without credentials, the build resolves from the public
+  proxy. `test/ci` holds the Dockerfiles, Makefiles and script to this.
 
 ### Removed — BREAKING
 
@@ -61,9 +115,21 @@ the release versioning of the company conventions (`release-versioning.md`).
   wiping, where a program wants it, is go-enclave's `WipeAll` and belongs to the
   process owner, never to this library.
 
+### Security
+
+- The dependency moves clear three advisories govulncheck reported against
+  this module ([#43]): GO-2026-5543, a panic on a malformed NTLM challenge in
+  `github.com/Azure/go-ntlmssp`, whose package `pkg/ldap` imports through
+  go-ldap (fixed in `v0.1.1`); and GO-2026-6354 and GO-2026-6355 in
+  `golang.org/x/crypto` `v0.55.0` (fixed by `v0.57.0`). govulncheck found no
+  call path to any of them from this module's code.
+
 [#21]: https://github.com/jeremyhahn/go-auth/issues/21
 [#25]: https://github.com/jeremyhahn/go-auth/issues/25
 [#26]: https://github.com/jeremyhahn/go-auth/issues/26
+[#22]: https://github.com/jeremyhahn/go-auth/issues/22
+[#42]: https://github.com/jeremyhahn/go-auth/issues/42
+[#43]: https://github.com/jeremyhahn/go-auth/issues/43
 
 ## [0.2.0-alpha] - 2026-08-19
 
