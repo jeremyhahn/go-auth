@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/jeremyhahn/go-enclave"
 )
 
 func TestNewUserInfoClient(t *testing.T) {
@@ -84,7 +86,7 @@ func TestUserInfoClient_GetUserInfo(t *testing.T) {
 
 		client := newUserInfoClient(http.DefaultClient, config, nil)
 
-		info, err := client.GetUserInfo(context.Background(), "test-token", "https://example.com")
+		info, err := client.GetUserInfo(context.Background(), sealedForTest(t, "test-token"), "https://example.com")
 		if err != nil {
 			t.Fatalf("GetUserInfo() error = %v", err)
 		}
@@ -93,10 +95,16 @@ func TestUserInfoClient_GetUserInfo(t *testing.T) {
 			t.Errorf("GetUserInfo() Subject = %s, want user123", info.Subject)
 		}
 
-		// Check cache
-		cached := client.getFromCache("test-token")
-		if cached == nil {
+		// The cache is keyed by the token's fingerprint, never the token.
+		key, err := tokenFingerprint(sealedForTest(t, "test-token"))
+		if err != nil {
+			t.Fatalf("tokenFingerprint() failed: %v", err)
+		}
+		if cached := client.getFromCache(key); cached == nil {
 			t.Error("GetUserInfo() did not cache response")
+		}
+		if userInfoSealed(client, "test-token") != nil {
+			t.Error("GetUserInfo() keyed the cache by the plaintext access token")
 		}
 	})
 
@@ -124,13 +132,13 @@ func TestUserInfoClient_GetUserInfo(t *testing.T) {
 		client := newUserInfoClient(http.DefaultClient, config, nil)
 
 		// First call
-		_, err := client.GetUserInfo(context.Background(), "test-token", "https://example.com")
+		_, err := client.GetUserInfo(context.Background(), sealedForTest(t, "test-token"), "https://example.com")
 		if err != nil {
 			t.Fatalf("GetUserInfo() error = %v", err)
 		}
 
 		// Second call should use cache
-		_, err = client.GetUserInfo(context.Background(), "test-token", "https://example.com")
+		_, err = client.GetUserInfo(context.Background(), sealedForTest(t, "test-token"), "https://example.com")
 		if err != nil {
 			t.Fatalf("GetUserInfo() error = %v", err)
 		}
@@ -164,16 +172,16 @@ func TestUserInfoClient_GetUserInfo(t *testing.T) {
 		client := newUserInfoClient(http.DefaultClient, config, nil)
 
 		// First call
-		_, err := client.GetUserInfo(context.Background(), "test-token", "https://example.com")
+		_, err := client.GetUserInfo(context.Background(), sealedForTest(t, "test-token"), "https://example.com")
 		if err != nil {
 			t.Fatalf("GetUserInfo() error = %v", err)
 		}
 
-		// Wait for cache to expire
-		time.Sleep(100 * time.Millisecond)
+		// Expire the cache entry without waiting on a clock
+		expireUserInfo(client)
 
 		// Second call should fetch again
-		_, err = client.GetUserInfo(context.Background(), "test-token", "https://example.com")
+		_, err = client.GetUserInfo(context.Background(), sealedForTest(t, "test-token"), "https://example.com")
 		if err != nil {
 			t.Fatalf("GetUserInfo() error = %v", err)
 		}
@@ -195,7 +203,7 @@ func TestUserInfoClient_GetUserInfo(t *testing.T) {
 
 		client := newUserInfoClient(http.DefaultClient, config, nil)
 
-		_, err := client.GetUserInfo(context.Background(), "test-token", "https://example.com")
+		_, err := client.GetUserInfo(context.Background(), sealedForTest(t, "test-token"), "https://example.com")
 		if err != ErrOIDCNotEnabled {
 			t.Errorf("GetUserInfo() error = %v, want %v", err, ErrOIDCNotEnabled)
 		}
@@ -213,7 +221,7 @@ func TestUserInfoClient_GetUserInfo(t *testing.T) {
 
 		client := newUserInfoClient(http.DefaultClient, config, nil)
 
-		_, err := client.GetUserInfo(context.Background(), "", "https://example.com")
+		_, err := client.GetUserInfo(context.Background(), nil, "https://example.com")
 		if err == nil {
 			t.Error("GetUserInfo() should error on empty access token")
 		}
@@ -239,7 +247,7 @@ func TestUserInfoClient_GetUserInfo(t *testing.T) {
 
 		client := newUserInfoClient(http.DefaultClient, config, nil)
 
-		_, err := client.GetUserInfo(context.Background(), "test-token", "https://example.com")
+		_, err := client.GetUserInfo(context.Background(), sealedForTest(t, "test-token"), "https://example.com")
 		if err == nil {
 			t.Error("GetUserInfo() should error on HTTP error")
 		}
@@ -265,7 +273,7 @@ func TestUserInfoClient_GetUserInfo(t *testing.T) {
 
 		client := newUserInfoClient(http.DefaultClient, config, nil)
 
-		_, err := client.GetUserInfo(context.Background(), "test-token", "https://example.com")
+		_, err := client.GetUserInfo(context.Background(), sealedForTest(t, "test-token"), "https://example.com")
 		if err == nil {
 			t.Error("GetUserInfo() should error on invalid JSON")
 		}
@@ -296,7 +304,7 @@ func TestUserInfoClient_GetUserInfo(t *testing.T) {
 
 		client := newUserInfoClient(http.DefaultClient, config, nil)
 
-		_, err := client.GetUserInfo(context.Background(), "test-token", "https://example.com")
+		_, err := client.GetUserInfo(context.Background(), sealedForTest(t, "test-token"), "https://example.com")
 		if err == nil {
 			t.Error("GetUserInfo() should error when subject missing")
 		}
@@ -304,9 +312,9 @@ func TestUserInfoClient_GetUserInfo(t *testing.T) {
 
 	t.Run("handles context cancellation", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			time.Sleep(100 * time.Millisecond)
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(validUserInfo)
+			// The request context is already canceled; a request that reached
+			// the handler would block here until the client gave up on it.
+			<-r.Context().Done()
 		}))
 		defer server.Close()
 
@@ -326,7 +334,7 @@ func TestUserInfoClient_GetUserInfo(t *testing.T) {
 
 		client := newUserInfoClient(http.DefaultClient, config, nil)
 
-		_, err := client.GetUserInfo(ctx, "test-token", "https://example.com")
+		_, err := client.GetUserInfo(ctx, sealedForTest(t, "test-token"), "https://example.com")
 		if err == nil {
 			t.Error("GetUserInfo() should error on canceled context")
 		}
@@ -354,7 +362,7 @@ func TestUserInfoClient_GetUserInfo(t *testing.T) {
 
 		client := newUserInfoClient(http.DefaultClient, config, nil)
 
-		_, err := client.GetUserInfo(context.Background(), "test-token", "https://example.com")
+		_, err := client.GetUserInfo(context.Background(), sealedForTest(t, "test-token"), "https://example.com")
 		if err == nil {
 			t.Error("GetUserInfo() should error on timeout")
 		}
@@ -402,7 +410,7 @@ func TestUserInfoClient_GetUserInfo(t *testing.T) {
 		discoveryClient := newDiscoveryClient(http.DefaultClient, config.OIDC)
 		client := newUserInfoClient(http.DefaultClient, config, discoveryClient)
 
-		info, err := client.GetUserInfo(context.Background(), "test-token", server.URL)
+		info, err := client.GetUserInfo(context.Background(), sealedForTest(t, "test-token"), server.URL)
 		if err != nil {
 			t.Fatalf("GetUserInfo() error = %v", err)
 		}
@@ -426,17 +434,53 @@ func TestUserInfoClient_ClearCache(t *testing.T) {
 	client := newUserInfoClient(http.DefaultClient, config, nil)
 
 	// Add some entries to cache
-	client.cacheUserInfo("token1", &UserInfo{Subject: "user1"})
-	client.cacheUserInfo("token2", &UserInfo{Subject: "user2"})
+	mustCacheUserInfo(t, client, "token1", &UserInfo{Subject: "user1"})
+	mustCacheUserInfo(t, client, "token2", &UserInfo{Subject: "user2"})
 
-	if len(client.cache) != 2 {
-		t.Fatalf("Cache length = %d, want 2", len(client.cache))
+	if userInfoLen(client) != 2 {
+		t.Fatalf("Cache length = %d, want 2", userInfoLen(client))
 	}
+	sealed := userInfoAllSealed(client)
 
 	client.ClearCache()
 
-	if len(client.cache) != 0 {
-		t.Errorf("ClearCache() cache length = %d, want 0", len(client.cache))
+	if userInfoLen(client) != 0 {
+		t.Errorf("ClearCache() cache length = %d, want 0", userInfoLen(client))
+	}
+	for i, e := range sealed {
+		if e.IsAlive() {
+			t.Errorf("entry %d's enclave is still alive after ClearCache", i)
+		}
+	}
+}
+
+func TestUserInfoClient_CacheHoldsSealedCopies(t *testing.T) {
+	config := &Config{
+		OIDC: &OIDCConfig{
+			Enabled:  true,
+			UserInfo: UserInfoConfig{Enabled: true, CacheTTL: time.Hour},
+		},
+	}
+	client := newUserInfoClient(http.DefaultClient, config, nil)
+
+	mustCacheUserInfo(t, client, "k", &UserInfo{Subject: "first", Custom: map[string]interface{}{"tenant": "t1"}})
+	first := userInfoSealed(client, "k")
+	if !first.IsAlive() {
+		t.Fatal("cached UserInfo is not held in a live enclave")
+	}
+
+	cached := client.getFromCache("k")
+	if cached == nil || cached.Subject != "first" || cached.Custom["tenant"] != "t1" {
+		t.Fatalf("getFromCache() = %+v, want the cached UserInfo with its custom claims", cached)
+	}
+
+	// Overwriting an entry destroys the material it replaces.
+	mustCacheUserInfo(t, client, "k", &UserInfo{Subject: "second"})
+	if first.IsAlive() {
+		t.Error("overwritten UserInfo entry's enclave is still alive")
+	}
+	if cached := client.getFromCache("k"); cached == nil || cached.Subject != "second" {
+		t.Errorf("getFromCache() after overwrite = %+v", cached)
 	}
 }
 
@@ -458,7 +502,7 @@ func TestUserInfoClient_CacheUserInfo(t *testing.T) {
 		Name:    "John Doe",
 	}
 
-	client.cacheUserInfo("test-token", userInfo)
+	mustCacheUserInfo(t, client, "test-token", userInfo)
 
 	cached := client.getFromCache("test-token")
 	if cached == nil {
@@ -492,7 +536,7 @@ func TestUserInfoClient_GetFromCache(t *testing.T) {
 
 	t.Run("returns cached value", func(t *testing.T) {
 		userInfo := &UserInfo{Subject: "user123"}
-		client.cacheUserInfo("test-token", userInfo)
+		mustCacheUserInfo(t, client, "test-token", userInfo)
 
 		cached := client.getFromCache("test-token")
 		if cached == nil {
@@ -506,10 +550,8 @@ func TestUserInfoClient_GetFromCache(t *testing.T) {
 
 	t.Run("returns nil for expired entry", func(t *testing.T) {
 		userInfo := &UserInfo{Subject: "user123"}
-		client.cacheUserInfo("expired-token", userInfo)
-
-		// Wait for expiration
-		time.Sleep(100 * time.Millisecond)
+		mustCacheUserInfo(t, client, "expired-token", userInfo)
+		expireUserInfo(client)
 
 		cached := client.getFromCache("expired-token")
 		if cached != nil {
@@ -533,23 +575,44 @@ func TestUserInfoClient_CleanupExpiredLocked(t *testing.T) {
 
 	// Add entries
 	for i := 0; i < 10; i++ {
-		client.cacheUserInfo(fmt.Sprintf("token%d", i), &UserInfo{Subject: "user"})
+		mustCacheUserInfo(t, client, fmt.Sprintf("token%d", i), &UserInfo{Subject: "user"})
 	}
 
-	if len(client.cache) != 10 {
-		t.Fatalf("Cache length = %d, want 10", len(client.cache))
+	if userInfoLen(client) != 10 {
+		t.Fatalf("Cache length = %d, want 10", userInfoLen(client))
 	}
+	sealed := userInfoAllSealed(client)
 
-	// Wait for expiration
-	time.Sleep(100 * time.Millisecond)
+	expireUserInfo(client)
 
 	// Trigger cleanup
-	client.mu.Lock()
-	client.cleanupExpiredLocked()
-	client.mu.Unlock()
+	client.cache.removeExpired()
 
-	if len(client.cache) != 0 {
-		t.Errorf("After cleanup, cache length = %d, want 0", len(client.cache))
+	if userInfoLen(client) != 0 {
+		t.Errorf("After cleanup, cache length = %d, want 0", userInfoLen(client))
+	}
+	for i, e := range sealed {
+		if e.IsAlive() {
+			t.Errorf("expired entry %d's enclave is still alive after cleanup", i)
+		}
+	}
+}
+
+// mustCacheUserInfo caches info under key and fails the test if sealing failed.
+func mustCacheUserInfo(t *testing.T, client *userInfoClient, key string, info *UserInfo) {
+	t.Helper()
+	if err := client.cacheUserInfo(key, info); err != nil {
+		t.Fatalf("cacheUserInfo(%q) failed: %v", key, err)
+	}
+}
+
+// expireUserInfo moves every cached entry's expiry into the past, so expiry is
+// exercised without waiting on a clock.
+func expireUserInfo(client *userInfoClient) {
+	client.cache.mu.Lock()
+	defer client.cache.mu.Unlock()
+	for elem := client.cache.lruList.Front(); elem != nil; elem = elem.Next() {
+		elem.Value.(*lruEntry).expiresAt = client.cache.now().Add(-time.Second)
 	}
 }
 
@@ -639,7 +702,9 @@ func TestUserInfoClient_ConcurrentAccess(t *testing.T) {
 		go func(n int) {
 			defer wg.Done()
 			userInfo := &UserInfo{Subject: "user"}
-			client.cacheUserInfo(fmt.Sprintf("token%d", n), userInfo)
+			if err := client.cacheUserInfo(fmt.Sprintf("token%d", n), userInfo); err != nil {
+				t.Errorf("cacheUserInfo failed: %v", err)
+			}
 		}(i)
 	}
 
@@ -759,3 +824,29 @@ func (m *mockUserInfoProvider) UserInfoURL() string      { return m.userInfoURL 
 func (m *mockUserInfoProvider) JWKSURL() string          { return "" }
 func (m *mockUserInfoProvider) Issuer() string           { return "" }
 func (m *mockUserInfoProvider) IntrospectionURL() string { return "" }
+
+// userInfoSealed returns the enclave the UserInfo cache holds for key, or nil.
+func userInfoSealed(client *userInfoClient, key string) *enclave.MemoryEnclave {
+	client.cache.mu.Lock()
+	defer client.cache.mu.Unlock()
+	if elem, ok := client.cache.items[key]; ok {
+		return elem.Value.(*lruEntry).sealed
+	}
+	return nil
+}
+
+// userInfoAllSealed returns every enclave the UserInfo cache holds.
+func userInfoAllSealed(client *userInfoClient) []*enclave.MemoryEnclave {
+	client.cache.mu.Lock()
+	defer client.cache.mu.Unlock()
+	var all []*enclave.MemoryEnclave
+	for elem := client.cache.lruList.Front(); elem != nil; elem = elem.Next() {
+		all = append(all, elem.Value.(*lruEntry).sealed)
+	}
+	return all
+}
+
+// userInfoLen returns the number of entries the UserInfo cache holds.
+func userInfoLen(client *userInfoClient) int {
+	return client.cache.len()
+}

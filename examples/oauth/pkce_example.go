@@ -109,8 +109,10 @@ func microsoftExample() {
 	//         return
 	//     }
 	//
-	//     // token now contains AccessToken, IDToken, RefreshToken
-	//     // Store these securely and use them for API calls
+	//     defer token.Destroy()
+	//
+	//     // token.AccessToken(), IDToken() and RefreshToken() lend enclaves;
+	//     // read one only inside WithBytes, at the point you use it
 	// }
 
 	fmt.Println("Example code exchange (after receiving callback):")
@@ -121,7 +123,9 @@ func microsoftExample() {
 	fmt.Println("  if err != nil {")
 	fmt.Println("      log.Fatal(err)")
 	fmt.Println("  }")
-	fmt.Println("  // Use token.AccessToken, token.IDToken, token.RefreshToken")
+	fmt.Println("  defer token.Destroy()")
+	fmt.Println("  // token.AccessToken(), token.IDToken(), token.RefreshToken() lend")
+	fmt.Println("  // enclaves: read them only inside WithBytes")
 }
 
 func googleExample() {

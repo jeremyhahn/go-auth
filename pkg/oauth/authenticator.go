@@ -1,12 +1,13 @@
 package oauth
 
 import (
+	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/base64"
+	"errors"
 	"fmt"
 	"net/http"
-	"strings"
+
+	"github.com/jeremyhahn/go-enclave"
 )
 
 // Authenticator is the main OAuth 2.0 authentication handler.
@@ -22,10 +23,20 @@ type Authenticator struct {
 }
 
 // NewAuthenticator creates a new OAuth authenticator with the given configuration.
-func NewAuthenticator(config *Config) (*Authenticator, error) {
+//
+// It takes ownership of config.ClientSecret on every return path: the
+// Authenticator destroys it in Close, and NewAuthenticator destroys it before
+// returning an error. The caller must not use that enclave again.
+func NewAuthenticator(config *Config) (auth *Authenticator, err error) {
 	if config == nil {
 		return nil, fmt.Errorf("%w: config is nil", ErrInvalidConfiguration)
 	}
+
+	defer func() {
+		if err != nil {
+			config.ClientSecret.Destroy()
+		}
+	}()
 
 	// Validate configuration
 	if err := config.Validate(); err != nil {
@@ -36,7 +47,7 @@ func NewAuthenticator(config *Config) (*Authenticator, error) {
 	httpClient := newDefaultHTTPClient(config.Timeout, config.TLSConfig, config.InsecureSkipVerify)
 
 	// Create authenticator
-	auth := &Authenticator{
+	auth = &Authenticator{
 		config: config,
 	}
 
@@ -49,9 +60,10 @@ func NewAuthenticator(config *Config) (*Authenticator, error) {
 
 	// Initialize validator for token validation flow
 	if config.Flow == FlowTokenValidation || config.Validation.Method != "" {
-		validator, err := newTokenValidator(config, httpClient)
-		if err != nil {
-			return nil, err
+		validator, verr := newTokenValidator(config, httpClient)
+		if verr != nil {
+			auth.closeCache()
+			return nil, verr
 		}
 		auth.validator = validator
 	}
@@ -79,7 +91,13 @@ func NewAuthenticator(config *Config) (*Authenticator, error) {
 
 // ValidateToken validates an access token and returns the claims.
 // The token can be a JWT or opaque token depending on the provider.
-func (a *Authenticator) ValidateToken(ctx context.Context, token string) (*TokenClaims, error) {
+//
+// The token is borrowed, not destroyed: a bearer token taken from an inbound
+// request is typically sealed by the caller and destroyed once this returns.
+// It is opened only at the JWT parse boundary and, for introspection, copied
+// into a locked request body. Cached claims are keyed by the token's SHA-256
+// fingerprint and held in an enclave.
+func (a *Authenticator) ValidateToken(ctx context.Context, token *enclave.MemoryEnclave) (*TokenClaims, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -88,12 +106,20 @@ func (a *Authenticator) ValidateToken(ctx context.Context, token string) (*Token
 		return nil, err
 	}
 
-	if strings.TrimSpace(token) == "" {
+	if err := token.WithBytes(func(b []byte) error {
+		if len(bytes.TrimSpace(b)) == 0 {
+			return ErrMissingToken
+		}
+		return nil
+	}); err != nil {
 		return nil, ErrMissingToken
 	}
 
 	// Check cache first
-	cacheKey := a.tokenCacheKey(token)
+	cacheKey, err := tokenFingerprint(token)
+	if err != nil {
+		return nil, err
+	}
 	if cached := a.cache.Get(cacheKey); cached != nil {
 		if cached.ValidWithClockSkew(a.config.Validation.ClockSkew) {
 			return cached, nil
@@ -112,17 +138,21 @@ func (a *Authenticator) ValidateToken(ctx context.Context, token string) (*Token
 		return nil, err
 	}
 
-	// Cache the validated token claims
+	// Cache the validated token claims. Claims that cannot be sealed into
+	// locked memory fail the call rather than being cached in the clear.
 	if a.config.Cache.Enabled {
-		a.cache.Set(cacheKey, claims, a.config.Cache.TTL)
+		if err := a.cache.Set(cacheKey, claims, a.config.Cache.TTL); err != nil {
+			return nil, err
+		}
 	}
 
 	return claims, nil
 }
 
 // AuthenticatePassword performs resource owner password credentials flow.
-// Returns a Token on successful authentication.
-func (a *Authenticator) AuthenticatePassword(ctx context.Context, username, password string) (*Token, error) {
+// Returns a Token on successful authentication. The password is borrowed and
+// copied from its enclave into a locked request body; it is not destroyed.
+func (a *Authenticator) AuthenticatePassword(ctx context.Context, username string, password *enclave.MemoryEnclave) (*Token, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -164,13 +194,13 @@ func (a *Authenticator) AuthenticateClientCredentials(ctx context.Context) (*Tok
 	return a.flows.authenticateClientCredentials(ctx)
 }
 
-// ExchangeAuthorizationCode exchanges an authorization code for tokens.
-// codeVerifier is optional and only required if PKCE was used.
+// ExchangeAuthorizationCode exchanges an authorization code for tokens without
+// PKCE. Use ExchangeAuthorizationCodePKCE for a flow started with
+// BuildAuthURLPKCE.
 //
-// Deprecated with a codeVerifier: use ExchangeAuthorizationCodePKCE, which takes
-// the verifier from protected memory and destroys it after the exchange. Passing
-// an empty codeVerifier is the flow without PKCE and is not deprecated.
-func (a *Authenticator) ExchangeAuthorizationCode(ctx context.Context, code, codeVerifier string) (*Token, error) {
+// The code stays a string: it arrives in the redirect's query string, which
+// net/http has already parsed into strings, and is redeemable exactly once.
+func (a *Authenticator) ExchangeAuthorizationCode(ctx context.Context, code string) (*Token, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -187,11 +217,16 @@ func (a *Authenticator) ExchangeAuthorizationCode(ctx context.Context, code, cod
 		return nil, fmt.Errorf("%w: flow handler not initialized", ErrInvalidConfiguration)
 	}
 
-	return a.flows.exchangeAuthorizationCode(ctx, code, codeVerifier)
+	return a.flows.exchangeAuthorizationCode(ctx, code)
 }
 
 // RefreshToken uses a refresh token to obtain a new access token.
-func (a *Authenticator) RefreshToken(ctx context.Context, refreshToken string) (*Token, error) {
+//
+// The refresh token is borrowed: it is copied from its enclave into a locked
+// request body and is not destroyed, so a caller can pass token.RefreshToken()
+// straight through and destroy the old Token afterwards. The returned Token is
+// the caller's to Destroy.
+func (a *Authenticator) RefreshToken(ctx context.Context, refreshToken *enclave.MemoryEnclave) (*Token, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -207,56 +242,43 @@ func (a *Authenticator) RefreshToken(ctx context.Context, refreshToken string) (
 	return a.flows.refreshToken(ctx, refreshToken)
 }
 
-// BuildAuthURL builds the authorization URL for the authorization code flow.
-// state should be a random string to prevent CSRF attacks.
-// usePKCE enables PKCE (Proof Key for Code Exchange) and returns the code verifier.
+// BuildAuthURL builds the authorization URL for the authorization code flow
+// without PKCE. state should be a random string to prevent CSRF attacks.
 // additionalParams may not set a parameter this package owns; see buildAuthURL's
-// reservedAuthParams.
-//
-// Deprecated with usePKCE true: use BuildAuthURLPKCE. The verifier is generated
-// in protected memory either way, but this signature has to return it as a Go
-// string — an immutable heap copy that cannot be wiped and that outlives the
-// flow it belongs to. BuildAuthURLPKCE keeps it in an enclave instead.
-// usePKCE false involves no secret and is not deprecated.
-func (a *Authenticator) BuildAuthURL(state string, usePKCE bool, additionalParams map[string]string) (authURL string, codeVerifier string, err error) {
+// reservedAuthParams. Use BuildAuthURLPKCE for a flow with PKCE.
+func (a *Authenticator) BuildAuthURL(state string, additionalParams map[string]string) (string, error) {
 	if a.config.Flow != FlowAuthorizationCode {
-		return "", "", fmt.Errorf("%w: authorization code flow not configured", ErrFlowNotSupported)
+		return "", fmt.Errorf("%w: authorization code flow not configured", ErrFlowNotSupported)
 	}
 
 	if a.flows == nil {
-		return "", "", fmt.Errorf("%w: flow handler not initialized", ErrInvalidConfiguration)
+		return "", fmt.Errorf("%w: flow handler not initialized", ErrInvalidConfiguration)
 	}
 
-	var codeChallenge string
-	if usePKCE {
-		codeVerifier, codeChallenge, err = generatePKCE()
-		if err != nil {
-			return "", "", err
-		}
-	}
-
-	authURL, err = a.flows.buildAuthURL(state, codeChallenge, additionalParams)
-	if err != nil {
-		return "", "", err
-	}
-
-	return authURL, codeVerifier, nil
+	return a.flows.buildAuthURL(state, "", additionalParams)
 }
 
 // Authenticate is a convenience method that validates a token.
 // It implements the passwordAuthenticator interface used by the api package.
 // The token should be passed as the password parameter.
+//
+// pkg/api still hands credentials over as strings (go-auth#48 replaces that
+// interface). The token is sealed here, at that boundary, destroyed when this
+// returns, and travels no further as a string.
 func (a *Authenticator) Authenticate(ctx context.Context, username, token string) error {
-	// For token validation, we ignore username and use the token
-	_, err := a.ValidateToken(ctx, token)
-	return err
-}
+	// Residue (pkg/api boundary, go-auth#48): the token arrives as a string.
+	sealed, err := enclave.NewMemoryEnclaveFromString(token)
+	if errors.Is(err, enclave.ErrEmptyEnclave) {
+		return ErrMissingToken
+	}
+	if err != nil {
+		return err
+	}
+	defer sealed.Destroy()
 
-// tokenCacheKey generates a cache key for a token.
-func (a *Authenticator) tokenCacheKey(token string) string {
-	// Use SHA256 hash of token as cache key to avoid storing raw tokens
-	hash := sha256.Sum256([]byte(token))
-	return base64.RawURLEncoding.EncodeToString(hash[:])
+	// For token validation, we ignore username and use the token
+	_, err = a.ValidateToken(ctx, sealed)
+	return err
 }
 
 // ClearCache clears all cached tokens.
@@ -266,15 +288,19 @@ func (a *Authenticator) ClearCache() {
 	}
 }
 
-// Close releases resources held by the authenticator.
+// Close releases resources held by the authenticator and destroys every
+// credential it owns: the client secret, the cached claims and the cached
+// UserInfo responses. Requests made after Close fail with
+// ErrCredentialUnavailable rather than going out without the client secret.
 func (a *Authenticator) Close() error {
 	if a.validator != nil {
 		a.validator.Close()
 	}
 
-	// Close LRU cache if applicable
-	if lru, ok := a.cache.(*lruCache); ok {
-		lru.Close()
+	a.closeCache()
+
+	if a.userInfoClient != nil {
+		a.userInfoClient.Close()
 	}
 
 	// Close OIDC components
@@ -282,15 +308,26 @@ func (a *Authenticator) Close() error {
 		a.oidcValidator.Close()
 	}
 
+	a.config.ClientSecret.Destroy()
+
 	return nil
+}
+
+// closeCache closes the LRU cache, if one is in use, destroying its entries.
+func (a *Authenticator) closeCache() {
+	if lru, ok := a.cache.(*lruCache); ok {
+		lru.Close()
+	}
 }
 
 // OIDC-specific methods
 
 // ValidateIDToken validates an OpenID Connect ID token.
 // nonce is optional but recommended for authorization code flow.
-// accessToken is optional and used for at_hash validation if present.
-func (a *Authenticator) ValidateIDToken(ctx context.Context, idToken string, nonce string, accessToken string) (*IDTokenClaims, error) {
+// accessToken is optional (nil) and used for at_hash validation if present.
+// Both tokens are borrowed, not destroyed; the ID token is opened only at the
+// JWT parse boundary and the access token is hashed inside its enclave.
+func (a *Authenticator) ValidateIDToken(ctx context.Context, idToken *enclave.MemoryEnclave, nonce string, accessToken *enclave.MemoryEnclave) (*IDTokenClaims, error) {
 	if !a.isOIDCEnabled() {
 		return nil, ErrOIDCNotEnabled
 	}
@@ -300,7 +337,8 @@ func (a *Authenticator) ValidateIDToken(ctx context.Context, idToken string, non
 
 // GetUserInfo fetches user information from the OIDC UserInfo endpoint.
 // Requires an access token with the appropriate scopes (typically "openid" and "profile").
-func (a *Authenticator) GetUserInfo(ctx context.Context, accessToken string) (*UserInfo, error) {
+// The access token is borrowed, not destroyed.
+func (a *Authenticator) GetUserInfo(ctx context.Context, accessToken *enclave.MemoryEnclave) (*UserInfo, error) {
 	if !a.isOIDCEnabled() {
 		return nil, ErrOIDCNotEnabled
 	}
@@ -315,6 +353,7 @@ func (a *Authenticator) GetUserInfo(ctx context.Context, accessToken string) (*U
 
 // GetIdentityClaims retrieves complete identity information by merging ID token and UserInfo.
 // This is a convenience method that validates the ID token and optionally fetches UserInfo.
+// The token is borrowed, not destroyed.
 func (a *Authenticator) GetIdentityClaims(ctx context.Context, token *Token, nonce string) (*IdentityClaims, error) {
 	if !a.isOIDCEnabled() {
 		return nil, ErrOIDCNotEnabled
@@ -326,9 +365,9 @@ func (a *Authenticator) GetIdentityClaims(ctx context.Context, token *Token, non
 
 	// Validate ID token
 	var idClaims *IDTokenClaims
-	if token.IDToken != "" {
+	if token.IDToken().IsAlive() {
 		var err error
-		idClaims, err = a.ValidateIDToken(ctx, token.IDToken, nonce, token.AccessToken)
+		idClaims, err = a.ValidateIDToken(ctx, token.IDToken(), nonce, token.AccessToken())
 		if err != nil {
 			return nil, err
 		}
@@ -338,9 +377,9 @@ func (a *Authenticator) GetIdentityClaims(ctx context.Context, token *Token, non
 
 	// Fetch UserInfo if enabled
 	var userInfo *UserInfo
-	if a.config.OIDC.UserInfo.Enabled && token.AccessToken != "" {
+	if a.config.OIDC.UserInfo.Enabled && token.AccessToken().IsAlive() {
 		var err error
-		userInfo, err = a.GetUserInfo(ctx, token.AccessToken)
+		userInfo, err = a.GetUserInfo(ctx, token.AccessToken())
 		if err != nil {
 			// A UserInfo fetch failure must not fail authentication: the ID
 			// token already carries the authenticated identity. Continue

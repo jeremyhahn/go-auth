@@ -71,7 +71,7 @@ func TestConfig_Validate(t *testing.T) {
 			config: &Config{
 				Provider:     Google(),
 				ClientID:     "test-client",
-				ClientSecret: "test-secret",
+				ClientSecret: sealedForTest(t, "test-secret"),
 				Flow:         FlowClientCredentials,
 			},
 			wantErr: false,
@@ -81,7 +81,7 @@ func TestConfig_Validate(t *testing.T) {
 			config: &Config{
 				Provider:     Google(),
 				ClientID:     "test-client",
-				ClientSecret: "test-secret",
+				ClientSecret: sealedForTest(t, "test-secret"),
 				Flow:         FlowAuthorizationCode,
 			},
 			wantErr: true,
@@ -91,7 +91,7 @@ func TestConfig_Validate(t *testing.T) {
 			config: &Config{
 				Provider:     Google(),
 				ClientID:     "test-client",
-				ClientSecret: "test-secret",
+				ClientSecret: sealedForTest(t, "test-secret"),
 				Flow:         FlowAuthorizationCode,
 				RedirectURL:  "http://localhost:8080/callback",
 			},

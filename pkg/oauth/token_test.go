@@ -1,6 +1,8 @@
 package oauth
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,25 +18,21 @@ func TestToken_Valid(t *testing.T) {
 		{
 			name: "valid token",
 			token: &Token{
-				AccessToken: "test-token",
-				Expiry:      time.Now().Add(1 * time.Hour),
+				Expiry: time.Now().Add(1 * time.Hour),
 			},
 			want: true,
 		},
 		{
 			name: "expired token",
 			token: &Token{
-				AccessToken: "test-token",
-				Expiry:      time.Now().Add(-1 * time.Hour),
+				Expiry: time.Now().Add(-1 * time.Hour),
 			},
 			want: false,
 		},
 		{
-			name: "token without expiry",
-			token: &Token{
-				AccessToken: "test-token",
-			},
-			want: true,
+			name:  "token without expiry",
+			token: &Token{},
+			want:  true,
 		},
 	}
 
@@ -44,6 +42,55 @@ func TestToken_Valid(t *testing.T) {
 				t.Errorf("Token.Valid() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestTokenAccessorsLendTheEnclaves(t *testing.T) {
+	access := sealedForTest(t, "access")
+	refresh := sealedForTest(t, "refresh")
+	id := sealedForTest(t, "id")
+	token := &Token{accessToken: access, refreshToken: refresh, idToken: id}
+
+	if token.AccessToken() != access || token.RefreshToken() != refresh || token.IDToken() != id {
+		t.Error("accessors do not lend the token's own enclaves")
+	}
+	if got := openedForTest(t, token.AccessToken()); got != "access" {
+		t.Errorf("AccessToken() holds %q", got)
+	}
+
+	var none *Token
+	if none.AccessToken() != nil || none.RefreshToken() != nil || none.IDToken() != nil {
+		t.Error("a nil *Token lent an enclave")
+	}
+}
+
+func TestTokenDestroyWipesEveryEnclave(t *testing.T) {
+	access := sealedForTest(t, "access")
+	refresh := sealedForTest(t, "refresh")
+	id := sealedForTest(t, "id")
+	token := &Token{accessToken: access, refreshToken: refresh, idToken: id, TokenType: "Bearer"}
+
+	token.Destroy()
+
+	for name, e := range map[string]interface{ IsAlive() bool }{"access": access, "refresh": refresh, "id": id} {
+		if e.IsAlive() {
+			t.Errorf("%s token enclave is still alive after Destroy", name)
+		}
+	}
+
+	// Idempotent, safe on a token with no refresh or ID token, and on nil.
+	token.Destroy()
+	(&Token{accessToken: sealedForTest(t, "only")}).Destroy()
+	var none *Token
+	none.Destroy()
+}
+
+func TestTokenFormattingCarriesNoCredential(t *testing.T) {
+	token := &Token{accessToken: sealedForTest(t, "access-plaintext"), TokenType: "Bearer"}
+	for _, verb := range []string{"%v", "%+v", "%#v", "%s"} {
+		if out := fmt.Sprintf(verb, token); strings.Contains(out, "access-plaintext") {
+			t.Errorf("%s of a Token printed the credential: %s", verb, out)
+		}
 	}
 }
 

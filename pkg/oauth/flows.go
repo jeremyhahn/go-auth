@@ -12,86 +12,68 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/oauth2"
-
-	"github.com/jeremyhahn/go-auth/pkg/secret"
+	"github.com/jeremyhahn/go-enclave"
 )
 
 // flowHandler manages OAuth 2.0 flows for obtaining tokens.
 type flowHandler struct {
 	config     *Config
 	httpClient HTTPClient
-	oauthCfg   *oauth2.Config
 }
 
 // newFlowHandler creates a new OAuth flow handler.
 func newFlowHandler(config *Config, httpClient HTTPClient) *flowHandler {
-	// Build golang.org/x/oauth2 config for supported flows
-	oauthCfg := &oauth2.Config{
-		ClientID:     config.ClientID,
-		ClientSecret: config.ClientSecret,
-		Endpoint: oauth2.Endpoint{
-			AuthURL:  config.Provider.AuthURL(),
-			TokenURL: config.Provider.TokenURL(),
-		},
-		Scopes:      config.Scopes,
-		RedirectURL: config.RedirectURL,
-	}
-
 	return &flowHandler{
 		config:     config,
 		httpClient: httpClient,
-		oauthCfg:   oauthCfg,
 	}
 }
 
-// exchangeAuthorizationCode exchanges an authorization code for tokens.
-func (f *flowHandler) exchangeAuthorizationCode(ctx context.Context, code, codeVerifier string) (*Token, error) {
+// clientSecretFields returns the client_secret form field, or none for a
+// public client. A secret that was configured and has since been destroyed —
+// by Close — is still returned, so the request fails closed with
+// ErrCredentialUnavailable instead of silently going out unauthenticated.
+func (f *flowHandler) clientSecretFields() []sealedFormField {
+	if f.config.ClientSecret == nil {
+		return nil
+	}
+	return []sealedFormField{{name: "client_secret", value: f.config.ClientSecret}}
+}
+
+// exchangeAuthorizationCode exchanges an authorization code for tokens without
+// PKCE.
+func (f *flowHandler) exchangeAuthorizationCode(ctx context.Context, code string) (*Token, error) {
 	if strings.TrimSpace(code) == "" {
 		return nil, fmt.Errorf("%w: authorization code is required", ErrTokenExchangeFailed)
 	}
 
-	// Build token request
 	data := url.Values{}
 	data.Set("grant_type", "authorization_code")
 	data.Set("code", code)
 	data.Set("client_id", f.config.ClientID)
 	data.Set("redirect_uri", f.config.RedirectURL)
 
-	if f.config.ClientSecret != "" {
-		data.Set("client_secret", f.config.ClientSecret)
-	}
-
-	// Add PKCE code verifier if provided
-	if codeVerifier != "" {
-		data.Set("code_verifier", codeVerifier)
-	}
-
-	return f.exchangeToken(ctx, data)
+	return f.postTokenRequest(ctx, data, f.clientSecretFields())
 }
 
 // exchangeAuthorizationCodePKCE exchanges an authorization code for tokens with
 // a PKCE verifier held in protected memory.
 //
-// The request body is assembled in a locked scratch buffer: the public
-// parameters are encoded first, then the verifier is copied out of its enclave
-// directly into that buffer. No step of it produces a heap-allocated string
-// holding the verifier, which the url.Values path would do twice — once in the
-// map and once in Encode's output.
-//
-// The buffer is handed to net/http as the request body and released as soon as
-// the exchange returns. What the transport then does with the bytes is the
-// boundary of this package's control: it copies them into its own write buffer,
-// which is ordinary heap. That copy is unavoidable without reimplementing the
-// HTTP client, is short-lived, and is bounded by one request.
-func (f *flowHandler) exchangeAuthorizationCodePKCE(ctx context.Context, code string, verifier *secret.Secret) (*Token, error) {
+// The verifier is checked against RFC 7636 inside its enclave and then
+// form-escaped from the enclave straight into the locked request body — see
+// withFormBody. Every character the check admits is unreserved, so the escape
+// is a copy.
+func (f *flowHandler) exchangeAuthorizationCodePKCE(ctx context.Context, code string, verifier *enclave.MemoryEnclave) (*Token, error) {
 	if strings.TrimSpace(code) == "" {
 		return nil, fmt.Errorf("%w: authorization code is required", ErrTokenExchangeFailed)
 	}
 
-	size := verifier.Size()
-	if size == 0 {
+	if verifier.Size() == 0 {
 		return nil, fmt.Errorf("%w: code verifier is missing or already destroyed", ErrTokenExchangeFailed)
+	}
+
+	if err := verifier.WithBytes(validatePKCEVerifier); err != nil {
+		return nil, errors.Join(ErrTokenExchangeFailed, err)
 	}
 
 	data := url.Values{}
@@ -100,136 +82,108 @@ func (f *flowHandler) exchangeAuthorizationCodePKCE(ctx context.Context, code st
 	data.Set("client_id", f.config.ClientID)
 	data.Set("redirect_uri", f.config.RedirectURL)
 
-	if f.config.ClientSecret != "" {
-		data.Set("client_secret", f.config.ClientSecret)
-	}
-
-	const field = "&code_verifier="
-	params := data.Encode()
-
-	var token *Token
-	err := secret.Scratch(len(params)+len(field)+size, func(body []byte) error {
-		n := copy(body, params)
-		n += copy(body[n:], field)
-
-		return verifier.Open(func(v []byte) error {
-			// Every character validatePKCEVerifier admits survives form
-			// encoding unchanged, so the verifier is copied, not escaped.
-			if err := validatePKCEVerifier(v); err != nil {
-				return fmt.Errorf("%w: %v", ErrTokenExchangeFailed, err)
-			}
-			if copy(body[n:], v) != size {
-				return fmt.Errorf("%w: code verifier changed size during the exchange", ErrTokenExchangeFailed)
-			}
-
-			var err error
-			token, err = f.postTokenRequest(ctx, body)
-			return err
-		})
-	})
-	if err != nil {
-		if errors.Is(err, ErrTokenExchangeFailed) {
-			return nil, err
-		}
-		// A locked buffer that cannot be allocated or an enclave that cannot be
-		// opened both fail the exchange; neither carries a typed error of ours.
-		return nil, fmt.Errorf("%w: %v", ErrTokenExchangeFailed, err)
-	}
-
-	return token, nil
+	sealed := append(f.clientSecretFields(), sealedFormField{name: "code_verifier", value: verifier})
+	return f.postTokenRequest(ctx, data, sealed)
 }
 
-// authenticateClientCredentials performs the client credentials flow.
+// authenticateClientCredentials performs the client credentials flow. The
+// client secret is required, so it is sent even when nil and fails closed.
 func (f *flowHandler) authenticateClientCredentials(ctx context.Context) (*Token, error) {
 	data := url.Values{}
 	data.Set("grant_type", "client_credentials")
 	data.Set("client_id", f.config.ClientID)
-	data.Set("client_secret", f.config.ClientSecret)
 
 	if len(f.config.Scopes) > 0 {
 		data.Set("scope", strings.Join(f.config.Scopes, " "))
 	}
 
-	return f.exchangeToken(ctx, data)
+	return f.postTokenRequest(ctx, data, []sealedFormField{
+		{name: "client_secret", value: f.config.ClientSecret},
+	})
 }
 
 // authenticatePassword performs the resource owner password credentials flow.
-func (f *flowHandler) authenticatePassword(ctx context.Context, username, password string) (*Token, error) {
-	if strings.TrimSpace(username) == "" || password == "" {
+// The password is borrowed, not destroyed.
+func (f *flowHandler) authenticatePassword(ctx context.Context, username string, password *enclave.MemoryEnclave) (*Token, error) {
+	if strings.TrimSpace(username) == "" || !password.IsAlive() {
 		return nil, fmt.Errorf("%w: username and password are required", ErrTokenExchangeFailed)
 	}
 
 	data := url.Values{}
 	data.Set("grant_type", "password")
 	data.Set("username", username)
-	data.Set("password", password)
 	data.Set("client_id", f.config.ClientID)
-	data.Set("client_secret", f.config.ClientSecret)
 
 	if len(f.config.Scopes) > 0 {
 		data.Set("scope", strings.Join(f.config.Scopes, " "))
 	}
 
-	return f.exchangeToken(ctx, data)
+	return f.postTokenRequest(ctx, data, []sealedFormField{
+		{name: "password", value: password},
+		{name: "client_secret", value: f.config.ClientSecret},
+	})
 }
 
-// refreshToken uses a refresh token to obtain a new access token.
-func (f *flowHandler) refreshToken(ctx context.Context, refreshToken string) (*Token, error) {
-	if strings.TrimSpace(refreshToken) == "" {
+// refreshToken uses a refresh token to obtain a new access token. The refresh
+// token is borrowed, not destroyed.
+func (f *flowHandler) refreshToken(ctx context.Context, refreshToken *enclave.MemoryEnclave) (*Token, error) {
+	if !refreshToken.IsAlive() {
 		return nil, fmt.Errorf("%w: refresh token is required", ErrTokenExchangeFailed)
 	}
 
 	data := url.Values{}
 	data.Set("grant_type", "refresh_token")
-	data.Set("refresh_token", refreshToken)
 	data.Set("client_id", f.config.ClientID)
-
-	if f.config.ClientSecret != "" {
-		data.Set("client_secret", f.config.ClientSecret)
-	}
 
 	if len(f.config.Scopes) > 0 {
 		data.Set("scope", strings.Join(f.config.Scopes, " "))
 	}
 
-	return f.exchangeToken(ctx, data)
+	sealed := append([]sealedFormField{{name: "refresh_token", value: refreshToken}}, f.clientSecretFields()...)
+	return f.postTokenRequest(ctx, data, sealed)
 }
 
-// exchangeToken exchanges credentials for an OAuth token.
-func (f *flowHandler) exchangeToken(ctx context.Context, data url.Values) (*Token, error) {
-	return f.postTokenRequest(ctx, []byte(data.Encode()))
-}
-
-// postTokenRequest posts an encoded form body to the token endpoint and parses
-// the token response.
-//
-// body is borrowed for the duration of the call and never retained: callers pass
-// a locked buffer that is unmapped as soon as they return, so keeping a
-// reference here would be a use-after-free rather than a stale read. The
-// borrowing is enforced rather than promised — see requestBody.
-func (f *flowHandler) postTokenRequest(ctx context.Context, body []byte) (*Token, error) {
+// postTokenRequest assembles the public and sealed parameters into a locked
+// form body, posts it to the token endpoint and parses the token response.
+func (f *flowHandler) postTokenRequest(ctx context.Context, public url.Values, sealed []sealedFormField) (*Token, error) {
 	tokenURL := f.config.Provider.TokenURL()
 	if tokenURL == "" {
 		return nil, fmt.Errorf("%w: token url not configured", ErrTokenExchangeFailed)
 	}
 
-	reader := &requestBody{buf: body}
-	defer reader.release()
+	var token *Token
+	err := withFormBody(public, sealed, func(body []byte) error {
+		var err error
+		token, err = f.sendTokenRequest(ctx, tokenURL, body)
+		return err
+	})
+	if err != nil {
+		if errors.Is(err, ErrTokenExchangeFailed) {
+			return nil, err
+		}
+		// A credential that is missing, an enclave that cannot be opened, or
+		// locked pages that cannot be had all fail the exchange — and stay
+		// matchable, so ErrLockedMemoryUnavailable still reaches the caller.
+		return nil, errors.Join(ErrTokenExchangeFailed, err)
+	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", tokenURL, reader)
+	return token, nil
+}
+
+// sendTokenRequest posts an encoded form body to the token endpoint and parses
+// the token response.
+//
+// body is borrowed for the duration of the call and never retained: it is the
+// locked scratch buffer withFormBody unmaps as soon as this returns, so keeping
+// a reference here would be a use-after-free rather than a stale read. The
+// borrowing is enforced rather than promised — see requestBody.
+func (f *flowHandler) sendTokenRequest(ctx context.Context, tokenURL string, body []byte) (*Token, error) {
+	req, reader, err := newFormRequest(ctx, tokenURL, body)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrTokenExchangeFailed, err)
 	}
+	defer reader.release()
 
-	// NewRequestWithContext only infers these for the reader types it knows.
-	// Without them the request would be chunked, which token endpoints are not
-	// obliged to accept, and a 307/308 redirect could not be replayed.
-	req.ContentLength = int64(len(body))
-	req.GetBody = func() (io.ReadCloser, error) {
-		return io.NopCloser(reader.rewind()), nil
-	}
-
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := f.httpClient.Do(req)
@@ -238,7 +192,9 @@ func (f *flowHandler) postTokenRequest(ctx context.Context, body []byte) (*Token
 	}
 	defer resp.Body.Close()
 
+	// Residue R5: the transport's response copies are not ours; this one is wiped.
 	respBody, err := io.ReadAll(resp.Body)
+	defer enclave.Wipe(respBody)
 	if err != nil {
 		return nil, fmt.Errorf("%w: failed to read response: %v", ErrTokenExchangeFailed, err)
 	}
@@ -247,28 +203,57 @@ func (f *flowHandler) postTokenRequest(ctx context.Context, body []byte) (*Token
 		return nil, fmt.Errorf("%w: status %d: %s", ErrTokenExchangeFailed, resp.StatusCode, string(respBody))
 	}
 
+	return parseTokenResponse(respBody)
+}
+
+// parseTokenResponse decodes a token endpoint response, sealing the access,
+// refresh and ID tokens straight into enclaves.
+//
+// The credentials are decoded as raw JSON and unquoted directly into locked
+// pages, so none of them is ever a Go string; the raw copies encoding/json
+// makes are wiped before this returns. On any error every enclave already
+// created is destroyed.
+func parseTokenResponse(respBody []byte) (*Token, error) {
 	var tokenResp struct {
-		AccessToken  string `json:"access_token"`
-		TokenType    string `json:"token_type"`
-		RefreshToken string `json:"refresh_token"`
-		ExpiresIn    int64  `json:"expires_in"`
-		Scope        string `json:"scope"`
-		IDToken      string `json:"id_token"`
+		AccessToken  json.RawMessage `json:"access_token"`
+		TokenType    string          `json:"token_type"`
+		RefreshToken json.RawMessage `json:"refresh_token"`
+		ExpiresIn    int64           `json:"expires_in"`
+		Scope        string          `json:"scope"`
+		IDToken      json.RawMessage `json:"id_token"`
 	}
+	defer func() {
+		enclave.Wipe(tokenResp.AccessToken)
+		enclave.Wipe(tokenResp.RefreshToken)
+		enclave.Wipe(tokenResp.IDToken)
+	}()
 
 	if err := json.Unmarshal(respBody, &tokenResp); err != nil {
 		return nil, fmt.Errorf("%w: failed to parse response: %v", ErrTokenExchangeFailed, err)
 	}
 
-	if tokenResp.AccessToken == "" {
-		return nil, fmt.Errorf("%w: no access token in response", ErrTokenExchangeFailed)
+	token := &Token{TokenType: tokenResp.TokenType}
+
+	fields := []struct {
+		raw  json.RawMessage
+		dest **enclave.MemoryEnclave
+	}{
+		{tokenResp.AccessToken, &token.accessToken},
+		{tokenResp.RefreshToken, &token.refreshToken},
+		{tokenResp.IDToken, &token.idToken},
+	}
+	for _, field := range fields {
+		sealed, err := sealJSONString(field.raw)
+		if err != nil {
+			token.Destroy()
+			return nil, errors.Join(ErrTokenExchangeFailed, err)
+		}
+		*field.dest = sealed
 	}
 
-	token := &Token{
-		AccessToken:  tokenResp.AccessToken,
-		TokenType:    tokenResp.TokenType,
-		RefreshToken: tokenResp.RefreshToken,
-		IDToken:      tokenResp.IDToken,
+	if token.accessToken == nil {
+		token.Destroy()
+		return nil, fmt.Errorf("%w: no access token in response", ErrTokenExchangeFailed)
 	}
 
 	if tokenResp.TokenType == "" {
@@ -284,6 +269,32 @@ func (f *flowHandler) postTokenRequest(ctx context.Context, body []byte) (*Token
 	}
 
 	return token, nil
+}
+
+// newFormRequest builds a POST carrying body as an
+// application/x-www-form-urlencoded request body that the transport can read
+// only until the returned requestBody is released. The caller must release it
+// before the bytes behind body go away.
+func newFormRequest(ctx context.Context, target string, body []byte) (*http.Request, *requestBody, error) {
+	reader := &requestBody{buf: body}
+
+	// Residue R5: the transport copies the locked body into its own write buffers.
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, reader)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// NewRequestWithContext only infers these for the reader types it knows.
+	// Without them the request would be chunked, which token endpoints are not
+	// obliged to accept, and a 307/308 redirect could not be replayed.
+	req.ContentLength = int64(len(body))
+	req.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(reader.rewind()), nil
+	}
+
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	return req, reader, nil
 }
 
 // buildAuthURL builds the authorization URL for the authorization code flow.
@@ -337,14 +348,14 @@ func (f *flowHandler) buildAuthURL(state string, codeChallenge string, additiona
 	return authURL + "?" + params.Encode(), nil
 }
 
-// requestBody is the token request's form body, readable only while the caller
-// that owns the bytes is still inside the call it lent them for.
+// requestBody is a form body assembled in locked memory, readable only while
+// the caller that owns the bytes is still inside the call it lent them for.
 //
 // net/http can return a response before it has finished writing the request
 // body — a server that rejects the request early leaves the write in flight —
 // so the transport may read from the body after Do has returned. For an
-// ordinary heap body that is harmless. For the locked buffer the PKCE exchange
-// assembles, which is unmapped as soon as the exchange returns, a late read
+// ordinary heap body that is harmless. For the locked buffer withFormBody
+// assembles, which is unmapped as soon as the request returns, a late read
 // would fault the process rather than read stale bytes. release closes that
 // window: a read after it returns an error instead of touching the memory.
 type requestBody struct {
@@ -358,7 +369,7 @@ func (b *requestBody) Read(p []byte) (int, error) {
 	defer b.mu.Unlock()
 
 	if b.buf == nil {
-		return 0, errors.New("oauth: request body was released before it was fully written")
+		return 0, ErrRequestBodyReleased
 	}
 	if b.pos >= len(b.buf) {
 		return 0, io.EOF

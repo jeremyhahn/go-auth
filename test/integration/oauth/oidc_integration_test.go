@@ -32,7 +32,7 @@ func TestOIDC_Discovery(t *testing.T) {
 		Provider:     provider,
 		Flow:         oauth.FlowClientCredentials,
 		ClientID:     clientID,
-		ClientSecret: clientSecret,
+		ClientSecret: sealForTest(t, clientSecret),
 		Scopes:       []string{"openid", "profile", "email"},
 		Timeout:      10 * time.Second,
 		OIDC: &oauth.OIDCConfig{
@@ -172,7 +172,7 @@ func TestOIDC_IDTokenValidation(t *testing.T) {
 		Provider:     provider,
 		Flow:         oauth.FlowClientCredentials,
 		ClientID:     clientID,
-		ClientSecret: clientSecret,
+		ClientSecret: sealForTest(t, clientSecret),
 		Scopes:       []string{"openid", "profile", "email"},
 		Timeout:      10 * time.Second,
 		OIDC: &oauth.OIDCConfig{
@@ -200,19 +200,20 @@ func TestOIDC_IDTokenValidation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to get token: %v", err)
 	}
+	defer token.Destroy()
 
 	// Note: ORY Hydra in client_credentials flow may not return ID token
 	// since there's no end-user involved. This is expected behavior.
-	if token.IDToken == "" {
+	if !token.IDToken().IsAlive() {
 		t.Skip("Skipping ID token validation - client credentials flow doesn't return ID token (expected behavior)")
 		return
 	}
 
 	// If we do get an ID token, validate it
-	t.Logf("Received ID token: %d bytes", len(token.IDToken))
+	t.Logf("Received ID token: %d bytes", token.IDToken().Size())
 
 	// Validate the ID token
-	idClaims, err := authenticator.ValidateIDToken(ctx, token.IDToken, "", token.AccessToken)
+	idClaims, err := authenticator.ValidateIDToken(ctx, token.IDToken(), "", token.AccessToken())
 	if err != nil {
 		t.Fatalf("Failed to validate ID token: %v", err)
 	}
@@ -289,7 +290,7 @@ func TestOIDC_IDTokenParsing(t *testing.T) {
 		Provider:     provider,
 		Flow:         oauth.FlowClientCredentials,
 		ClientID:     clientID,
-		ClientSecret: clientSecret,
+		ClientSecret: sealForTest(t, clientSecret),
 		Scopes:       []string{"openid", "profile"},
 		Timeout:      10 * time.Second,
 		OIDC: &oauth.OIDCConfig{
@@ -314,14 +315,15 @@ func TestOIDC_IDTokenParsing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to get token: %v", err)
 	}
+	defer token.Destroy()
 
-	if token.IDToken == "" {
+	if !token.IDToken().IsAlive() {
 		t.Skip("Skipping - no ID token returned in client credentials flow (expected)")
 		return
 	}
 
 	// Test 1: Verify JWT structure
-	parts := strings.Split(token.IDToken, ".")
+	parts := strings.Split(openForTest(t, token.IDToken()), ".")
 	if len(parts) != 3 {
 		t.Fatalf("Invalid JWT structure: expected 3 parts, got %d", len(parts))
 	}
@@ -395,7 +397,7 @@ func TestOIDC_UserInfo(t *testing.T) {
 		Provider:     provider,
 		Flow:         oauth.FlowClientCredentials,
 		ClientID:     clientID,
-		ClientSecret: clientSecret,
+		ClientSecret: sealForTest(t, clientSecret),
 		Scopes:       []string{"openid", "profile", "email"},
 		Timeout:      10 * time.Second,
 		OIDC: &oauth.OIDCConfig{
@@ -423,9 +425,10 @@ func TestOIDC_UserInfo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to get token: %v", err)
 	}
+	defer token.Destroy()
 
 	// Test 1: Fetch UserInfo
-	userInfo, err := authenticator.GetUserInfo(ctx, token.AccessToken)
+	userInfo, err := authenticator.GetUserInfo(ctx, token.AccessToken())
 	if err != nil {
 		// UserInfo might not be available for client credentials flow
 		t.Logf("UserInfo fetch failed (may be expected for client credentials): %v", err)
@@ -452,7 +455,7 @@ func TestOIDC_UserInfo(t *testing.T) {
 	}
 
 	// Test 4: Test UserInfo caching
-	userInfo2, err := authenticator.GetUserInfo(ctx, token.AccessToken)
+	userInfo2, err := authenticator.GetUserInfo(ctx, token.AccessToken())
 	if err != nil {
 		t.Errorf("Failed to get cached UserInfo: %v", err)
 	}
@@ -462,7 +465,7 @@ func TestOIDC_UserInfo(t *testing.T) {
 
 	// Test 5: Test cache clearing
 	authenticator.ClearUserInfoCache()
-	userInfo3, err := authenticator.GetUserInfo(ctx, token.AccessToken)
+	userInfo3, err := authenticator.GetUserInfo(ctx, token.AccessToken())
 	if err != nil {
 		t.Errorf("Failed to get UserInfo after cache clear: %v", err)
 	}
@@ -491,7 +494,7 @@ func TestOIDC_UserInfoWithInvalidToken(t *testing.T) {
 		Provider:     provider,
 		Flow:         oauth.FlowClientCredentials,
 		ClientID:     clientID,
-		ClientSecret: clientSecret,
+		ClientSecret: sealForTest(t, clientSecret),
 		Scopes:       []string{"openid"},
 		Timeout:      10 * time.Second,
 		OIDC: &oauth.OIDCConfig{
@@ -515,7 +518,7 @@ func TestOIDC_UserInfoWithInvalidToken(t *testing.T) {
 	ctx := context.Background()
 
 	// Test 1: Invalid token should fail
-	_, err = authenticator.GetUserInfo(ctx, "invalid-token-12345")
+	_, err = authenticator.GetUserInfo(ctx, sealForTest(t, "invalid-token-12345"))
 	if err == nil {
 		t.Error("Expected UserInfo to fail with invalid token")
 	} else {
@@ -523,7 +526,7 @@ func TestOIDC_UserInfoWithInvalidToken(t *testing.T) {
 	}
 
 	// Test 2: Empty token should fail
-	_, err = authenticator.GetUserInfo(ctx, "")
+	_, err = authenticator.GetUserInfo(ctx, nil)
 	if err == nil {
 		t.Error("Expected UserInfo to fail with empty token")
 	} else {
@@ -549,7 +552,7 @@ func TestOIDC_ClaimsValidation(t *testing.T) {
 		Provider:     provider,
 		Flow:         oauth.FlowClientCredentials,
 		ClientID:     clientID,
-		ClientSecret: clientSecret,
+		ClientSecret: sealForTest(t, clientSecret),
 		Scopes:       []string{"openid", "profile", "email"},
 		Timeout:      10 * time.Second,
 		OIDC: &oauth.OIDCConfig{
@@ -579,13 +582,14 @@ func TestOIDC_ClaimsValidation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to get token: %v", err)
 	}
+	defer token.Destroy()
 
-	if token.IDToken == "" {
+	if !token.IDToken().IsAlive() {
 		t.Skip("Skipping claims validation - no ID token in client credentials flow")
 		return
 	}
 
-	idClaims, err := authenticator.ValidateIDToken(ctx, token.IDToken, "", token.AccessToken)
+	idClaims, err := authenticator.ValidateIDToken(ctx, token.IDToken(), "", token.AccessToken())
 	if err != nil {
 		t.Fatalf("Failed to validate ID token: %v", err)
 	}
@@ -706,7 +710,7 @@ func TestOIDC_NonceValidation(t *testing.T) {
 			Provider:     provider,
 			Flow:         oauth.FlowAuthorizationCode,
 			ClientID:     clientID,
-			ClientSecret: clientSecret,
+			ClientSecret: sealForTest(t, clientSecret),
 			RedirectURL:  "http://localhost:8080/callback",
 			Scopes:       []string{"openid", "profile"},
 			Timeout:      10 * time.Second,
@@ -761,7 +765,7 @@ func TestOIDC_NonceValidation(t *testing.T) {
 			Provider:     provider,
 			Flow:         oauth.FlowClientCredentials,
 			ClientID:     clientID,
-			ClientSecret: clientSecret,
+			ClientSecret: sealForTest(t, clientSecret),
 			Scopes:       []string{"openid"},
 			Timeout:      10 * time.Second,
 			OIDC: &oauth.OIDCConfig{
@@ -841,7 +845,7 @@ func TestOIDC_MultipleScopes(t *testing.T) {
 				Provider:     provider,
 				Flow:         oauth.FlowClientCredentials,
 				ClientID:     clientID,
-				ClientSecret: clientSecret,
+				ClientSecret: sealForTest(t, clientSecret),
 				Scopes:       tc.scopes,
 				Timeout:      10 * time.Second,
 				OIDC: &oauth.OIDCConfig{
@@ -863,8 +867,9 @@ func TestOIDC_MultipleScopes(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Failed to get token with scopes %v: %v", tc.scopes, err)
 			}
+			defer token.Destroy()
 
-			if token.AccessToken == "" {
+			if !token.AccessToken().IsAlive() {
 				t.Error("Access token is empty")
 			}
 
@@ -873,7 +878,7 @@ func TestOIDC_MultipleScopes(t *testing.T) {
 
 			// Check if refresh token is present for offline access
 			if contains(tc.scopes, "offline") {
-				if token.RefreshToken != "" {
+				if token.RefreshToken().IsAlive() {
 					t.Logf("Refresh token obtained (scope offline requested)")
 				} else {
 					t.Log("Note: No refresh token (may not be available for client credentials flow)")
@@ -902,7 +907,7 @@ func TestOIDC_IntegrationWithExistingFlow(t *testing.T) {
 		Provider:     tokenProvider,
 		Flow:         oauth.FlowClientCredentials,
 		ClientID:     clientID,
-		ClientSecret: clientSecret,
+		ClientSecret: sealForTest(t, clientSecret),
 		Scopes:       []string{"openid", "profile"},
 		Timeout:      10 * time.Second,
 		OIDC: &oauth.OIDCConfig{
@@ -921,6 +926,7 @@ func TestOIDC_IntegrationWithExistingFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to get token: %v", err)
 	}
+	defer token.Destroy()
 
 	// Step 2: Validate the token with OIDC-aware validator
 	validationProvider, err := oauth.CustomProvider(oauth.ProviderConfig{
@@ -938,7 +944,7 @@ func TestOIDC_IntegrationWithExistingFlow(t *testing.T) {
 		Provider:     validationProvider,
 		Flow:         oauth.FlowTokenValidation,
 		ClientID:     clientID,
-		ClientSecret: clientSecret,
+		ClientSecret: sealForTest(t, clientSecret),
 		Timeout:      10 * time.Second,
 		OIDC: &oauth.OIDCConfig{
 			Enabled: true,
@@ -959,7 +965,7 @@ func TestOIDC_IntegrationWithExistingFlow(t *testing.T) {
 	defer validator.Close()
 
 	// Validate access token
-	claims, err := validator.ValidateToken(ctx, token.AccessToken)
+	claims, err := validator.ValidateToken(ctx, token.AccessToken())
 	if err != nil {
 		t.Errorf("Failed to validate access token: %v", err)
 	} else {
@@ -969,8 +975,8 @@ func TestOIDC_IntegrationWithExistingFlow(t *testing.T) {
 	}
 
 	// If ID token is present, validate it too
-	if token.IDToken != "" {
-		idClaims, err := validator.ValidateIDToken(ctx, token.IDToken, "", token.AccessToken)
+	if token.IDToken().IsAlive() {
+		idClaims, err := validator.ValidateIDToken(ctx, token.IDToken(), "", token.AccessToken())
 		if err != nil {
 			t.Errorf("Failed to validate ID token: %v", err)
 		} else {

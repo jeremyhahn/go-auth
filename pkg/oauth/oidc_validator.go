@@ -5,12 +5,14 @@ import (
 	"crypto/sha256"
 	"crypto/sha512"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"hash"
 	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/jeremyhahn/go-enclave"
 )
 
 // oidcValidator handles ID token validation with OIDC-specific checks.
@@ -37,11 +39,28 @@ func newOIDCValidator(config *Config, baseValidator *tokenValidator, discoveryCl
 }
 
 // ValidateIDToken validates an OpenID Connect ID token with full OIDC compliance.
-func (v *oidcValidator) ValidateIDToken(ctx context.Context, idToken string, nonce string, accessToken string) (*IDTokenClaims, error) {
+// Both tokens are borrowed; accessToken may be nil.
+func (v *oidcValidator) ValidateIDToken(ctx context.Context, idToken *enclave.MemoryEnclave, nonce string, accessToken *enclave.MemoryEnclave) (*IDTokenClaims, error) {
 	if !v.isOIDCEnabled() {
 		return nil, ErrOIDCNotEnabled
 	}
 
+	var idClaims *IDTokenClaims
+	err := idToken.WithBytes(func(b []byte) error {
+		// Residue (JWT parse boundary): golang-jwt parses only from a string.
+		var err error
+		idClaims, err = v.validateIDTokenString(ctx, string(b), nonce, accessToken)
+		return err
+	})
+	if errors.Is(err, enclave.ErrEnclaveDestroyed) {
+		return nil, ErrOIDCMissingIDToken
+	}
+	return idClaims, err
+}
+
+// validateIDTokenString validates the residue copy ValidateIDToken makes of an
+// ID token for golang-jwt.
+func (v *oidcValidator) validateIDTokenString(ctx context.Context, idToken string, nonce string, accessToken *enclave.MemoryEnclave) (*IDTokenClaims, error) {
 	if strings.TrimSpace(idToken) == "" {
 		return nil, ErrOIDCMissingIDToken
 	}
@@ -69,13 +88,13 @@ func (v *oidcValidator) ValidateIDToken(ctx context.Context, idToken string, non
 	}
 
 	// Validate JWT signature and standard claims
-	_, err = v.baseValidator.validateJWT(ctx, idToken)
+	_, err = v.baseValidator.validateJWTString(ctx, idToken)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrOIDCInvalidIDToken, err)
 	}
 
 	// Parse OIDC-specific claims
-	jwtToken, err := jwt.Parse(idToken, v.baseValidator.jwks.Keyfunc)
+	jwtToken, err := parseVerifiedIDToken(idToken, v.baseValidator.jwks.Keyfunc)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrOIDCInvalidIDToken, err)
 	}
@@ -86,7 +105,7 @@ func (v *oidcValidator) ValidateIDToken(ctx context.Context, idToken string, non
 	}
 
 	// Perform OIDC-specific validations
-	if err := v.validateOIDCClaims(idClaims, nonce, accessToken, discovery); err != nil {
+	if err := v.validateOIDCClaims(idClaims, nonce, accessToken, jwtToken.Method.Alg(), discovery); err != nil {
 		return nil, err
 	}
 
@@ -98,8 +117,15 @@ func (v *oidcValidator) ValidateIDToken(ctx context.Context, idToken string, non
 	return idClaims, nil
 }
 
-// validateOIDCClaims performs OIDC-specific claim validations.
-func (v *oidcValidator) validateOIDCClaims(claims *IDTokenClaims, nonce string, accessToken string, discovery *OIDCDiscoveryConfig) error {
+// parseVerifiedIDToken parses and verifies an ID token with keyfunc, admitting
+// only the asymmetric algorithms in asymmetricJWTAlgorithms.
+func parseVerifiedIDToken(idToken string, keyfunc jwt.Keyfunc) (*jwt.Token, error) {
+	return jwt.Parse(idToken, keyfunc, jwt.WithValidMethods(asymmetricJWTAlgorithms))
+}
+
+// validateOIDCClaims performs OIDC-specific claim validations. alg is the
+// verified ID token's JWS algorithm, which decides the at_hash hash.
+func (v *oidcValidator) validateOIDCClaims(claims *IDTokenClaims, nonce string, accessToken *enclave.MemoryEnclave, alg string, discovery *OIDCDiscoveryConfig) error {
 	// Validate issuer matches discovery
 	if discovery != nil && claims.Issuer != discovery.Issuer {
 		return fmt.Errorf("%w: issuer mismatch", ErrOIDCInvalidIDToken)
@@ -138,9 +164,10 @@ func (v *oidcValidator) validateOIDCClaims(claims *IDTokenClaims, nonce string, 
 		}
 	}
 
-	// Validate at_hash if present and configured
-	if v.config.OIDC.ValidateAtHash && claims.AtHash != "" && accessToken != "" {
-		if err := v.validateAtHash(claims.AtHash, accessToken, getHashAlg(claims)); err != nil {
+	// Validate at_hash if present and configured. Only a nil access token means
+	// none was supplied; a destroyed one is rejected by validateAtHash.
+	if v.config.OIDC.ValidateAtHash && claims.AtHash != "" && accessToken != nil {
+		if err := v.validateAtHash(claims.AtHash, accessToken, atHashAlgorithms[alg]); err != nil {
 			return err
 		}
 	}
@@ -197,16 +224,22 @@ func (v *oidcValidator) validateTimeClaims(claims *IDTokenClaims) error {
 }
 
 // validateAtHash validates the at_hash claim against the access token.
-// This prevents token substitution attacks.
-func (v *oidcValidator) validateAtHash(atHash string, accessToken string, hashFunc func() hash.Hash) error {
+// This prevents token substitution attacks. The access token is hashed inside
+// its enclave. It fails closed: no hash function (an algorithm at_hash is not
+// defined for) and an access token that cannot be opened both reject.
+func (v *oidcValidator) validateAtHash(atHash string, accessToken *enclave.MemoryEnclave, hashFunc func() hash.Hash) error {
 	if hashFunc == nil {
-		// If we can't determine the hash algorithm, skip validation
-		return nil
+		return errors.Join(ErrOIDCInvalidAtHash, ErrOIDCUnsupportedAtHashAlgorithm)
 	}
 
 	// Hash the access token
 	h := hashFunc()
-	h.Write([]byte(accessToken))
+	if err := accessToken.WithBytes(func(b []byte) error {
+		h.Write(b)
+		return nil
+	}); err != nil {
+		return errors.Join(ErrOIDCInvalidAtHash, err)
+	}
 	hashBytes := h.Sum(nil)
 
 	// Take the left-most half of the hash
@@ -223,14 +256,15 @@ func (v *oidcValidator) validateAtHash(atHash string, accessToken string, hashFu
 	return nil
 }
 
-// getHashAlg determines the hash algorithm from the ID token's signing algorithm.
-func getHashAlg(claims *IDTokenClaims) func() hash.Hash {
-	// The hash algorithm is derived from the signing algorithm
-	// This would typically come from the JWT header, but we can infer from common usage
-	// For production, you should parse the JWT header to get the 'alg' claim
-
-	// Default to SHA256 for RS256/ES256/PS256 (most common)
-	return sha256.New
+// atHashAlgorithms maps an ID token's JWS algorithm to the hash at_hash is
+// computed with: the hash of the signing algorithm (OIDC Core §3.1.3.6), and
+// SHA-512 for EdDSA, the convention for Ed25519. An algorithm absent here has
+// no at_hash and is rejected — never defaulted.
+var atHashAlgorithms = map[string]func() hash.Hash{
+	"RS256": sha256.New, "ES256": sha256.New, "PS256": sha256.New,
+	"RS384": sha512.New384, "ES384": sha512.New384, "PS384": sha512.New384,
+	"RS512": sha512.New, "ES512": sha512.New, "PS512": sha512.New,
+	"EdDSA": sha512.New,
 }
 
 // GenerateNonce generates a new nonce for an OIDC authorization request.
@@ -266,44 +300,4 @@ func containsString(slice []string, str string) bool {
 		}
 	}
 	return false
-}
-
-// getJWTAlgorithm extracts the signing algorithm from a JWT token string.
-func getJWTAlgorithm(tokenString string) string {
-	parts := strings.Split(tokenString, ".")
-	if len(parts) < 2 {
-		return ""
-	}
-
-	// Decode header
-	headerBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
-	if err != nil {
-		return ""
-	}
-
-	// Simple JSON parsing for algorithm
-	headerStr := string(headerBytes)
-	if strings.Contains(headerStr, `"alg"`) {
-		start := strings.Index(headerStr, `"alg":"`) + 7
-		end := strings.Index(headerStr[start:], `"`)
-		if end > 0 {
-			return headerStr[start : start+end]
-		}
-	}
-
-	return ""
-}
-
-// getHashFuncForAlg returns the appropriate hash function for a JWT algorithm.
-func getHashFuncForAlg(alg string) func() hash.Hash {
-	switch alg {
-	case "RS256", "ES256", "PS256", "HS256":
-		return sha256.New
-	case "RS384", "ES384", "PS384", "HS384":
-		return sha512.New384
-	case "RS512", "ES512", "PS512", "HS512":
-		return sha512.New
-	default:
-		return sha256.New // Default to SHA256
-	}
 }

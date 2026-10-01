@@ -56,7 +56,7 @@ func TestAuthenticator_ValidateToken_MissingToken(t *testing.T) {
 	}
 	defer auth.Close()
 
-	_, err = auth.ValidateToken(context.Background(), "")
+	_, err = auth.ValidateToken(context.Background(), nil)
 	if err != ErrMissingToken {
 		t.Errorf("Expected ErrMissingToken, got %v", err)
 	}
@@ -94,7 +94,7 @@ func TestAuthenticator_FlowValidation(t *testing.T) {
 			config := &Config{
 				Provider:     Google(),
 				ClientID:     "test-client",
-				ClientSecret: "test-secret",
+				ClientSecret: sealedForTest(t, "test-secret"),
 				Flow:         tt.flow,
 				RedirectURL:  "http://localhost/callback",
 			}
@@ -119,9 +119,9 @@ func TestAuthenticator_FlowValidation(t *testing.T) {
 			case "AuthenticateClientCredentials":
 				_, testErr = auth.AuthenticateClientCredentials(ctx)
 			case "AuthenticatePassword":
-				_, testErr = auth.AuthenticatePassword(ctx, "user", "pass")
+				_, testErr = auth.AuthenticatePassword(ctx, "user", sealedForTest(t, "pass"))
 			case "ExchangeAuthorizationCode":
-				_, testErr = auth.ExchangeAuthorizationCode(ctx, "code", "verifier")
+				_, testErr = auth.ExchangeAuthorizationCode(ctx, "code")
 			}
 
 			if tt.expectError && testErr == nil {
@@ -173,31 +173,28 @@ func TestAuthenticator_BuildAuthURL(t *testing.T) {
 	defer auth.Close()
 
 	t.Run("without PKCE", func(t *testing.T) {
-		authURL, verifier, err := auth.BuildAuthURL("state123", false, nil)
+		authURL, err := auth.BuildAuthURL("state123", nil)
 		if err != nil {
 			t.Fatalf("BuildAuthURL() failed: %v", err)
 		}
 
 		if authURL == "" {
 			t.Error("Expected non-empty auth URL")
-		}
-
-		if verifier != "" {
-			t.Error("Expected empty verifier when PKCE is disabled")
 		}
 	})
 
 	t.Run("with PKCE", func(t *testing.T) {
-		authURL, verifier, err := auth.BuildAuthURL("state123", true, nil)
+		authURL, verifier, err := auth.BuildAuthURLPKCE("state123", nil)
 		if err != nil {
-			t.Fatalf("BuildAuthURL() failed: %v", err)
+			t.Fatalf("BuildAuthURLPKCE() failed: %v", err)
 		}
+		defer verifier.Destroy()
 
 		if authURL == "" {
 			t.Error("Expected non-empty auth URL")
 		}
 
-		if verifier == "" {
+		if verifier.Size() == 0 {
 			t.Error("Expected non-empty verifier when PKCE is enabled")
 		}
 	})
@@ -206,7 +203,7 @@ func TestAuthenticator_BuildAuthURL(t *testing.T) {
 		params := map[string]string{
 			"prompt": "consent",
 		}
-		authURL, _, err := auth.BuildAuthURL("state123", false, params)
+		authURL, err := auth.BuildAuthURL("state123", params)
 		if err != nil {
 			t.Fatalf("BuildAuthURL() failed: %v", err)
 		}
@@ -221,7 +218,7 @@ func TestAuthenticator_BuildAuthURL_WrongFlow(t *testing.T) {
 	config := &Config{
 		Provider:     Google(),
 		ClientID:     "test-client",
-		ClientSecret: "test-secret",
+		ClientSecret: sealedForTest(t, "test-secret"),
 		Flow:         FlowClientCredentials,
 	}
 
@@ -231,7 +228,7 @@ func TestAuthenticator_BuildAuthURL_WrongFlow(t *testing.T) {
 	}
 	defer auth.Close()
 
-	_, _, err = auth.BuildAuthURL("state", false, nil)
+	_, err = auth.BuildAuthURL("state", nil)
 	if err == nil {
 		t.Error("Expected error when calling BuildAuthURL with wrong flow")
 	}

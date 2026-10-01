@@ -12,7 +12,6 @@ require (
 	github.com/miekg/pkcs11 v1.1.2
 	github.com/msteinert/pam/v2 v2.1.0
 	github.com/nwaples/tacplus v0.0.3
-	golang.org/x/oauth2 v0.37.0
 	golang.org/x/sys v0.48.0
 	gopkg.in/yaml.v3 v3.0.1
 	layeh.com/radius v0.0.0-20231213012653-1006025d24f8

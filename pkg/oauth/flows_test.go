@@ -48,28 +48,28 @@ func TestExchangeAuthorizationCode_Success(t *testing.T) {
 	config := &Config{
 		Provider:     newTestProvider(server.URL+"/auth", server.URL+"/token"),
 		ClientID:     "test-client",
-		ClientSecret: "test-secret",
+		ClientSecret: sealedForTest(t, "test-secret"),
 		RedirectURL:  "http://localhost:8080/callback",
 	}
 
 	httpClient := newDefaultHTTPClient(30*time.Second, nil, false)
 	handler := newFlowHandler(config, httpClient)
 
-	token, err := handler.exchangeAuthorizationCode(context.Background(), "test-code", "")
+	token, err := handler.exchangeAuthorizationCode(context.Background(), "test-code")
 	if err != nil {
 		t.Fatalf("exchangeAuthorizationCode() failed: %v", err)
 	}
 
-	if token.AccessToken != "test-access-token" {
-		t.Errorf("Expected access token 'test-access-token', got '%s'", token.AccessToken)
+	if openedForTest(t, token.AccessToken()) != "test-access-token" {
+		t.Errorf("Expected access token 'test-access-token', got '%s'", openedForTest(t, token.AccessToken()))
 	}
 
-	if token.RefreshToken != "test-refresh-token" {
-		t.Errorf("Expected refresh token 'test-refresh-token', got '%s'", token.RefreshToken)
+	if openedForTest(t, token.RefreshToken()) != "test-refresh-token" {
+		t.Errorf("Expected refresh token 'test-refresh-token', got '%s'", openedForTest(t, token.RefreshToken()))
 	}
 
-	if token.IDToken != "test-id-token" {
-		t.Errorf("Expected ID token 'test-id-token', got '%s'", token.IDToken)
+	if openedForTest(t, token.IDToken()) != "test-id-token" {
+		t.Errorf("Expected ID token 'test-id-token', got '%s'", openedForTest(t, token.IDToken()))
 	}
 
 	if len(token.Scopes) != 3 {
@@ -77,14 +77,17 @@ func TestExchangeAuthorizationCode_Success(t *testing.T) {
 	}
 }
 
+// testPKCEVerifier is a verifier of the shortest length RFC 7636 admits.
+const testPKCEVerifier = "abcdefghijklmnopqrstuvwxyz0123456789-._~ABC"
+
 func TestExchangeAuthorizationCode_WithPKCE(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := r.ParseForm(); err != nil {
 			t.Fatal(err)
 		}
 
-		if r.FormValue("code_verifier") != "test-verifier" {
-			t.Errorf("Expected code_verifier 'test-verifier', got '%s'", r.FormValue("code_verifier"))
+		if r.FormValue("code_verifier") != testPKCEVerifier {
+			t.Errorf("Expected code_verifier %q, got '%s'", testPKCEVerifier, r.FormValue("code_verifier"))
 		}
 
 		response := map[string]interface{}{
@@ -101,20 +104,21 @@ func TestExchangeAuthorizationCode_WithPKCE(t *testing.T) {
 	config := &Config{
 		Provider:     newTestProvider(server.URL+"/auth", server.URL+"/token"),
 		ClientID:     "test-client",
-		ClientSecret: "test-secret",
+		ClientSecret: sealedForTest(t, "test-secret"),
 		RedirectURL:  "http://localhost:8080/callback",
 	}
 
 	httpClient := newDefaultHTTPClient(30*time.Second, nil, false)
 	handler := newFlowHandler(config, httpClient)
 
-	token, err := handler.exchangeAuthorizationCode(context.Background(), "test-code", "test-verifier")
+	verifier := sealedForTest(t, testPKCEVerifier)
+	token, err := handler.exchangeAuthorizationCodePKCE(context.Background(), "test-code", verifier)
 	if err != nil {
 		t.Fatalf("exchangeAuthorizationCode() failed: %v", err)
 	}
 
-	if token.AccessToken != "test-token" {
-		t.Errorf("Expected access token 'test-token', got '%s'", token.AccessToken)
+	if openedForTest(t, token.AccessToken()) != "test-token" {
+		t.Errorf("Expected access token 'test-token', got '%s'", openedForTest(t, token.AccessToken()))
 	}
 }
 
@@ -128,14 +132,14 @@ func TestExchangeAuthorizationCode_InvalidCode(t *testing.T) {
 	config := &Config{
 		Provider:     newTestProvider(server.URL+"/auth", server.URL+"/token"),
 		ClientID:     "test-client",
-		ClientSecret: "test-secret",
+		ClientSecret: sealedForTest(t, "test-secret"),
 		RedirectURL:  "http://localhost:8080/callback",
 	}
 
 	httpClient := newDefaultHTTPClient(30*time.Second, nil, false)
 	handler := newFlowHandler(config, httpClient)
 
-	_, err := handler.exchangeAuthorizationCode(context.Background(), "invalid-code", "")
+	_, err := handler.exchangeAuthorizationCode(context.Background(), "invalid-code")
 	if err == nil {
 		t.Error("Expected error for invalid code")
 	}
@@ -149,14 +153,14 @@ func TestExchangeAuthorizationCode_NetworkError(t *testing.T) {
 	config := &Config{
 		Provider:     newTestProvider("http://localhost:1/auth", "http://invalid-url.local/token"),
 		ClientID:     "test-client",
-		ClientSecret: "test-secret",
+		ClientSecret: sealedForTest(t, "test-secret"),
 		RedirectURL:  "http://localhost:8080/callback",
 	}
 
 	httpClient := newDefaultHTTPClient(1*time.Second, nil, false)
 	handler := newFlowHandler(config, httpClient)
 
-	_, err := handler.exchangeAuthorizationCode(context.Background(), "test-code", "")
+	_, err := handler.exchangeAuthorizationCode(context.Background(), "test-code")
 	if err == nil {
 		t.Error("Expected error for network failure")
 	}
@@ -166,14 +170,14 @@ func TestExchangeAuthorizationCode_EmptyCode(t *testing.T) {
 	config := &Config{
 		Provider:     Google(),
 		ClientID:     "test-client",
-		ClientSecret: "test-secret",
+		ClientSecret: sealedForTest(t, "test-secret"),
 		RedirectURL:  "http://localhost:8080/callback",
 	}
 
 	httpClient := newDefaultHTTPClient(30*time.Second, nil, false)
 	handler := newFlowHandler(config, httpClient)
 
-	_, err := handler.exchangeAuthorizationCode(context.Background(), "", "")
+	_, err := handler.exchangeAuthorizationCode(context.Background(), "")
 	if err == nil {
 		t.Error("Expected error for empty code")
 	}
@@ -212,7 +216,7 @@ func TestAuthenticateClientCredentials_Success(t *testing.T) {
 	config := &Config{
 		Provider:     newTestProvider(server.URL+"/auth", server.URL+"/token"),
 		ClientID:     "test-client",
-		ClientSecret: "test-secret",
+		ClientSecret: sealedForTest(t, "test-secret"),
 		Scopes:       []string{"api.read", "api.write"},
 	}
 
@@ -224,8 +228,8 @@ func TestAuthenticateClientCredentials_Success(t *testing.T) {
 		t.Fatalf("authenticateClientCredentials() failed: %v", err)
 	}
 
-	if token.AccessToken != "client-access-token" {
-		t.Errorf("Expected access token 'client-access-token', got '%s'", token.AccessToken)
+	if openedForTest(t, token.AccessToken()) != "client-access-token" {
+		t.Errorf("Expected access token 'client-access-token', got '%s'", openedForTest(t, token.AccessToken()))
 	}
 
 	if len(token.Scopes) != 2 {
@@ -243,7 +247,7 @@ func TestAuthenticateClientCredentials_InvalidClient(t *testing.T) {
 	config := &Config{
 		Provider:     newTestProvider(server.URL+"/auth", server.URL+"/token"),
 		ClientID:     "invalid-client",
-		ClientSecret: "invalid-secret",
+		ClientSecret: sealedForTest(t, "invalid-secret"),
 	}
 
 	httpClient := newDefaultHTTPClient(30*time.Second, nil, false)
@@ -289,24 +293,24 @@ func TestAuthenticatePassword_Success(t *testing.T) {
 	config := &Config{
 		Provider:     newTestProvider(server.URL+"/auth", server.URL+"/token"),
 		ClientID:     "test-client",
-		ClientSecret: "test-secret",
+		ClientSecret: sealedForTest(t, "test-secret"),
 		Scopes:       []string{"openid", "profile"},
 	}
 
 	httpClient := newDefaultHTTPClient(30*time.Second, nil, false)
 	handler := newFlowHandler(config, httpClient)
 
-	token, err := handler.authenticatePassword(context.Background(), "testuser", "testpass")
+	token, err := handler.authenticatePassword(context.Background(), "testuser", sealedForTest(t, "testpass"))
 	if err != nil {
 		t.Fatalf("authenticatePassword() failed: %v", err)
 	}
 
-	if token.AccessToken != "password-access-token" {
-		t.Errorf("Expected access token 'password-access-token', got '%s'", token.AccessToken)
+	if openedForTest(t, token.AccessToken()) != "password-access-token" {
+		t.Errorf("Expected access token 'password-access-token', got '%s'", openedForTest(t, token.AccessToken()))
 	}
 
-	if token.RefreshToken != "password-refresh-token" {
-		t.Errorf("Expected refresh token 'password-refresh-token', got '%s'", token.RefreshToken)
+	if openedForTest(t, token.RefreshToken()) != "password-refresh-token" {
+		t.Errorf("Expected refresh token 'password-refresh-token', got '%s'", openedForTest(t, token.RefreshToken()))
 	}
 }
 
@@ -320,13 +324,13 @@ func TestAuthenticatePassword_InvalidCredentials(t *testing.T) {
 	config := &Config{
 		Provider:     newTestProvider(server.URL+"/auth", server.URL+"/token"),
 		ClientID:     "test-client",
-		ClientSecret: "test-secret",
+		ClientSecret: sealedForTest(t, "test-secret"),
 	}
 
 	httpClient := newDefaultHTTPClient(30*time.Second, nil, false)
 	handler := newFlowHandler(config, httpClient)
 
-	_, err := handler.authenticatePassword(context.Background(), "wronguser", "wrongpass")
+	_, err := handler.authenticatePassword(context.Background(), "wronguser", sealedForTest(t, "wrongpass"))
 	if err == nil {
 		t.Error("Expected error for invalid credentials")
 	}
@@ -336,7 +340,7 @@ func TestAuthenticatePassword_EmptyCredentials(t *testing.T) {
 	config := &Config{
 		Provider:     Google(),
 		ClientID:     "test-client",
-		ClientSecret: "test-secret",
+		ClientSecret: sealedForTest(t, "test-secret"),
 	}
 
 	httpClient := newDefaultHTTPClient(30*time.Second, nil, false)
@@ -354,7 +358,7 @@ func TestAuthenticatePassword_EmptyCredentials(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := handler.authenticatePassword(context.Background(), tt.username, tt.password)
+			_, err := handler.authenticatePassword(context.Background(), tt.username, sealedForTest(t, tt.password))
 			if err == nil {
 				t.Error("Expected error for empty credentials")
 			}
@@ -391,19 +395,19 @@ func TestRefreshToken_Success(t *testing.T) {
 	config := &Config{
 		Provider:     newTestProvider(server.URL+"/auth", server.URL+"/token"),
 		ClientID:     "test-client",
-		ClientSecret: "test-secret",
+		ClientSecret: sealedForTest(t, "test-secret"),
 	}
 
 	httpClient := newDefaultHTTPClient(30*time.Second, nil, false)
 	handler := newFlowHandler(config, httpClient)
 
-	token, err := handler.refreshToken(context.Background(), "old-refresh-token")
+	token, err := handler.refreshToken(context.Background(), sealedForTest(t, "old-refresh-token"))
 	if err != nil {
 		t.Fatalf("refreshToken() failed: %v", err)
 	}
 
-	if token.AccessToken != "new-access-token" {
-		t.Errorf("Expected access token 'new-access-token', got '%s'", token.AccessToken)
+	if openedForTest(t, token.AccessToken()) != "new-access-token" {
+		t.Errorf("Expected access token 'new-access-token', got '%s'", openedForTest(t, token.AccessToken()))
 	}
 }
 
@@ -417,13 +421,13 @@ func TestRefreshToken_InvalidRefreshToken(t *testing.T) {
 	config := &Config{
 		Provider:     newTestProvider(server.URL+"/auth", server.URL+"/token"),
 		ClientID:     "test-client",
-		ClientSecret: "test-secret",
+		ClientSecret: sealedForTest(t, "test-secret"),
 	}
 
 	httpClient := newDefaultHTTPClient(30*time.Second, nil, false)
 	handler := newFlowHandler(config, httpClient)
 
-	_, err := handler.refreshToken(context.Background(), "invalid-refresh-token")
+	_, err := handler.refreshToken(context.Background(), sealedForTest(t, "invalid-refresh-token"))
 	if err == nil {
 		t.Error("Expected error for invalid refresh token")
 	}
@@ -433,13 +437,13 @@ func TestRefreshToken_EmptyToken(t *testing.T) {
 	config := &Config{
 		Provider:     Google(),
 		ClientID:     "test-client",
-		ClientSecret: "test-secret",
+		ClientSecret: sealedForTest(t, "test-secret"),
 	}
 
 	httpClient := newDefaultHTTPClient(30*time.Second, nil, false)
 	handler := newFlowHandler(config, httpClient)
 
-	_, err := handler.refreshToken(context.Background(), "")
+	_, err := handler.refreshToken(context.Background(), nil)
 	if err == nil {
 		t.Error("Expected error for empty refresh token")
 	}
@@ -455,7 +459,7 @@ func TestExchangeToken_ServerError(t *testing.T) {
 	config := &Config{
 		Provider:     newTestProvider(server.URL+"/auth", server.URL+"/token"),
 		ClientID:     "test-client",
-		ClientSecret: "test-secret",
+		ClientSecret: sealedForTest(t, "test-secret"),
 	}
 
 	httpClient := newDefaultHTTPClient(30*time.Second, nil, false)
@@ -477,7 +481,7 @@ func TestExchangeToken_MalformedJSON(t *testing.T) {
 	config := &Config{
 		Provider:     newTestProvider(server.URL+"/auth", server.URL+"/token"),
 		ClientID:     "test-client",
-		ClientSecret: "test-secret",
+		ClientSecret: sealedForTest(t, "test-secret"),
 	}
 
 	httpClient := newDefaultHTTPClient(30*time.Second, nil, false)
@@ -504,7 +508,7 @@ func TestExchangeToken_NoAccessToken(t *testing.T) {
 	config := &Config{
 		Provider:     newTestProvider(server.URL+"/auth", server.URL+"/token"),
 		ClientID:     "test-client",
-		ClientSecret: "test-secret",
+		ClientSecret: sealedForTest(t, "test-secret"),
 	}
 
 	httpClient := newDefaultHTTPClient(30*time.Second, nil, false)
@@ -520,7 +524,7 @@ func TestBuildAuthURL_Complete(t *testing.T) {
 	config := &Config{
 		Provider:     Google(),
 		ClientID:     "test-client",
-		ClientSecret: "test-secret",
+		ClientSecret: sealedForTest(t, "test-secret"),
 		RedirectURL:  "http://localhost:8080/callback",
 		Scopes:       []string{"openid", "profile", "email"},
 	}
@@ -567,7 +571,7 @@ func TestBuildAuthURL_WithAdditionalParams(t *testing.T) {
 	config := &Config{
 		Provider:     Google(),
 		ClientID:     "test-client",
-		ClientSecret: "test-secret",
+		ClientSecret: sealedForTest(t, "test-secret"),
 		RedirectURL:  "http://localhost:8080/callback",
 	}
 
@@ -602,7 +606,7 @@ func TestFlowHandler_BuildAuthURL_WithoutPKCE(t *testing.T) {
 	config := &Config{
 		Provider:     Google(),
 		ClientID:     "test-client",
-		ClientSecret: "test-secret",
+		ClientSecret: sealedForTest(t, "test-secret"),
 		RedirectURL:  "http://localhost:8080/callback",
 	}
 

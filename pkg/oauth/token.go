@@ -5,18 +5,31 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/jeremyhahn/go-enclave"
 )
 
-// Token represents an OAuth 2.0 access token and associated metadata.
+// Token represents an OAuth 2.0 token response.
+//
+// The access, refresh and ID tokens are bearer credentials, so a Token holds
+// each one in its own go-enclave locked region and lends it through an
+// accessor rather than exposing a string. The Token OWNS those enclaves: they
+// stay alive until Destroy, and a caller that needs a credential to outlive the
+// Token must copy it out — inside WithBytes — before destroying the Token.
+// Expiry, token type and scopes are not secrets and stay plain.
+//
+//	token, err := auth.AuthenticateClientCredentials(ctx)
+//	if err != nil {
+//	    return err
+//	}
+//	defer token.Destroy()
+//
+//	err = token.AccessToken().WithBytes(func(access []byte) error {
+//	    req.Header.Set("Authorization", "Bearer "+string(access)) // the caller's own HTTP boundary
+//	    return nil
+//	})
 type Token struct {
-	// AccessToken is the OAuth access token.
-	AccessToken string
-
 	// TokenType is the type of token (usually "Bearer").
 	TokenType string
-
-	// RefreshToken is used to obtain new access tokens (optional).
-	RefreshToken string
 
 	// Expiry is when the access token expires.
 	Expiry time.Time
@@ -24,8 +37,49 @@ type Token struct {
 	// Scopes are the scopes granted to this token.
 	Scopes []string
 
-	// IDToken is the OpenID Connect ID token (optional).
-	IDToken string
+	accessToken  *enclave.MemoryEnclave
+	refreshToken *enclave.MemoryEnclave
+	idToken      *enclave.MemoryEnclave
+}
+
+// AccessToken lends the access token. The enclave belongs to the Token: do not
+// destroy it, and do not use it after Token.Destroy. A nil *Token lends nil,
+// which every enclave method treats as destroyed.
+func (t *Token) AccessToken() *enclave.MemoryEnclave {
+	if t == nil {
+		return nil
+	}
+	return t.accessToken
+}
+
+// RefreshToken lends the refresh token, or nil when the provider issued none.
+// It can be passed straight to Authenticator.RefreshToken, which borrows it.
+// The enclave belongs to the Token, as with AccessToken.
+func (t *Token) RefreshToken() *enclave.MemoryEnclave {
+	if t == nil {
+		return nil
+	}
+	return t.refreshToken
+}
+
+// IDToken lends the OpenID Connect ID token, or nil when the provider issued
+// none. The enclave belongs to the Token, as with AccessToken.
+func (t *Token) IDToken() *enclave.MemoryEnclave {
+	if t == nil {
+		return nil
+	}
+	return t.idToken
+}
+
+// Destroy wipes and releases every credential the Token holds. It is
+// idempotent and safe on a nil *Token, so it can always be deferred.
+func (t *Token) Destroy() {
+	if t == nil {
+		return
+	}
+	t.accessToken.Destroy()
+	t.refreshToken.Destroy()
+	t.idToken.Destroy()
 }
 
 // Valid returns true if the token is not expired.

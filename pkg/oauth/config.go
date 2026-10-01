@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/jeremyhahn/go-enclave"
 )
 
 // FlowType identifies the OAuth 2.0 flow to use.
@@ -85,8 +87,16 @@ type Config struct {
 	// ClientID is the OAuth client identifier.
 	ClientID string
 
-	// ClientSecret is the OAuth client secret (required for some flows).
-	ClientSecret string
+	// ClientSecret is the OAuth client secret, held in locked memory. It is
+	// required for the client credentials and password flows and for
+	// introspection, and optional for the authorization code flow (a public
+	// client has none).
+	//
+	// NewAuthenticator TAKES OWNERSHIP of it on every return path: the
+	// Authenticator destroys it in Close, and NewAuthenticator destroys it
+	// itself before returning an error. Do not destroy it, read it, or hand it
+	// to a second Authenticator once it has been passed in.
+	ClientSecret *enclave.MemoryEnclave
 
 	// Scopes are the OAuth scopes to request.
 	Scopes []string
@@ -190,7 +200,7 @@ func (c *Config) validateTokenValidation() error {
 		if strings.TrimSpace(c.Validation.IntrospectionURL) == "" {
 			return fmt.Errorf("%w: introspection_url required for introspection validation", ErrInvalidConfiguration)
 		}
-		if strings.TrimSpace(c.ClientSecret) == "" {
+		if !c.ClientSecret.IsAlive() {
 			return fmt.Errorf("%w: client_secret required for introspection", ErrInvalidConfiguration)
 		}
 	case ValidationHybrid:
@@ -211,7 +221,7 @@ func (c *Config) validateTokenValidation() error {
 }
 
 func (c *Config) validateClientCredentials() error {
-	if strings.TrimSpace(c.ClientSecret) == "" {
+	if !c.ClientSecret.IsAlive() {
 		return fmt.Errorf("%w: client_secret required for client credentials flow", ErrInvalidConfiguration)
 	}
 	if c.Provider.TokenURL() == "" {
@@ -221,7 +231,7 @@ func (c *Config) validateClientCredentials() error {
 }
 
 func (c *Config) validatePassword() error {
-	if strings.TrimSpace(c.ClientSecret) == "" {
+	if !c.ClientSecret.IsAlive() {
 		return fmt.Errorf("%w: client_secret required for password flow", ErrInvalidConfiguration)
 	}
 	if c.Provider.TokenURL() == "" {
@@ -259,6 +269,10 @@ func (c *Config) validateOIDC() error {
 
 	if c.OIDC.UserInfo.CacheTTL <= 0 {
 		c.OIDC.UserInfo.CacheTTL = 5 * time.Minute
+	}
+
+	if c.OIDC.UserInfo.CacheMaxSize <= 0 {
+		c.OIDC.UserInfo.CacheMaxSize = defaultUserInfoCacheMaxSize
 	}
 
 	if c.OIDC.UserInfo.Timeout <= 0 {

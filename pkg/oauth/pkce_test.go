@@ -18,7 +18,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/jeremyhahn/go-auth/pkg/secret"
+	"github.com/jeremyhahn/go-enclave"
 )
 
 // constantVerifier is the code verifier this package used to emit: the byte
@@ -56,7 +56,7 @@ func pkceTestConfig(t *testing.T, tokenURL string) *Config {
 	return &Config{
 		Provider:     newTestProvider("https://example.test/auth", tokenURL),
 		ClientID:     "test-client",
-		ClientSecret: "test-secret",
+		ClientSecret: sealedForTest(t, "test-secret"),
 		Flow:         FlowAuthorizationCode,
 		RedirectURL:  "http://localhost:8080/callback",
 		Scopes:       []string{"openid", "profile", "email"},
@@ -126,61 +126,17 @@ func TestBuildAuthURLPKCEVerifierIsRandom(t *testing.T) {
 	}
 }
 
-// TestBuildAuthURLStringPathIsRandom covers the deprecated string path, which
-// still has to produce a random verifier for callers that have not migrated.
-func TestBuildAuthURLStringPathIsRandom(t *testing.T) {
-	auth, err := NewAuthenticator(pkceTestConfig(t, "https://example.test/token"))
-	if err != nil {
-		t.Fatalf("NewAuthenticator() failed: %v", err)
-	}
-
-	seen := make(map[string]bool)
-	for i := 0; i < 10; i++ {
-		authURL, verifier, err := auth.BuildAuthURL("random-state", true, nil)
-		if err != nil {
-			t.Fatalf("BuildAuthURL() failed: %v", err)
-		}
-
-		if verifier == constantVerifier {
-			t.Fatal("Code verifier is the hardcoded 0x00..0x1f constant")
-		}
-		if seen[verifier] {
-			t.Fatalf("Code verifier repeated across calls: %q", verifier)
-		}
-		seen[verifier] = true
-
-		raw, err := base64.RawURLEncoding.DecodeString(verifier)
-		if err != nil {
-			t.Fatalf("Code verifier is not base64url: %v", err)
-		}
-		if len(raw) != pkceVerifierBytes {
-			t.Errorf("Expected %d verifier bytes, got %d", pkceVerifierBytes, len(raw))
-		}
-
-		parsed, err := url.Parse(authURL)
-		if err != nil {
-			t.Fatalf("Failed to parse auth URL: %v", err)
-		}
-		if challenge, want := parsed.Query().Get("code_challenge"), challengeOf(verifier); challenge != want {
-			t.Errorf("code_challenge = %q, want %q", challenge, want)
-		}
-	}
-}
-
-// TestBuildAuthURLWithoutPKCECarriesNoChallenge pins the untouched half of the
-// deprecated signature: usePKCE false involves no secret and no challenge.
+// TestBuildAuthURLWithoutPKCECarriesNoChallenge pins the flow without PKCE: it
+// involves no secret and no challenge.
 func TestBuildAuthURLWithoutPKCECarriesNoChallenge(t *testing.T) {
 	auth, err := NewAuthenticator(pkceTestConfig(t, "https://example.test/token"))
 	if err != nil {
 		t.Fatalf("NewAuthenticator() failed: %v", err)
 	}
 
-	authURL, verifier, err := auth.BuildAuthURL("random-state", false, nil)
+	authURL, err := auth.BuildAuthURL("random-state", nil)
 	if err != nil {
 		t.Fatalf("BuildAuthURL() failed: %v", err)
-	}
-	if verifier != "" {
-		t.Errorf("Expected no code verifier, got %q", verifier)
 	}
 
 	parsed, err := url.Parse(authURL)
@@ -234,8 +190,8 @@ func TestExchangeAuthorizationCodePKCESendsTheVerifier(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ExchangeAuthorizationCodePKCE() failed: %v", err)
 	}
-	if token.AccessToken != "test-access-token" {
-		t.Errorf("AccessToken = %q, want %q", token.AccessToken, "test-access-token")
+	if openedForTest(t, token.AccessToken()) != "test-access-token" {
+		t.Errorf("AccessToken = %q, want %q", openedForTest(t, token.AccessToken()), "test-access-token")
 	}
 
 	// The received verifier is the relying party's copy, not one taken out of
@@ -285,8 +241,14 @@ func TestNewVerifierRejectsBadVerifiers(t *testing.T) {
 		strings.Repeat("a", 42) + "&",
 		strings.Repeat("a", 42) + " ",
 	} {
-		if _, err := NewVerifier(value); !errors.Is(err, ErrInvalidConfiguration) {
+		sealed := sealedForTest(t, value)
+		if _, err := NewVerifier(sealed); !errors.Is(err, ErrInvalidConfiguration) {
 			t.Errorf("NewVerifier(%d chars) = %v, want ErrInvalidConfiguration", len(value), err)
+		}
+		// NewVerifier owns what it is given on every path, so a rejected
+		// verifier is destroyed rather than left with the caller.
+		if sealed.IsAlive() {
+			t.Errorf("NewVerifier(%d chars) rejected the verifier but left it alive", len(value))
 		}
 	}
 }
@@ -340,9 +302,9 @@ func unvalidatedVerifier(value string) func(t *testing.T) *Verifier {
 	return func(t *testing.T) *Verifier {
 		t.Helper()
 
-		sealed, err := secret.NewString(value)
+		sealed, err := enclave.NewMemoryEnclaveFromString(value)
 		if err != nil {
-			t.Fatalf("secret.NewString: %v", err)
+			t.Fatalf("NewMemoryEnclaveFromString: %v", err)
 		}
 		return &Verifier{sealed: sealed}
 	}
@@ -700,47 +662,50 @@ func TestExchangeAuthorizationCodePKCEIsSingleUseUnderConcurrency(t *testing.T) 
 	}
 }
 
-// TestVerifierSealsTheDeprecatedStringFlow covers the migration path: an
-// application still on the string form of the flow can seal the verifier it
-// holds and redeem it through the protected exchange. This is the only direction
-// that exists — plaintext goes in, nothing comes back out.
-func TestVerifierSealsTheDeprecatedStringFlow(t *testing.T) {
-	server, calls := newRecordingTokenEndpoint(t)
+// TestNewVerifierRedeemsACallerSealedVerifier covers a verifier the caller
+// already holds in an enclave — restored from its own sealed session store, say.
+// NewVerifier takes the enclave over and the exchange consumes it; nothing comes
+// back out.
+func TestNewVerifierRedeemsACallerSealedVerifier(t *testing.T) {
+	var form url.Values
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Errorf("ParseForm: %v", err)
+		}
+		form = r.PostForm
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"test-access-token","token_type":"Bearer"}`))
+	}))
+	defer server.Close()
 
 	auth, err := NewAuthenticator(pkceTestConfig(t, server.URL+"/token"))
 	if err != nil {
 		t.Fatalf("NewAuthenticator() failed: %v", err)
 	}
+	defer auth.Close()
 
-	authURL, codeVerifier, err := auth.BuildAuthURL("random-state", true, nil)
-	if err != nil {
-		t.Fatalf("BuildAuthURL() failed: %v", err)
-	}
+	const value = "abcdefghijklmnopqrstuvwxyz0123456789-._~ABCDEF"
+	held := sealedForTest(t, value)
 
-	parsed, err := url.Parse(authURL)
-	if err != nil {
-		t.Fatalf("Failed to parse auth URL: %v", err)
-	}
-	if got := challengeOf(codeVerifier); got != parsed.Query().Get("code_challenge") {
-		t.Fatalf("verifier hashes to %q, want the URL's challenge %q", got, parsed.Query().Get("code_challenge"))
-	}
-
-	sealed, err := NewVerifier(codeVerifier)
+	verifier, err := NewVerifier(held)
 	if err != nil {
 		t.Fatalf("NewVerifier() failed: %v", err)
 	}
-	if sealed.Size() != len(codeVerifier) {
-		t.Errorf("sealed verifier Size = %d, want %d", sealed.Size(), len(codeVerifier))
+	if verifier.Size() != len(value) {
+		t.Errorf("Verifier Size = %d, want %d", verifier.Size(), len(value))
 	}
 
-	if _, err := auth.ExchangeAuthorizationCodePKCE(context.Background(), "test-code", sealed); err != nil {
-		t.Fatalf("ExchangeAuthorizationCodePKCE() with a sealed verifier failed: %v", err)
+	token, err := auth.ExchangeAuthorizationCodePKCE(context.Background(), "test-code", verifier)
+	if err != nil {
+		t.Fatalf("ExchangeAuthorizationCodePKCE() failed: %v", err)
 	}
-	if *calls != 1 {
-		t.Errorf("token endpoint saw %d requests, want 1", *calls)
+	defer token.Destroy()
+
+	if got := form.Get("code_verifier"); got != value {
+		t.Errorf("token endpoint received code_verifier %q, want %q", got, value)
 	}
-	if sealed.Size() != 0 {
-		t.Error("the exchange did not consume the sealed verifier")
+	if verifier.Size() != 0 || held.IsAlive() {
+		t.Error("the exchange did not consume and destroy the verifier")
 	}
 }
 
@@ -767,7 +732,7 @@ func TestVerifierHasNoPlaintextExport(t *testing.T) {
 // TestVerifierRedactsWhenFormatted keeps a stray %v or log field from printing a
 // credential.
 func TestVerifierRedactsWhenFormatted(t *testing.T) {
-	verifier, err := NewVerifier(strings.Repeat("a", 43))
+	verifier, err := NewVerifier(sealedForTest(t, strings.Repeat("a", 43)))
 	if err != nil {
 		t.Fatalf("NewVerifier() failed: %v", err)
 	}
@@ -810,11 +775,8 @@ func TestBuildAuthURLRejectsReservedParams(t *testing.T) {
 		if _, _, err := auth.BuildAuthURLPKCE("random-state", params); !errors.Is(err, ErrInvalidConfiguration) {
 			t.Errorf("BuildAuthURLPKCE(%q) = %v, want ErrInvalidConfiguration", key, err)
 		}
-		if _, _, err := auth.BuildAuthURL("random-state", true, params); !errors.Is(err, ErrInvalidConfiguration) {
+		if _, err := auth.BuildAuthURL("random-state", params); !errors.Is(err, ErrInvalidConfiguration) {
 			t.Errorf("BuildAuthURL(%q) = %v, want ErrInvalidConfiguration", key, err)
-		}
-		if _, _, err := auth.BuildAuthURL("random-state", false, params); !errors.Is(err, ErrInvalidConfiguration) {
-			t.Errorf("BuildAuthURL(%q, no PKCE) = %v, want ErrInvalidConfiguration", key, err)
 		}
 	}
 

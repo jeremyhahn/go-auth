@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/jeremyhahn/go-auth/pkg/secret"
+	"github.com/jeremyhahn/go-enclave"
 )
 
 // PKCE code verifier shape (RFC 7636 §4.1). The generated verifier is 32 random
@@ -46,41 +46,36 @@ var ErrVerifierConsumed = errors.New("oauth: pkce code verifier already consumed
 // every method is safe to call on a nil *Verifier.
 type Verifier struct {
 	mu     sync.Mutex
-	sealed *secret.Secret
+	sealed *enclave.MemoryEnclave
 }
 
-// NewVerifier seals an existing code verifier and checks it against RFC 7636
-// §4.1.
+// NewVerifier wraps a code verifier the caller already holds in an enclave and
+// checks it against RFC 7636 §4.1.
 //
-// It is the migration path: an application still on the deprecated string form
-// of the flow — BuildAuthURL with usePKCE, or a verifier it already has in a
-// session — seals it here and redeems it with ExchangeAuthorizationCodePKCE.
+// It is for an application that keeps its own sealed copy of a verifier — for
+// example one restored from an encrypted session store into locked memory — and
+// needs to redeem it with ExchangeAuthorizationCodePKCE. NewVerifier TAKES
+// OWNERSHIP of codeVerifier on every return path: on success the Verifier owns
+// it, and on error it is destroyed before NewVerifier returns.
 //
-// This constructor only takes plaintext in. Nothing gives it back out: there is
-// no exported way to read a Verifier's value, because a Go string cannot be
-// wiped and an escape hatch that produced one would undo what the enclave is
-// for. Sealing a value that is already in the clear narrows an exposure that has
-// already happened; handing one out would create a new one.
+// Nothing gives the value back out: there is no exported way to read a
+// Verifier, because the only thing a verifier is for is the one exchange.
 //
 // Prefer BuildAuthURLPKCE, which generates the verifier straight into protected
-// memory and never has a string form of it at all.
-func NewVerifier(codeVerifier string) (*Verifier, error) {
-	if err := validatePKCEVerifier([]byte(codeVerifier)); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrInvalidConfiguration, err)
+// memory and never has any other form of it at all.
+func NewVerifier(codeVerifier *enclave.MemoryEnclave) (*Verifier, error) {
+	if err := codeVerifier.WithBytes(validatePKCEVerifier); err != nil {
+		codeVerifier.Destroy()
+		return nil, errors.Join(ErrInvalidConfiguration, err)
 	}
 
-	sealed, err := secret.NewString(codeVerifier)
-	if err != nil {
-		return nil, fmt.Errorf("%w: sealing PKCE code verifier: %v", ErrInvalidConfiguration, err)
-	}
-
-	return &Verifier{sealed: sealed}, nil
+	return &Verifier{sealed: codeVerifier}, nil
 }
 
 // consume takes the sealed verifier out of v and hands ownership to the caller,
 // which must destroy it. It is the single-use gate: exactly one caller can win,
 // whatever the concurrency, and every later call reports ErrVerifierConsumed.
-func (v *Verifier) consume() (*secret.Secret, error) {
+func (v *Verifier) consume() (*enclave.MemoryEnclave, error) {
 	if v == nil {
 		return nil, ErrVerifierConsumed
 	}
@@ -112,7 +107,7 @@ func (v *Verifier) open(fn func(codeVerifier []byte) error) error {
 	if v.sealed == nil {
 		return ErrVerifierConsumed
 	}
-	return v.sealed.Open(fn)
+	return v.sealed.WithBytes(fn)
 }
 
 // Size reports the length of the verifier in characters, and 0 once it has been
@@ -154,12 +149,11 @@ func (v *Verifier) GoString() string {
 // BuildAuthURLPKCE builds the authorization URL for the authorization code flow
 // and returns the PKCE code verifier in protected memory.
 //
-// It is the replacement for BuildAuthURL(state, true, params). A code verifier
-// is a bearer credential for the length of the flow: whoever holds it can redeem
+// A code verifier is a bearer credential for the length of the flow: whoever holds it can redeem
 // an intercepted authorization code, which is the entire attack PKCE exists to
 // stop. This constructor generates it inside a locked enclave and derives the
 // S256 challenge from the enclave, so the verifier has no plaintext form on the
-// Go heap at any point — unlike the string BuildAuthURL has to return.
+// Go heap at any point.
 //
 // state should be a random value the caller keeps to defeat CSRF; it is not a
 // secret and is carried in the URL.
@@ -182,10 +176,7 @@ func (v *Verifier) GoString() string {
 //
 // A Verifier cannot be written to an out-of-process session store: an enclave is
 // process memory, not a serializable value, and nothing exported reads a
-// Verifier's value back out. Hold it in an in-process map keyed by state. An
-// application that cannot do that is on the deprecated string flow — BuildAuthURL
-// with usePKCE — until the coordinated breaking release; NewVerifier seals what
-// it gets back so the redemption half is at least protected.
+// Verifier's value back out. Hold it in an in-process map keyed by state.
 func (a *Authenticator) BuildAuthURLPKCE(state string, additionalParams map[string]string) (authURL string, verifier *Verifier, err error) {
 	if a.config.Flow != FlowAuthorizationCode {
 		return "", nil, fmt.Errorf("%w: authorization code flow not configured", ErrFlowNotSupported)
@@ -212,8 +203,7 @@ func (a *Authenticator) BuildAuthURLPKCE(state string, additionalParams map[stri
 // ExchangeAuthorizationCodePKCE exchanges an authorization code for tokens,
 // taking the PKCE code verifier from protected memory.
 //
-// It is the replacement for ExchangeAuthorizationCode(ctx, code, verifierString)
-// and the counterpart of BuildAuthURLPKCE. The verifier is copied out of its
+// It is the counterpart of BuildAuthURLPKCE. The verifier is copied out of its
 // enclave into a locked request body and never into an ordinary string.
 //
 // The verifier is consumed: this call takes it out of the Verifier under a lock
@@ -264,25 +254,37 @@ func newVerifier() (*Verifier, string, error) {
 // newPKCEVerifier generates a code verifier in protected memory and derives its
 // S256 code challenge.
 //
-// The random bytes are read into a locked scratch buffer and base64url-encoded
-// straight into the locked buffer that is then sealed, so neither the raw bytes
-// nor their encoded form is ever written to ordinary heap.
-func newPKCEVerifier() (*secret.Secret, string, error) {
-	verifier, err := secret.NewWith(pkceVerifierLen, func(buf []byte) (int, error) {
-		err := secret.Scratch(pkceVerifierBytes, func(raw []byte) error {
-			if _, err := rand.Read(raw); err != nil {
-				return fmt.Errorf("%w: generating PKCE code verifier: %v", ErrInvalidConfiguration, err)
-			}
-			base64.RawURLEncoding.Encode(buf, raw)
+// The random bytes are read into a locked scratch enclave and base64url-encoded
+// straight into the locked pages of the verifier's own enclave, which is then
+// frozen, so neither the raw bytes nor their encoded form is ever written to
+// ordinary heap.
+func newPKCEVerifier() (*enclave.MemoryEnclave, string, error) {
+	raw, err := enclave.NewMemoryEnclaveSized(pkceVerifierBytes)
+	if err != nil {
+		return nil, "", errors.Join(ErrInvalidConfiguration, err)
+	}
+	defer raw.Destroy()
+
+	verifier, err := enclave.NewMemoryEnclaveSized(pkceVerifierLen)
+	if err != nil {
+		return nil, "", errors.Join(ErrInvalidConfiguration, err)
+	}
+
+	err = raw.WithBytes(func(r []byte) error {
+		if _, err := rand.Read(r); err != nil {
+			return err
+		}
+		return verifier.WithBytes(func(v []byte) error {
+			base64.RawURLEncoding.Encode(v, r)
 			return nil
 		})
-		if err != nil {
-			return 0, err
-		}
-		return pkceVerifierLen, nil
 	})
+	if err == nil {
+		err = verifier.Freeze()
+	}
 	if err != nil {
-		return nil, "", fmt.Errorf("%w: sealing PKCE code verifier: %v", ErrInvalidConfiguration, err)
+		verifier.Destroy()
+		return nil, "", errors.Join(ErrInvalidConfiguration, err)
 	}
 
 	challenge, err := pkceChallenge(verifier)
@@ -297,12 +299,12 @@ func newPKCEVerifier() (*secret.Secret, string, error) {
 // pkceChallenge derives the S256 code challenge (RFC 7636 §4.2) from a verifier
 // held in protected memory.
 //
-// The digest is taken over the locked buffer of an open enclave; only the
-// challenge leaves as a string, and a challenge is a public value that travels
-// in the authorization URL by design.
-func pkceChallenge(verifier *secret.Secret) (string, error) {
+// The digest is taken over the locked pages of the enclave; only the challenge
+// leaves as a string, and a challenge is a public value that travels in the
+// authorization URL by design.
+func pkceChallenge(verifier *enclave.MemoryEnclave) (string, error) {
 	var challenge string
-	err := verifier.Open(func(v []byte) error {
+	err := verifier.WithBytes(func(v []byte) error {
 		if err := validatePKCEVerifier(v); err != nil {
 			return err
 		}
@@ -311,7 +313,7 @@ func pkceChallenge(verifier *secret.Secret) (string, error) {
 		return nil
 	})
 	if err != nil {
-		return "", fmt.Errorf("%w: deriving PKCE code challenge: %v", ErrInvalidConfiguration, err)
+		return "", errors.Join(ErrInvalidConfiguration, err)
 	}
 	return challenge, nil
 }
@@ -343,28 +345,4 @@ func validatePKCEVerifier(v []byte) error {
 	}
 
 	return nil
-}
-
-// generatePKCE generates a code verifier and challenge as strings.
-//
-// It backs BuildAuthURL's exported string signature and nothing else. The
-// verifier is generated in protected memory exactly as BuildAuthURLPKCE's is,
-// but OpenString then copies it into an immutable Go string that cannot be wiped
-// and survives until the collector reclaims it. That copy is the reason the
-// string path is deprecated.
-func generatePKCE() (verifier, challenge string, err error) {
-	sealed, challenge, err := newPKCEVerifier()
-	if err != nil {
-		return "", "", err
-	}
-	defer sealed.Destroy()
-
-	if err := sealed.OpenString(func(v string) error {
-		verifier = v
-		return nil
-	}); err != nil {
-		return "", "", fmt.Errorf("%w: reading PKCE code verifier: %v", ErrInvalidConfiguration, err)
-	}
-
-	return verifier, challenge, nil
 }

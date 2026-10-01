@@ -58,6 +58,12 @@ type UserInfoConfig struct {
 	// Default: 5 minutes
 	CacheTTL time.Duration
 
+	// CacheMaxSize is the maximum number of UserInfo responses to cache. Each
+	// one occupies at least a page of locked memory, so the cache is bounded:
+	// at capacity the least-recently-used entry is evicted and destroyed.
+	// Default: 1000
+	CacheMaxSize int
+
 	// Timeout is the HTTP timeout for UserInfo requests.
 	// Default: 10 seconds
 	Timeout time.Duration
@@ -179,6 +185,10 @@ func (d *OIDCDiscoveryConfig) Validate() error {
 	return nil
 }
 
+// defaultUserInfoCacheMaxSize bounds the UserInfo cache when
+// UserInfoConfig.CacheMaxSize is not set.
+const defaultUserInfoCacheMaxSize = 1000
+
 // DefaultOIDCConfig returns an OIDCConfig with sensible defaults.
 func DefaultOIDCConfig() *OIDCConfig {
 	return &OIDCConfig{
@@ -190,9 +200,10 @@ func DefaultOIDCConfig() *OIDCConfig {
 		RequireIDToken:    false,
 		ValidateAtHash:    true,
 		UserInfo: UserInfoConfig{
-			Enabled:  true,
-			CacheTTL: 5 * time.Minute,
-			Timeout:  10 * time.Second,
+			Enabled:      true,
+			CacheTTL:     5 * time.Minute,
+			CacheMaxSize: defaultUserInfoCacheMaxSize,
+			Timeout:      10 * time.Second,
 		},
 	}
 }

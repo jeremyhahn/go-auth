@@ -25,7 +25,7 @@ func TestNewTokenValidator_Success(t *testing.T) {
 	config := &Config{
 		Provider:     Google(),
 		ClientID:     "test-client",
-		ClientSecret: "test-secret",
+		ClientSecret: sealedForTest(t, "test-secret"),
 		Validation: TokenValidationConfig{
 			Method:  ValidationJWT,
 			JWKSURL: jwksServer.URL,
@@ -53,7 +53,7 @@ func TestNewTokenValidator_InvalidJWKS(t *testing.T) {
 	config := &Config{
 		Provider:     Google(),
 		ClientID:     "test-client",
-		ClientSecret: "test-secret",
+		ClientSecret: sealedForTest(t, "test-secret"),
 		Validation: TokenValidationConfig{
 			Method:  ValidationJWT,
 			JWKSURL: "http://invalid-url-that-does-not-exist.local/jwks",
@@ -82,7 +82,7 @@ func TestValidate_JWT(t *testing.T) {
 	config := &Config{
 		Provider:     Google(),
 		ClientID:     "test-client",
-		ClientSecret: "test-secret",
+		ClientSecret: sealedForTest(t, "test-secret"),
 		Validation: TokenValidationConfig{
 			Method:  ValidationJWT,
 			JWKSURL: jwksServer.URL,
@@ -102,7 +102,7 @@ func TestValidate_JWT(t *testing.T) {
 		"iat": time.Now().Unix(),
 	})
 
-	claims, err := validator.validate(context.Background(), token)
+	claims, err := validator.validate(context.Background(), sealedForTest(t, token))
 	if err != nil {
 		t.Fatalf("validate() failed: %v", err)
 	}
@@ -138,7 +138,7 @@ func TestValidate_Introspection(t *testing.T) {
 	config := &Config{
 		Provider:     Google(),
 		ClientID:     "test-client",
-		ClientSecret: "test-secret",
+		ClientSecret: sealedForTest(t, "test-secret"),
 		Validation: TokenValidationConfig{
 			Method:           ValidationIntrospection,
 			IntrospectionURL: server.URL + "/introspect",
@@ -152,7 +152,7 @@ func TestValidate_Introspection(t *testing.T) {
 	}
 	defer validator.Close()
 
-	claims, err := validator.validate(context.Background(), "opaque-token")
+	claims, err := validator.validate(context.Background(), sealedForTest(t, "opaque-token"))
 	if err != nil {
 		t.Fatalf("validate() failed: %v", err)
 	}
@@ -192,7 +192,7 @@ func TestValidate_Hybrid(t *testing.T) {
 	config := &Config{
 		Provider:     Google(),
 		ClientID:     "test-client",
-		ClientSecret: "test-secret",
+		ClientSecret: sealedForTest(t, "test-secret"),
 		Validation: TokenValidationConfig{
 			Method:           ValidationHybrid,
 			JWKSURL:          jwksServer.URL,
@@ -214,7 +214,7 @@ func TestValidate_Hybrid(t *testing.T) {
 		"iat": time.Now().Unix(),
 	})
 
-	claims, err := validator.validate(context.Background(), jwtToken)
+	claims, err := validator.validate(context.Background(), sealedForTest(t, jwtToken))
 	if err != nil {
 		t.Fatalf("validate() with JWT failed: %v", err)
 	}
@@ -224,7 +224,7 @@ func TestValidate_Hybrid(t *testing.T) {
 	}
 
 	// Test with opaque token - should fall back to introspection
-	claims, err = validator.validate(context.Background(), "opaque-token")
+	claims, err = validator.validate(context.Background(), sealedForTest(t, "opaque-token"))
 	if err != nil {
 		t.Fatalf("validate() with opaque token failed: %v", err)
 	}
@@ -246,7 +246,7 @@ func TestValidateJWT_ValidToken(t *testing.T) {
 	config := &Config{
 		Provider:     Google(),
 		ClientID:     "test-client",
-		ClientSecret: "test-secret",
+		ClientSecret: sealedForTest(t, "test-secret"),
 		Validation: TokenValidationConfig{
 			Method:   ValidationJWT,
 			JWKSURL:  jwksServer.URL,
@@ -272,7 +272,7 @@ func TestValidateJWT_ValidToken(t *testing.T) {
 		"name":  "Test User",
 	})
 
-	claims, err := validator.validateJWT(context.Background(), token)
+	claims, err := validator.validateJWT(context.Background(), sealedForTest(t, token))
 	if err != nil {
 		t.Fatalf("validateJWT() failed: %v", err)
 	}
@@ -302,7 +302,7 @@ func TestValidateJWT_ExpiredToken(t *testing.T) {
 	config := &Config{
 		Provider:     Google(),
 		ClientID:     "test-client",
-		ClientSecret: "test-secret",
+		ClientSecret: sealedForTest(t, "test-secret"),
 		Validation: TokenValidationConfig{
 			Method:  ValidationJWT,
 			JWKSURL: jwksServer.URL,
@@ -322,7 +322,7 @@ func TestValidateJWT_ExpiredToken(t *testing.T) {
 		"iat": time.Now().Add(-2 * time.Hour).Unix(),
 	})
 
-	_, err = validator.validateJWT(context.Background(), token)
+	_, err = validator.validateJWT(context.Background(), sealedForTest(t, token))
 	if err == nil {
 		t.Error("Expected error for expired token")
 	}
@@ -350,7 +350,7 @@ func TestValidateJWT_InvalidSignature(t *testing.T) {
 	config := &Config{
 		Provider:     Google(),
 		ClientID:     "test-client",
-		ClientSecret: "test-secret",
+		ClientSecret: sealedForTest(t, "test-secret"),
 		Validation: TokenValidationConfig{
 			Method:  ValidationJWT,
 			JWKSURL: jwksServer.URL,
@@ -370,7 +370,7 @@ func TestValidateJWT_InvalidSignature(t *testing.T) {
 		"iat": time.Now().Unix(),
 	})
 
-	_, err = validator.validateJWT(context.Background(), token)
+	_, err = validator.validateJWT(context.Background(), sealedForTest(t, token))
 	if err == nil {
 		t.Error("Expected error for invalid signature")
 	}
@@ -388,7 +388,7 @@ func TestValidateJWT_WrongIssuer(t *testing.T) {
 	config := &Config{
 		Provider:     Google(),
 		ClientID:     "test-client",
-		ClientSecret: "test-secret",
+		ClientSecret: sealedForTest(t, "test-secret"),
 		Validation: TokenValidationConfig{
 			Method:  ValidationJWT,
 			JWKSURL: jwksServer.URL,
@@ -410,7 +410,7 @@ func TestValidateJWT_WrongIssuer(t *testing.T) {
 		"iat": time.Now().Unix(),
 	})
 
-	_, err = validator.validateJWT(context.Background(), token)
+	_, err = validator.validateJWT(context.Background(), sealedForTest(t, token))
 	if err == nil {
 		t.Error("Expected error for wrong issuer")
 	}
@@ -428,7 +428,7 @@ func TestValidateJWT_WrongAudience(t *testing.T) {
 	config := &Config{
 		Provider:     Google(),
 		ClientID:     "test-client",
-		ClientSecret: "test-secret",
+		ClientSecret: sealedForTest(t, "test-secret"),
 		Validation: TokenValidationConfig{
 			Method:   ValidationJWT,
 			JWKSURL:  jwksServer.URL,
@@ -450,7 +450,7 @@ func TestValidateJWT_WrongAudience(t *testing.T) {
 		"iat": time.Now().Unix(),
 	})
 
-	_, err = validator.validateJWT(context.Background(), token)
+	_, err = validator.validateJWT(context.Background(), sealedForTest(t, token))
 	if err == nil {
 		t.Error("Expected error for wrong audience")
 	}
@@ -468,7 +468,7 @@ func TestValidateJWT_MissingRequiredClaims(t *testing.T) {
 	config := &Config{
 		Provider:     Google(),
 		ClientID:     "test-client",
-		ClientSecret: "test-secret",
+		ClientSecret: sealedForTest(t, "test-secret"),
 		Validation: TokenValidationConfig{
 			Method:         ValidationJWT,
 			JWKSURL:        jwksServer.URL,
@@ -490,7 +490,7 @@ func TestValidateJWT_MissingRequiredClaims(t *testing.T) {
 		// Missing email claim
 	})
 
-	_, err = validator.validateJWT(context.Background(), token)
+	_, err = validator.validateJWT(context.Background(), sealedForTest(t, token))
 	if err == nil {
 		t.Error("Expected error for missing required claims")
 	}
@@ -523,7 +523,7 @@ func TestIntrospectToken_Active(t *testing.T) {
 	config := &Config{
 		Provider:     Google(),
 		ClientID:     "test-client",
-		ClientSecret: "test-secret",
+		ClientSecret: sealedForTest(t, "test-secret"),
 		Validation: TokenValidationConfig{
 			Method:           ValidationIntrospection,
 			IntrospectionURL: server.URL,
@@ -537,7 +537,7 @@ func TestIntrospectToken_Active(t *testing.T) {
 	}
 	defer validator.Close()
 
-	claims, err := validator.introspectToken(context.Background(), "test-token")
+	claims, err := validator.introspectToken(context.Background(), sealedForTest(t, "test-token"))
 	if err != nil {
 		t.Fatalf("introspectToken() failed: %v", err)
 	}
@@ -568,7 +568,7 @@ func TestIntrospectToken_Inactive(t *testing.T) {
 	config := &Config{
 		Provider:     Google(),
 		ClientID:     "test-client",
-		ClientSecret: "test-secret",
+		ClientSecret: sealedForTest(t, "test-secret"),
 		Validation: TokenValidationConfig{
 			Method:           ValidationIntrospection,
 			IntrospectionURL: server.URL,
@@ -582,7 +582,7 @@ func TestIntrospectToken_Inactive(t *testing.T) {
 	}
 	defer validator.Close()
 
-	_, err = validator.introspectToken(context.Background(), "test-token")
+	_, err = validator.introspectToken(context.Background(), sealedForTest(t, "test-token"))
 	if err == nil {
 		t.Error("Expected error for inactive token")
 	}
@@ -596,7 +596,7 @@ func TestIntrospectToken_NetworkError(t *testing.T) {
 	config := &Config{
 		Provider:     Google(),
 		ClientID:     "test-client",
-		ClientSecret: "test-secret",
+		ClientSecret: sealedForTest(t, "test-secret"),
 		Validation: TokenValidationConfig{
 			Method:           ValidationIntrospection,
 			IntrospectionURL: "http://invalid-url-that-does-not-exist.local/introspect",
@@ -610,7 +610,7 @@ func TestIntrospectToken_NetworkError(t *testing.T) {
 	}
 	defer validator.Close()
 
-	_, err = validator.introspectToken(context.Background(), "test-token")
+	_, err = validator.introspectToken(context.Background(), sealedForTest(t, "test-token"))
 	if err == nil {
 		t.Error("Expected error for network failure")
 	}
@@ -620,7 +620,7 @@ func TestValidateRequiredClaims_AllPresent(t *testing.T) {
 	config := &Config{
 		Provider:     Google(),
 		ClientID:     "test-client",
-		ClientSecret: "test-secret",
+		ClientSecret: sealedForTest(t, "test-secret"),
 		Validation: TokenValidationConfig{
 			RequiredClaims: []string{"sub", "email", "name"},
 		},
@@ -648,7 +648,7 @@ func TestValidateRequiredClaims_Missing(t *testing.T) {
 	config := &Config{
 		Provider:     Google(),
 		ClientID:     "test-client",
-		ClientSecret: "test-secret",
+		ClientSecret: sealedForTest(t, "test-secret"),
 		Validation: TokenValidationConfig{
 			RequiredClaims: []string{"sub", "email", "phone"},
 		},

@@ -18,6 +18,9 @@ The `oauth` package provides comprehensive OAuth 2.0 and OpenID Connect (OIDC) a
 - Thread-safe, concurrent operation
 - Context-aware with proper cancellation
 - Configurable timeouts and retry logic
+- Every credential held in [go-enclave](https://github.com/jeremyhahn/go-enclave)
+  locked memory — never a plaintext `string` (see
+  [Credentials in locked memory](#credentials-in-locked-memory))
 
 ## Quick Reference
 
@@ -37,21 +40,29 @@ config := &oauth.Config{
 auth, _ := oauth.NewAuthenticator(config)
 defer auth.Close()
 
-claims, err := auth.ValidateToken(ctx, token)
+bearer, _ := enclave.NewMemoryEnclaveFromString(tokenFromRequest)
+defer bearer.Destroy() // ValidateToken borrows it
+
+claims, err := auth.ValidateToken(ctx, bearer)
 ```
 
 ### Client Credentials Flow
 
 ```go
+clientSecret, _ := enclave.NewMemoryEnclave(secretBytes) // wipes secretBytes
+
 config := &oauth.Config{
     Provider:     oauth.Keycloak("https://keycloak.example.com", "master"),
     Flow:         oauth.FlowClientCredentials,
     ClientID:     "service-account",
-    ClientSecret: "secret",
+    ClientSecret: clientSecret, // owned by the Authenticator; Close destroys it
 }
 
 auth, _ := oauth.NewAuthenticator(config)
+defer auth.Close()
+
 token, err := auth.AuthenticateClientCredentials(ctx)
+defer token.Destroy()
 ```
 
 ### Password Flow
@@ -61,11 +72,15 @@ config := &oauth.Config{
     Provider:     oauth.Auth0("myapp.us.auth0.com"),
     Flow:         oauth.FlowPassword,
     ClientID:     "client-id",
-    ClientSecret: "secret",
+    ClientSecret: clientSecret,
 }
 
 auth, _ := oauth.NewAuthenticator(config)
-token, err := auth.AuthenticatePassword(ctx, "user@example.com", "password")
+password, _ := enclave.NewMemoryEnclave(passwordBytes) // borrowed below
+defer password.Destroy()
+
+token, err := auth.AuthenticatePassword(ctx, "user@example.com", password)
+defer token.Destroy()
 ```
 
 ### Authorization Code + PKCE
@@ -80,14 +95,31 @@ config := &oauth.Config{
 
 auth, _ := oauth.NewAuthenticator(config)
 
-// Step 1: Generate auth URL. The code verifier comes back in protected
-// memory (pkg/secret) and is destroyed by the exchange.
+// Step 1: Generate auth URL. The code verifier comes back in locked memory
+// and is destroyed by the exchange.
 authURL, verifier, _ := auth.BuildAuthURLPKCE("state", nil)
 defer verifier.Destroy()
 // Redirect user to authURL
 
 // Step 2: Exchange code for token
 token, err := auth.ExchangeAuthorizationCodePKCE(ctx, code, verifier)
+defer token.Destroy()
+
+// Step 3, later: refresh. RefreshToken borrows the old refresh token.
+next, err := auth.RefreshToken(ctx, token.RefreshToken())
+```
+
+### Using a Token
+
+A `Token` owns its access, refresh and ID tokens in enclaves and lends them
+through `AccessToken()`, `RefreshToken()` and `IDToken()`. Read one only inside
+`WithBytes`, at your own boundary, and never retain the slice:
+
+```go
+err := token.AccessToken().WithBytes(func(access []byte) error {
+    req.Header.Set("Authorization", "Bearer "+string(access))
+    return nil
+})
 ```
 
 ### With Token Caching
@@ -123,7 +155,7 @@ Validation: oauth.TokenValidationConfig{
 ### Token Claims Access
 
 ```go
-claims, _ := auth.ValidateToken(ctx, token)
+claims, _ := auth.ValidateToken(ctx, bearer)
 
 fmt.Println(claims.Subject)       // User ID
 fmt.Println(claims.Email)         // Email
@@ -176,7 +208,14 @@ if err != nil {
 }
 defer auth.Close()
 
-claims, err := auth.ValidateToken(ctx, accessToken)
+// Seal the bearer token as soon as it is read from the request.
+bearer, err := enclave.NewMemoryEnclaveFromString(accessToken)
+if err != nil {
+    return err
+}
+defer bearer.Destroy() // ValidateToken borrows it
+
+claims, err := auth.ValidateToken(ctx, bearer)
 if err != nil {
     log.Printf("Invalid token: %v", err)
     return
@@ -194,7 +233,7 @@ config := &oauth.Config{
     Provider:     oauth.Keycloak("https://keycloak.example.com", "master"),
     Flow:         oauth.FlowClientCredentials,
     ClientID:     "service-account",
-    ClientSecret: "secret",
+    ClientSecret: clientSecret, // *enclave.MemoryEnclave, owned by the Authenticator
     Scopes:       []string{"api.read", "api.write"},
 }
 
@@ -202,13 +241,15 @@ auth, err := oauth.NewAuthenticator(config)
 if err != nil {
     log.Fatal(err)
 }
+defer auth.Close()
 
 token, err := auth.AuthenticateClientCredentials(ctx)
 if err != nil {
     log.Fatal(err)
 }
+defer token.Destroy()
 
-fmt.Printf("Access Token: %s\n", token.AccessToken)
+fmt.Printf("Access token: %d bytes, expires %s\n", token.AccessToken().Size(), token.Expiry)
 ```
 
 ### Password Flow
@@ -220,7 +261,7 @@ config := &oauth.Config{
     Provider:     oauth.Auth0("myapp.us.auth0.com"),
     Flow:         oauth.FlowPassword,
     ClientID:     "client-id",
-    ClientSecret: "client-secret",
+    ClientSecret: clientSecret,
     Scopes:       []string{"openid", "profile", "email"},
 }
 
@@ -228,14 +269,21 @@ auth, err := oauth.NewAuthenticator(config)
 if err != nil {
     log.Fatal(err)
 }
+defer auth.Close()
 
-token, err := auth.AuthenticatePassword(ctx, "user@example.com", "password")
+password, err := enclave.NewMemoryEnclave(passwordBytes) // wipes passwordBytes
 if err != nil {
     log.Fatal(err)
 }
+defer password.Destroy() // AuthenticatePassword borrows it
 
-fmt.Printf("Access Token: %s\n", token.AccessToken)
-fmt.Printf("ID Token: %s\n", token.IDToken)
+token, err := auth.AuthenticatePassword(ctx, "user@example.com", password)
+if err != nil {
+    log.Fatal(err)
+}
+defer token.Destroy()
+
+fmt.Printf("ID token issued: %v\n", token.IDToken().IsAlive())
 ```
 
 ### Authorization Code Flow with PKCE
@@ -271,14 +319,20 @@ token, err := auth.ExchangeAuthorizationCodePKCE(ctx, code, verifier)
 if err != nil {
     log.Fatal(err)
 }
+defer token.Destroy()
 ```
+
+Without PKCE, `BuildAuthURL(state, params)` and
+`ExchangeAuthorizationCode(ctx, code)` are the same flow with no verifier. The
+authorization code stays a `string`: it arrives in the redirect's query string,
+which `net/http` has already parsed, and is redeemable exactly once.
 
 ### The code verifier is a credential
 
 A PKCE code verifier is a bearer secret for the length of the flow: whoever
 holds it can redeem an intercepted authorization code, which is the whole attack
-PKCE exists to stop. `BuildAuthURLPKCE` generates it inside a
-[protected-memory enclave](secret.md) and derives the S256 challenge from there,
+PKCE exists to stop. `BuildAuthURLPKCE` generates it inside a go-enclave
+`MemoryEnclave` and derives the S256 challenge from there,
 so it has no plaintext form on the Go heap; `ExchangeAuthorizationCodePKCE`
 copies it into a locked request body and destroys it, since RFC 7636 gives a
 verifier exactly one authorization code to redeem.
@@ -294,10 +348,10 @@ store, and nothing exported reads a `Verifier`'s value back out — a Go string
 cannot be wiped, so an escape hatch that produced one would undo what the
 enclave is for. Hold the `Verifier` in an in-process map keyed by `state`.
 
-An application that cannot do that is on the deprecated string flow
-(`BuildAuthURL` with `usePKCE`) until the coordinated breaking release.
-`oauth.NewVerifier` seals a verifier it already holds so the redemption half is
-protected: plaintext goes in, nothing comes back out.
+An application that keeps its own sealed copy of a verifier — restored into
+locked memory from an encrypted session store, say — wraps it with
+`oauth.NewVerifier(enclave)`, which takes ownership of the enclave: the
+verifier goes in, nothing comes back out.
 
 `additionalParams` may not set a parameter the library owns — `client_id`,
 `redirect_uri`, `response_type`, `state`, `scope`, `code_challenge` or
@@ -305,11 +359,55 @@ protected: plaintext goes in, nothing comes back out.
 verifier that does not match the URL, and the flow would then fail at the token
 endpoint with nothing pointing at the cause. Those keys are rejected.
 
-`BuildAuthURL(state, true, nil)` and the `codeVerifier` argument of
-`ExchangeAuthorizationCode` are the deprecated string form of the same flow. They
-still generate the verifier in protected memory, but their signatures have to
-hand it back as an immutable Go string that cannot be wiped. They are replaced in
-the coordinated breaking release.
+### Credentials in locked memory
+
+Every OAuth credential the package handles lives in a go-enclave
+`*enclave.MemoryEnclave`, never in a plaintext `string` ([#47], owner ruling on
+[#3]).
+
+| Credential | Where it lives | Owner |
+|---|---|---|
+| Client secret | `Config.ClientSecret` | The `Authenticator`: `NewAuthenticator` takes it on every return path (it destroys it itself on error), `Close` destroys it |
+| Access / refresh / ID token | `Token.AccessToken()`, `RefreshToken()`, `IDToken()` | The `Token`: `Token.Destroy` wipes all three |
+| Bearer token being validated | argument to `ValidateToken`, `ValidateIDToken`, `GetUserInfo` | The caller: these methods borrow it |
+| Password, refresh token sent | argument to `AuthenticatePassword`, `RefreshToken` | The caller: these methods borrow it |
+| PKCE code verifier | `oauth.Verifier` | The `Verifier`; the exchange consumes it. `NewVerifier` takes ownership of the enclave it is given |
+| Validated-claims cache | LRU entries, keyed by the token's SHA-256 fingerprint | The cache: destroyed on eviction, expiry, overwrite, `ClearCache` and `Close` |
+| UserInfo cache | entries keyed by the access token's SHA-256 fingerprint | The `Authenticator`: bounded by `UserInfoConfig.CacheMaxSize`; destroyed on eviction, expiry, overwrite, `ClearUserInfoCache` and `Close` |
+
+Failing to lock memory is never papered over: `enclave.ErrLockedMemoryUnavailable`
+propagates (wrapped, matchable with `errors.Is`), and nothing falls back to
+ordinary memory — a claims or UserInfo response that cannot be sealed fails the
+call instead of being cached in the clear. Expired cache entries are reclaimed
+before a new one is allocated, so dead entries cannot exhaust a locked-memory
+budget; both caches are bounded (`CacheConfig.MaxSize` for claims,
+`UserInfoConfig.CacheMaxSize`, default 1000, for UserInfo), evict their
+least-recently-used entry for capacity before allocating, and on a
+locked-memory refusal evict one more entry and retry once before failing
+closed; and once `Close` has run both caches refuse inserts with
+`ErrCacheClosed`, so a request in flight across `Close` cannot leave an enclave
+behind.
+
+A credential is opened only where a dependency forces it, and each such site is
+marked in the source:
+
+- **R5 — `net/http` / `crypto/tls`** ([#3] residue register). Form bodies
+  (client secret, password, refresh token, PKCE verifier, introspected token)
+  are assembled in a locked scratch enclave, and token responses are decoded
+  straight into enclaves without passing through a `string`. What remains is
+  the transport's own copies of request and response bytes, the
+  `Authorization` header for introspection (Basic) and UserInfo (Bearer), which
+  `net/http` carries only as a string, and the copy `io.ReadAll` makes of the
+  response (wiped once the tokens are sealed out of it).
+- **JWT parse boundary.** golang-jwt parses only from a `string`, so a token
+  validated as a JWT (`ValidateToken`, `ValidateIDToken`) is copied into one
+  for the parse.
+- **`pkg/api` boundary.** `Authenticator.Authenticate(ctx, username, token
+  string)` still takes the string `api.LoginRequest` hands it; it seals the
+  token immediately and validates the enclave. #48 replaces that interface.
+
+[#3]: https://github.com/jeremyhahn/go-auth/issues/3
+[#47]: https://github.com/jeremyhahn/go-auth/issues/47
 
 ## Provider Configuration
 
@@ -412,7 +510,10 @@ Validation: oauth.TokenValidationConfig{
 
 ## Token Caching
 
-Enable in-memory caching to reduce latency and provider load:
+Enable in-memory caching to reduce latency and provider load. Validated claims
+are held JSON-encoded in an enclave, keyed by the token's SHA-256 fingerprint
+(never the token), and destroyed on eviction, expiry, overwrite, `ClearCache`
+and `Close`:
 
 ```go
 Cache: oauth.CacheConfig{
@@ -449,7 +550,7 @@ service, _ := api.NewService(api.Config{
 
 err := service.Login(ctx, api.LoginRequest{
     Backend:  api.BackendOAuth,
-    Password: token, // Token goes in password field
+    Password: token, // Token goes in password field; sealed on arrival
 })
 ```
 
@@ -468,13 +569,13 @@ err := service.Login(ctx, api.LoginRequest{
 - `Validation.IntrospectionURL` (for introspection)
 
 **FlowClientCredentials:**
-- `ClientSecret`
+- `ClientSecret` (a live `*enclave.MemoryEnclave`)
 
 **FlowPassword:**
-- `ClientSecret`
+- `ClientSecret` (a live `*enclave.MemoryEnclave`)
 
 **FlowAuthorizationCode:**
-- `ClientSecret` (optional for public clients)
+- `ClientSecret` (optional for public clients; nil for none)
 - `RedirectURL`
 
 ### Optional Configuration
@@ -501,17 +602,19 @@ err := service.Login(ctx, api.LoginRequest{
 Common errors:
 
 ```go
-claims, err := auth.ValidateToken(ctx, token)
+claims, err := auth.ValidateToken(ctx, bearer)
 if err != nil {
     switch {
     case errors.Is(err, oauth.ErrMissingToken):
-        // No token provided
+        // No token provided, or the enclave was nil or destroyed
     case errors.Is(err, oauth.ErrInvalidToken):
         // Token is invalid or malformed
     case errors.Is(err, oauth.ErrExpiredToken):
         // Token has expired
     case errors.Is(err, oauth.ErrInvalidConfiguration):
         // Configuration error
+    case errors.Is(err, enclave.ErrLockedMemoryUnavailable):
+        // The process could not lock memory for a credential; fail closed
     default:
         // Other error
     }
@@ -524,7 +627,7 @@ if err != nil {
 2. **Use PKCE for authorization code flow** - Prevents code interception; take the verifier from `BuildAuthURLPKCE`, which keeps it in protected memory
 3. **Validate issuer and audience claims** - Prevents token misuse
 4. **Set appropriate clock skew** - Accounts for time drift (default: 60s)
-5. **Never log secrets or tokens** - Prevents credential leakage
+5. **Never log secrets or tokens** - Prevents credential leakage; copy one out of its enclave only inside `WithBytes`, and never retain the copy
 6. **Use state parameter** - Prevents CSRF attacks in auth code flow
 7. **Rotate client secrets regularly** - Limits exposure window
 8. **Enable caching judiciously** - Balance security and performance
@@ -540,7 +643,8 @@ if err != nil {
 - [ ] Use state parameter for CSRF protection
 - [ ] Enable caching for performance
 - [ ] Set proper timeout values
-- [ ] Close authenticator when done
+- [ ] Close authenticator when done (destroys the client secret and the caches)
+- [ ] `Destroy` every `Token` when done
 
 ## Thread Safety
 
@@ -552,11 +656,11 @@ defer auth.Close()
 
 // Safe to use from multiple goroutines
 go func() {
-    claims, _ := auth.ValidateToken(ctx, token1)
+    claims, _ := auth.ValidateToken(ctx, bearer1)
 }()
 
 go func() {
-    claims, _ := auth.ValidateToken(ctx, token2)
+    claims, _ := auth.ValidateToken(ctx, bearer2)
 }()
 ```
 
@@ -569,7 +673,7 @@ auth, err := oauth.NewAuthenticator(config)
 if err != nil {
     return err
 }
-defer auth.Close() // Releases JWKS and cache resources
+defer auth.Close() // Releases JWKS and cache resources; destroys the client secret
 ```
 
 ## Performance Considerations

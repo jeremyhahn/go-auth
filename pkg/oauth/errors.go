@@ -33,6 +33,28 @@ var (
 	// ErrTokenExchangeFailed indicates OAuth token exchange failed.
 	ErrTokenExchangeFailed = errors.New("oauth: token exchange failed")
 
+	// ErrCredentialUnavailable indicates a credential enclave an operation needed
+	// was nil or had already been destroyed.
+	ErrCredentialUnavailable = errors.New("oauth: credential is missing or destroyed")
+
+	// ErrCredentialChanged indicates a credential enclave reported a different
+	// size while a request body was being assembled from it than when the body
+	// was measured. Enclaves are immutable, so this is a defect, never a race a
+	// caller can win.
+	ErrCredentialChanged = errors.New("oauth: credential changed size while a request was assembled")
+
+	// ErrMalformedTokenResponse indicates a token endpoint returned a credential
+	// field that is not a JSON string.
+	ErrMalformedTokenResponse = errors.New("oauth: malformed credential in token response")
+
+	// ErrCacheClosed indicates an entry was offered to a cache after it was
+	// closed. Nothing is stored: a closed cache would never destroy it.
+	ErrCacheClosed = errors.New("oauth: cache is closed")
+
+	// ErrRequestBodyReleased indicates the transport read a request body after
+	// the call that lent it had returned and the locked buffer was released.
+	ErrRequestBodyReleased = errors.New("oauth: request body was released before it was fully written")
+
 	// OIDC-specific errors
 
 	// ErrOIDCNotEnabled indicates OIDC functionality is not enabled.
@@ -61,6 +83,12 @@ var (
 
 	// ErrOIDCInvalidAtHash indicates at_hash validation failed.
 	ErrOIDCInvalidAtHash = errors.New("oauth: invalid at_hash")
+
+	// ErrOIDCUnsupportedAtHashAlgorithm indicates the ID token's signing
+	// algorithm has no at_hash hash function, so at_hash cannot be checked. It
+	// is always returned joined with ErrOIDCInvalidAtHash: a check that cannot
+	// run rejects the token.
+	ErrOIDCUnsupportedAtHashAlgorithm = errors.New("oauth: id token algorithm has no at_hash hash")
 
 	// ErrOIDCAuthTimeTooOld indicates the auth_time is older than max_age.
 	ErrOIDCAuthTimeTooOld = errors.New("oauth: authentication too old")

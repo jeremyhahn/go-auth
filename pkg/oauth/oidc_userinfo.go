@@ -3,51 +3,66 @@ package oauth
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"sync"
 	"time"
+
+	"github.com/jeremyhahn/go-enclave"
 )
 
-// userInfoEntry represents a cached UserInfo response.
-type userInfoEntry struct {
-	userInfo  *UserInfo
-	expiresAt time.Time
+// sealedUserInfo is the cached form of a UserInfo. Custom is carried beside it
+// because UserInfo excludes it from its own JSON encoding.
+type sealedUserInfo struct {
+	UserInfo *UserInfo              `json:"userinfo"`
+	Custom   map[string]interface{} `json:"custom,omitempty"`
 }
 
 // userInfoClient handles UserInfo endpoint requests and caching.
+//
+// Responses are cached in a sealedLRU keyed by the access token's fingerprint,
+// so the cache is bounded by UserInfoConfig.CacheMaxSize and by the
+// locked-memory allowance exactly as the claims cache is: an unbounded cache of
+// locked pages would be a memory-exhaustion path for anyone able to present
+// distinct access tokens.
 type userInfoClient struct {
-	mu              sync.RWMutex
 	httpClient      *http.Client
 	config          *Config
-	cache           map[string]*userInfoEntry
+	cache           *sealedLRU
 	discoveryClient *discoveryClient
 }
 
 // newUserInfoClient creates a new UserInfo client.
 func newUserInfoClient(httpClient *http.Client, config *Config, discoveryClient *discoveryClient) *userInfoClient {
+	maxSize := defaultUserInfoCacheMaxSize
+	if config.OIDC != nil && config.OIDC.UserInfo.CacheMaxSize > 0 {
+		maxSize = config.OIDC.UserInfo.CacheMaxSize
+	}
+
 	return &userInfoClient{
 		httpClient:      httpClient,
 		config:          config,
-		cache:           make(map[string]*userInfoEntry),
+		cache:           newSealedLRU(maxSize, enclave.NewMemoryEnclave, time.Now),
 		discoveryClient: discoveryClient,
 	}
 }
 
 // GetUserInfo fetches user information from the UserInfo endpoint.
-// It uses the access token for authentication and caches the response.
-func (c *userInfoClient) GetUserInfo(ctx context.Context, accessToken string, issuer string) (*UserInfo, error) {
+// It uses the access token for authentication and caches the response under
+// the token's fingerprint. The access token is borrowed, not destroyed.
+func (c *userInfoClient) GetUserInfo(ctx context.Context, accessToken *enclave.MemoryEnclave, issuer string) (*UserInfo, error) {
 	if !c.isUserInfoEnabled() {
 		return nil, ErrOIDCNotEnabled
 	}
 
-	if accessToken == "" {
+	key, err := tokenFingerprint(accessToken)
+	if err != nil {
 		return nil, fmt.Errorf("%w: access token required", ErrOIDCUserInfoFailed)
 	}
 
 	// Check cache first
-	if cached := c.getFromCache(accessToken); cached != nil {
+	if cached := c.getFromCache(key); cached != nil {
 		return cached, nil
 	}
 
@@ -68,13 +83,15 @@ func (c *userInfoClient) GetUserInfo(ctx context.Context, accessToken string, is
 	}
 
 	// Cache the response
-	c.cacheUserInfo(accessToken, userInfo)
+	if err := c.cacheUserInfo(key, userInfo); err != nil {
+		return nil, errors.Join(ErrOIDCUserInfoFailed, err)
+	}
 
 	return userInfo, nil
 }
 
 // fetchUserInfo makes the HTTP request to the UserInfo endpoint.
-func (c *userInfoClient) fetchUserInfo(ctx context.Context, userInfoURL string, accessToken string) (*UserInfo, error) {
+func (c *userInfoClient) fetchUserInfo(ctx context.Context, userInfoURL string, accessToken *enclave.MemoryEnclave) (*UserInfo, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -94,7 +111,13 @@ func (c *userInfoClient) fetchUserInfo(ctx context.Context, userInfoURL string, 
 	}
 
 	// Set authorization header
-	req.Header.Set("Authorization", "Bearer "+accessToken)
+	if err := accessToken.WithBytes(func(b []byte) error {
+		// Residue R5: net/http carries the bearer token only as a header string.
+		req.Header.Set("Authorization", "Bearer "+string(b))
+		return nil
+	}); err != nil {
+		return nil, errors.Join(ErrOIDCUserInfoFailed, ErrCredentialUnavailable, err)
+	}
 	req.Header.Set("Accept", "application/json")
 
 	// Execute request
@@ -148,59 +171,48 @@ func (c *userInfoClient) getUserInfoEndpoint(ctx context.Context, issuer string)
 	return "", fmt.Errorf("%w: userinfo endpoint not available", ErrOIDCUserInfoFailed)
 }
 
-// getFromCache retrieves cached UserInfo if available and not expired.
-func (c *userInfoClient) getFromCache(accessToken string) *UserInfo {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	entry, exists := c.cache[accessToken]
-	if !exists {
+// getFromCache retrieves a copy of cached UserInfo if available and not
+// expired, decoded from its enclave. key is a token fingerprint. A read that
+// finds an expired entry destroys it.
+func (c *userInfoClient) getFromCache(key string) *UserInfo {
+	var cached sealedUserInfo
+	if !c.cache.get(key, &cached) || cached.UserInfo == nil {
 		return nil
 	}
 
-	// Check expiration
-	if time.Now().After(entry.expiresAt) {
-		return nil
+	cached.UserInfo.Custom = cached.Custom
+	if cached.UserInfo.Custom == nil {
+		cached.UserInfo.Custom = make(map[string]interface{})
 	}
 
-	return entry.userInfo
+	return cached.UserInfo
 }
 
-// cacheUserInfo stores UserInfo in the cache.
-func (c *userInfoClient) cacheUserInfo(accessToken string, userInfo *UserInfo) {
+// cacheUserInfo seals UserInfo into an enclave and stores it under key, a
+// token fingerprint. It fails, and caches nothing, when the response cannot be
+// sealed into locked memory, and with ErrCacheClosed once Close has run; see
+// sealedLRU.set for the order in which locked memory is reclaimed.
+func (c *userInfoClient) cacheUserInfo(key string, userInfo *UserInfo) error {
 	ttl := 5 * time.Minute // Default
 	if c.config.OIDC != nil && c.config.OIDC.UserInfo.CacheTTL > 0 {
 		ttl = c.config.OIDC.UserInfo.CacheTTL
 	}
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	c.cache[accessToken] = &userInfoEntry{
-		userInfo:  userInfo,
-		expiresAt: time.Now().Add(ttl),
-	}
-
-	// Simple cache cleanup: remove expired entries
-	c.cleanupExpiredLocked()
+	return c.cache.set(key, sealedUserInfo{UserInfo: userInfo, Custom: userInfo.Custom}, ttl)
 }
 
-// cleanupExpiredLocked removes expired entries from the cache.
-// Must be called with write lock held.
-func (c *userInfoClient) cleanupExpiredLocked() {
-	now := time.Now()
-	for key, entry := range c.cache {
-		if now.After(entry.expiresAt) {
-			delete(c.cache, key)
-		}
-	}
-}
-
-// ClearCache removes all cached UserInfo responses.
+// ClearCache removes and destroys all cached UserInfo responses. The cache
+// stays usable.
 func (c *userInfoClient) ClearCache() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.cache = make(map[string]*userInfoEntry)
+	c.cache.clear()
+}
+
+// Close destroys every cached entry and closes the cache for good: a later
+// insert — including one from a request that was in flight during Close —
+// fails with ErrCacheClosed instead of leaving an enclave nothing will destroy.
+// It is idempotent.
+func (c *userInfoClient) Close() {
+	c.cache.close()
 }
 
 // isUserInfoEnabled checks if UserInfo endpoint calls are enabled.

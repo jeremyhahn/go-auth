@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-enclave"
+
 	"github.com/jeremyhahn/go-auth/pkg/api"
 	"github.com/jeremyhahn/go-auth/pkg/oauth"
 )
@@ -18,6 +20,33 @@ const (
 )
 
 // Helper function to get client credentials from environment
+// sealForTest seals a fixture credential into a fresh enclave and destroys it
+// when the test ends. Each Config gets its own: NewAuthenticator takes
+// ownership of the client secret it is given. An empty s yields nil.
+func sealForTest(t *testing.T, s string) *enclave.MemoryEnclave {
+	t.Helper()
+	if s == "" {
+		return nil
+	}
+	e, err := enclave.NewMemoryEnclaveFromString(s)
+	if err != nil {
+		t.Fatalf("NewMemoryEnclaveFromString: %v", err)
+	}
+	t.Cleanup(e.Destroy)
+	return e
+}
+
+// openForTest copies a credential out of its enclave for an assertion or for a
+// string-only API under test.
+func openForTest(t *testing.T, e *enclave.MemoryEnclave) string {
+	t.Helper()
+	s, err := e.OpenString()
+	if err != nil {
+		t.Fatalf("OpenString: %v", err)
+	}
+	return s
+}
+
 func getClientCredentials(t *testing.T) (clientID, clientSecret string) {
 	t.Helper()
 	clientID = os.Getenv("TEST_OAUTH_CLIENT_CREDENTIALS_ID")
@@ -63,7 +92,7 @@ func TestOAuthIntegration_ClientCredentialsFlow(t *testing.T) {
 		Provider:     provider,
 		Flow:         oauth.FlowClientCredentials,
 		ClientID:     clientID,
-		ClientSecret: clientSecret,
+		ClientSecret: sealForTest(t, clientSecret),
 		Scopes:       []string{"api:read", "api:write"},
 		Timeout:      10 * time.Second,
 	}
@@ -80,12 +109,13 @@ func TestOAuthIntegration_ClientCredentialsFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Expected client credentials flow to succeed, got error: %v", err)
 	}
+	defer token.Destroy()
 
 	if token == nil {
 		t.Fatal("Expected non-nil token")
 	}
 
-	if token.AccessToken == "" {
+	if !token.AccessToken().IsAlive() {
 		t.Error("Expected non-empty access token")
 	}
 
@@ -120,7 +150,7 @@ func TestOAuthIntegration_ClientCredentialsFlow_InvalidCredentials(t *testing.T)
 		Provider:     provider,
 		Flow:         oauth.FlowClientCredentials,
 		ClientID:     clientID,
-		ClientSecret: "wrong-secret",
+		ClientSecret: sealForTest(t, "wrong-secret"),
 		Scopes:       []string{"api:read"},
 		Timeout:      10 * time.Second,
 	}
@@ -172,7 +202,7 @@ func TestOAuthIntegration_PasswordFlow(t *testing.T) {
 		Provider:     provider,
 		Flow:         oauth.FlowPassword,
 		ClientID:     clientID,
-		ClientSecret: clientSecret,
+		ClientSecret: sealForTest(t, clientSecret),
 		Scopes:       []string{"openid", "profile", "email"},
 		Timeout:      10 * time.Second,
 	}
@@ -186,27 +216,28 @@ func TestOAuthIntegration_PasswordFlow(t *testing.T) {
 	// Test password flow with valid credentials
 	// Note: Hydra in --dev mode accepts any username/password
 	ctx := context.Background()
-	token, err := authenticator.AuthenticatePassword(ctx, "testuser", "testpass")
+	token, err := authenticator.AuthenticatePassword(ctx, "testuser", sealForTest(t, "testpass"))
 	if err != nil {
 		t.Fatalf("Expected password flow to succeed, got error: %v", err)
 	}
+	defer token.Destroy()
 
 	if token == nil {
 		t.Fatal("Expected non-nil token")
 	}
 
-	if token.AccessToken == "" {
+	if !token.AccessToken().IsAlive() {
 		t.Error("Expected non-empty access token")
 	}
 
 	// Password flow with offline scope should return refresh token
-	if token.RefreshToken == "" {
+	if !token.RefreshToken().IsAlive() {
 		t.Log("Note: No refresh token returned (may need 'offline' scope)")
 	}
 
 	t.Logf("Successfully authenticated via password flow")
 	t.Logf("Access token length: %d, has refresh token: %v",
-		len(token.AccessToken), token.RefreshToken != "")
+		token.AccessToken().Size(), token.RefreshToken().IsAlive())
 }
 
 // TestOAuthIntegration_TokenIntrospection tests token validation via introspection
@@ -229,7 +260,7 @@ func TestOAuthIntegration_TokenIntrospection(t *testing.T) {
 		Provider:     provider,
 		Flow:         oauth.FlowClientCredentials,
 		ClientID:     clientID,
-		ClientSecret: clientSecret,
+		ClientSecret: sealForTest(t, clientSecret),
 		Scopes:       []string{"api:read"},
 		Timeout:      10 * time.Second,
 	}
@@ -245,6 +276,7 @@ func TestOAuthIntegration_TokenIntrospection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to get token: %v", err)
 	}
+	defer token.Destroy()
 
 	// Now configure authenticator for token validation via introspection
 	// NOTE: TokenEndpoint is required even for validation-only providers
@@ -262,7 +294,7 @@ func TestOAuthIntegration_TokenIntrospection(t *testing.T) {
 		Provider:     validationProvider,
 		Flow:         oauth.FlowTokenValidation,
 		ClientID:     clientID,
-		ClientSecret: clientSecret,
+		ClientSecret: sealForTest(t, clientSecret),
 		Timeout:      10 * time.Second,
 		Validation: oauth.TokenValidationConfig{
 			Method:           oauth.ValidationIntrospection,
@@ -277,7 +309,7 @@ func TestOAuthIntegration_TokenIntrospection(t *testing.T) {
 	defer validator.Close()
 
 	// Test 1: Valid token should validate successfully
-	claims, err := validator.ValidateToken(ctx, token.AccessToken)
+	claims, err := validator.ValidateToken(ctx, token.AccessToken())
 	if err != nil {
 		t.Errorf("Expected valid token to validate, got error: %v", err)
 	}
@@ -324,7 +356,7 @@ func TestOAuthIntegration_WithAPIService(t *testing.T) {
 		Provider:     provider,
 		Flow:         oauth.FlowClientCredentials,
 		ClientID:     clientID,
-		ClientSecret: clientSecret,
+		ClientSecret: sealForTest(t, clientSecret),
 		Scopes:       []string{"api:read"},
 		Timeout:      10 * time.Second,
 	}
@@ -340,6 +372,7 @@ func TestOAuthIntegration_WithAPIService(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to get token: %v", err)
 	}
+	defer token.Destroy()
 
 	// Create validator with introspection
 	// NOTE: TokenEndpoint is required even for validation-only providers
@@ -357,7 +390,7 @@ func TestOAuthIntegration_WithAPIService(t *testing.T) {
 		Provider:     validationProvider,
 		Flow:         oauth.FlowTokenValidation,
 		ClientID:     clientID,
-		ClientSecret: clientSecret,
+		ClientSecret: sealForTest(t, clientSecret),
 		Timeout:      10 * time.Second,
 		Validation: oauth.TokenValidationConfig{
 			Method:           oauth.ValidationIntrospection,
@@ -387,8 +420,8 @@ func TestOAuthIntegration_WithAPIService(t *testing.T) {
 	// Test 1: Valid token should authenticate
 	req := api.LoginRequest{
 		Backend:  api.BackendOAuth,
-		Username: "ignored", // OAuth doesn't use username
-		Password: token.AccessToken,
+		Username: "ignored",                           // OAuth doesn't use username
+		Password: openForTest(t, token.AccessToken()), // pkg/api still takes strings (go-auth#48)
 	}
 
 	err = service.Login(ctx, req)
@@ -427,7 +460,7 @@ func TestOAuthIntegration_TokenCaching(t *testing.T) {
 		Provider:     provider,
 		Flow:         oauth.FlowClientCredentials,
 		ClientID:     clientID,
-		ClientSecret: clientSecret,
+		ClientSecret: sealForTest(t, clientSecret),
 		Scopes:       []string{"api:read"},
 		Timeout:      10 * time.Second,
 	}
@@ -443,6 +476,7 @@ func TestOAuthIntegration_TokenCaching(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to get token: %v", err)
 	}
+	defer token.Destroy()
 
 	// Create validator with caching enabled
 	// NOTE: TokenEndpoint is required even for validation-only providers
@@ -460,7 +494,7 @@ func TestOAuthIntegration_TokenCaching(t *testing.T) {
 		Provider:     validationProvider,
 		Flow:         oauth.FlowTokenValidation,
 		ClientID:     clientID,
-		ClientSecret: clientSecret,
+		ClientSecret: sealForTest(t, clientSecret),
 		Timeout:      10 * time.Second,
 		Cache: oauth.CacheConfig{
 			Enabled: true,
@@ -481,7 +515,7 @@ func TestOAuthIntegration_TokenCaching(t *testing.T) {
 
 	// First validation (uncached)
 	start := time.Now()
-	_, err = validator.ValidateToken(ctx, token.AccessToken)
+	_, err = validator.ValidateToken(ctx, token.AccessToken())
 	firstDuration := time.Since(start)
 	if err != nil {
 		t.Fatalf("First validation failed: %v", err)
@@ -489,7 +523,7 @@ func TestOAuthIntegration_TokenCaching(t *testing.T) {
 
 	// Second validation (should be cached)
 	start = time.Now()
-	_, err = validator.ValidateToken(ctx, token.AccessToken)
+	_, err = validator.ValidateToken(ctx, token.AccessToken())
 	cachedDuration := time.Since(start)
 	if err != nil {
 		t.Fatalf("Cached validation failed: %v", err)
@@ -512,7 +546,7 @@ func TestOAuthIntegration_TokenCaching(t *testing.T) {
 
 	// After clearing cache, validation should take longer again
 	start = time.Now()
-	_, err = validator.ValidateToken(ctx, token.AccessToken)
+	_, err = validator.ValidateToken(ctx, token.AccessToken())
 	afterClearDuration := time.Since(start)
 	if err != nil {
 		t.Fatalf("Validation after cache clear failed: %v", err)
@@ -538,7 +572,7 @@ func TestOAuthIntegration_MultipleScopes(t *testing.T) {
 		Provider:     provider,
 		Flow:         oauth.FlowClientCredentials,
 		ClientID:     clientID,
-		ClientSecret: clientSecret,
+		ClientSecret: sealForTest(t, clientSecret),
 		Scopes:       []string{"api:read", "api:write"},
 		Timeout:      10 * time.Second,
 	}
@@ -550,14 +584,15 @@ func TestOAuthIntegration_MultipleScopes(t *testing.T) {
 	defer authenticator.Close()
 
 	ctx := context.Background()
-	_, err = authenticator.AuthenticateClientCredentials(ctx)
+	token, err := authenticator.AuthenticateClientCredentials(ctx)
 	if err != nil {
 		t.Fatalf("Failed to get token with multiple scopes: %v", err)
 	}
+	defer token.Destroy()
 
-	if "" == "" {
+	if len(token.Scopes) == 0 {
 		t.Log("Note: Scope not returned in token response (may be in JWT claims)")
 	} else {
-		t.Logf("Token scopes: %s", "")
+		t.Logf("Token scopes: %v", token.Scopes)
 	}
 }

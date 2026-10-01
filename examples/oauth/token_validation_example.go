@@ -19,6 +19,8 @@ import (
 	"log"
 	"time"
 
+	"github.com/jeremyhahn/go-enclave"
+
 	"github.com/jeremyhahn/go-auth/pkg/api"
 	"github.com/jeremyhahn/go-auth/pkg/oauth"
 )
@@ -72,7 +74,14 @@ func googleExample() {
 	//   1. Google Sign-In button on your frontend
 	//   2. Mobile app Google authentication
 	//   3. Server-to-server OAuth flow
-	token := "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9..." // Truncated for example
+	//
+	// Seal it as soon as it is read from the request: ValidateToken borrows
+	// the enclave and never sees a plaintext string.
+	token, err := enclave.NewMemoryEnclaveFromString("eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...") // Truncated for example
+	if err != nil {
+		log.Fatalf("Failed to seal token: %v", err)
+	}
+	defer token.Destroy()
 
 	fmt.Println("Validating Google ID token...")
 

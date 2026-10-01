@@ -17,7 +17,10 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/http"
 	"time"
+
+	"github.com/jeremyhahn/go-enclave"
 
 	"github.com/jeremyhahn/go-auth/pkg/oauth"
 )
@@ -41,11 +44,19 @@ func keycloakExample() {
 	// Configure OAuth for Keycloak client credentials flow
 	// This is used for service-to-service authentication
 	// No user interaction is required
+	// The client secret lives in locked memory. NewMemoryEnclave wipes the
+	// slice it is given, and the Authenticator owns the enclave from here on:
+	// Close destroys it.
+	clientSecret, err := enclave.NewMemoryEnclave([]byte("your-client-secret"))
+	if err != nil {
+		log.Fatalf("Failed to seal client secret: %v", err)
+	}
+
 	config := &oauth.Config{
 		Provider:     oauth.Keycloak("https://keycloak.example.com", "master"),
 		Flow:         oauth.FlowClientCredentials,
 		ClientID:     "service-account",
-		ClientSecret: "your-client-secret",
+		ClientSecret: clientSecret,
 		// Request specific scopes your service needs
 		Scopes: []string{"api.read", "api.write"},
 	}
@@ -83,19 +94,32 @@ func keycloakExample() {
 		return
 	}
 
+	// The Token owns its credentials in locked memory; destroy it when done.
+	defer token.Destroy()
+
 	fmt.Println("✓ Access token obtained successfully!")
 	fmt.Println()
-	fmt.Printf("Access Token: %s...\n", token.AccessToken[:50]) // Show first 50 chars
+	fmt.Printf("Access Token: %d bytes, held in locked memory\n", token.AccessToken().Size())
 	fmt.Printf("Token Type: %s\n", token.TokenType)
 	fmt.Printf("Expires In: %v\n", time.Until(token.Expiry))
-	if token.RefreshToken != "" {
-		fmt.Printf("Refresh Token: %s...\n", token.RefreshToken[:30])
+	if token.RefreshToken().IsAlive() {
+		fmt.Printf("Refresh Token: %d bytes, held in locked memory\n", token.RefreshToken().Size())
 	}
 
-	// Use the access token to call APIs
+	// Use the access token to call APIs. The plaintext exists only inside
+	// the borrow, at your own HTTP boundary.
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.example.com/resource", nil)
+	if err != nil {
+		log.Fatalf("Failed to build request: %v", err)
+	}
+	if err := token.AccessToken().WithBytes(func(access []byte) error {
+		req.Header.Set("Authorization", "Bearer "+string(access))
+		return nil
+	}); err != nil {
+		log.Fatalf("Failed to read access token: %v", err)
+	}
 	fmt.Println()
-	fmt.Println("You can now use this token to call protected APIs:")
-	fmt.Println("  Authorization: Bearer <access_token>")
+	fmt.Println("The request now carries: Authorization: Bearer <access_token>")
 }
 
 func auth0Example() {
@@ -103,11 +127,16 @@ func auth0Example() {
 
 	// Configure OAuth for Auth0 client credentials
 	// Auth0 uses audience parameter to specify the target API
+	clientSecret, err := enclave.NewMemoryEnclave([]byte("your-client-secret"))
+	if err != nil {
+		log.Fatalf("Failed to seal client secret: %v", err)
+	}
+
 	config := &oauth.Config{
 		Provider:     oauth.Auth0("myapp.us.auth0.com"),
 		Flow:         oauth.FlowClientCredentials,
 		ClientID:     "your-client-id",
-		ClientSecret: "your-client-secret",
+		ClientSecret: clientSecret,
 		// Audience identifies which API you're requesting access to
 		// This is required for Auth0 client credentials flow
 		Scopes: []string{"read:users", "write:users"},
@@ -139,9 +168,11 @@ func auth0Example() {
 		return
 	}
 
+	defer token.Destroy()
+
 	fmt.Println("✓ Access token obtained successfully!")
 	fmt.Println()
-	fmt.Printf("Access Token: %s...\n", token.AccessToken[:50])
+	fmt.Printf("Access Token: %d bytes, held in locked memory\n", token.AccessToken().Size())
 	fmt.Printf("Token Type: %s\n", token.TokenType)
 	fmt.Printf("Expires In: %v\n", time.Until(token.Expiry))
 	fmt.Println()

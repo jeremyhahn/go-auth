@@ -26,7 +26,7 @@ func TestNewAuthenticator_Success(t *testing.T) {
 	config := &Config{
 		Provider:     Google(),
 		ClientID:     "test-client",
-		ClientSecret: "test-secret",
+		ClientSecret: sealedForTest(t, "test-secret"),
 		Flow:         FlowTokenValidation,
 		Validation: TokenValidationConfig{
 			Method:  ValidationJWT,
@@ -111,7 +111,7 @@ func TestValidateToken_Success(t *testing.T) {
 	config := &Config{
 		Provider:     Google(),
 		ClientID:     "test-client",
-		ClientSecret: "test-secret",
+		ClientSecret: sealedForTest(t, "test-secret"),
 		Flow:         FlowTokenValidation,
 		Validation: TokenValidationConfig{
 			Method:   ValidationJWT,
@@ -144,7 +144,7 @@ func TestValidateToken_Success(t *testing.T) {
 	})
 
 	ctx := context.Background()
-	claims, err := auth.ValidateToken(ctx, token)
+	claims, err := auth.ValidateToken(ctx, sealedForTest(t, token))
 	if err != nil {
 		t.Fatalf("ValidateToken() failed: %v", err)
 	}
@@ -158,7 +158,7 @@ func TestValidateToken_Success(t *testing.T) {
 	}
 
 	// Second call should hit cache
-	claims2, err := auth.ValidateToken(ctx, token)
+	claims2, err := auth.ValidateToken(ctx, sealedForTest(t, token))
 	if err != nil {
 		t.Fatalf("ValidateToken() second call failed: %v", err)
 	}
@@ -180,7 +180,7 @@ func TestValidateToken_InvalidToken(t *testing.T) {
 	config := &Config{
 		Provider:     Google(),
 		ClientID:     "test-client",
-		ClientSecret: "test-secret",
+		ClientSecret: sealedForTest(t, "test-secret"),
 		Flow:         FlowTokenValidation,
 		Validation: TokenValidationConfig{
 			Method:  ValidationJWT,
@@ -218,7 +218,7 @@ func TestValidateToken_InvalidToken(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := auth.ValidateToken(context.Background(), tt.token)
+			_, err := auth.ValidateToken(context.Background(), sealedForTest(t, tt.token))
 			if err == nil {
 				t.Error("Expected error, got nil")
 			}
@@ -233,7 +233,7 @@ func TestAuthenticatePassword_WrongFlow(t *testing.T) {
 	config := &Config{
 		Provider:     Google(),
 		ClientID:     "test-client",
-		ClientSecret: "test-secret",
+		ClientSecret: sealedForTest(t, "test-secret"),
 		Flow:         FlowClientCredentials,
 	}
 
@@ -242,7 +242,7 @@ func TestAuthenticatePassword_WrongFlow(t *testing.T) {
 		t.Fatalf("NewAuthenticator() failed: %v", err)
 	}
 
-	_, err = auth.AuthenticatePassword(context.Background(), "testuser", "testpass")
+	_, err = auth.AuthenticatePassword(context.Background(), "testuser", sealedForTest(t, "testpass"))
 	if err == nil {
 		t.Error("Expected error for wrong flow")
 	}
@@ -255,7 +255,7 @@ func TestAuthenticateClientCredentials_WrongFlow(t *testing.T) {
 	config := &Config{
 		Provider:     Google(),
 		ClientID:     "test-client",
-		ClientSecret: "test-secret",
+		ClientSecret: sealedForTest(t, "test-secret"),
 		Flow:         FlowPassword,
 	}
 
@@ -277,7 +277,7 @@ func TestExchangeAuthorizationCode_WrongFlow(t *testing.T) {
 	config := &Config{
 		Provider:     Google(),
 		ClientID:     "test-client",
-		ClientSecret: "test-secret",
+		ClientSecret: sealedForTest(t, "test-secret"),
 		Flow:         FlowPassword,
 	}
 
@@ -286,7 +286,7 @@ func TestExchangeAuthorizationCode_WrongFlow(t *testing.T) {
 		t.Fatalf("NewAuthenticator() failed: %v", err)
 	}
 
-	_, err = auth.ExchangeAuthorizationCode(context.Background(), "code", "")
+	_, err = auth.ExchangeAuthorizationCode(context.Background(), "code")
 	if err == nil {
 		t.Error("Expected error for wrong flow")
 	}
@@ -299,7 +299,7 @@ func TestBuildAuthURL_WithPKCE(t *testing.T) {
 	config := &Config{
 		Provider:     Google(),
 		ClientID:     "test-client",
-		ClientSecret: "test-secret",
+		ClientSecret: sealedForTest(t, "test-secret"),
 		Flow:         FlowAuthorizationCode,
 		RedirectURL:  "http://localhost:8080/callback",
 		Scopes:       []string{"openid", "profile", "email"},
@@ -310,16 +310,17 @@ func TestBuildAuthURL_WithPKCE(t *testing.T) {
 		t.Fatalf("NewAuthenticator() failed: %v", err)
 	}
 
-	authURL, codeVerifier, err := auth.BuildAuthURL("random-state", true, nil)
+	authURL, verifier, err := auth.BuildAuthURLPKCE("random-state", nil)
 	if err != nil {
-		t.Fatalf("BuildAuthURL() failed: %v", err)
+		t.Fatalf("BuildAuthURLPKCE() failed: %v", err)
 	}
+	defer verifier.Destroy()
 
 	if authURL == "" {
 		t.Error("Expected non-empty auth URL")
 	}
 
-	if codeVerifier == "" {
+	if verifier.Size() == 0 {
 		t.Error("Expected non-empty code verifier")
 	}
 
@@ -345,7 +346,7 @@ func TestBuildAuthURL_WithoutPKCE(t *testing.T) {
 	config := &Config{
 		Provider:     Google(),
 		ClientID:     "test-client",
-		ClientSecret: "test-secret",
+		ClientSecret: sealedForTest(t, "test-secret"),
 		Flow:         FlowAuthorizationCode,
 		RedirectURL:  "http://localhost:8080/callback",
 	}
@@ -355,17 +356,13 @@ func TestBuildAuthURL_WithoutPKCE(t *testing.T) {
 		t.Fatalf("NewAuthenticator() failed: %v", err)
 	}
 
-	authURL, codeVerifier, err := auth.BuildAuthURL("random-state", false, nil)
+	authURL, err := auth.BuildAuthURL("random-state", nil)
 	if err != nil {
 		t.Fatalf("BuildAuthURL() failed: %v", err)
 	}
 
 	if authURL == "" {
 		t.Error("Expected non-empty auth URL")
-	}
-
-	if codeVerifier != "" {
-		t.Error("Expected empty code verifier without PKCE")
 	}
 
 	if contains(authURL, "code_challenge=") {
@@ -377,7 +374,7 @@ func TestBuildAuthURL_WrongFlow(t *testing.T) {
 	config := &Config{
 		Provider:     Google(),
 		ClientID:     "test-client",
-		ClientSecret: "test-secret",
+		ClientSecret: sealedForTest(t, "test-secret"),
 		Flow:         FlowPassword,
 	}
 
@@ -386,7 +383,7 @@ func TestBuildAuthURL_WrongFlow(t *testing.T) {
 		t.Fatalf("NewAuthenticator() failed: %v", err)
 	}
 
-	_, _, err = auth.BuildAuthURL("state", false, nil)
+	_, err = auth.BuildAuthURL("state", nil)
 	if err == nil {
 		t.Error("Expected error for wrong flow")
 	}
@@ -407,7 +404,7 @@ func TestAuthenticate_DelegatesCorrectly(t *testing.T) {
 	config := &Config{
 		Provider:     Google(),
 		ClientID:     "test-client",
-		ClientSecret: "test-secret",
+		ClientSecret: sealedForTest(t, "test-secret"),
 		Flow:         FlowTokenValidation,
 		Validation: TokenValidationConfig{
 			Method:   ValidationJWT,
@@ -450,7 +447,7 @@ func TestClearCache(t *testing.T) {
 	config := &Config{
 		Provider:     Google(),
 		ClientID:     "test-client",
-		ClientSecret: "test-secret",
+		ClientSecret: sealedForTest(t, "test-secret"),
 		Flow:         FlowTokenValidation,
 		Validation: TokenValidationConfig{
 			Method:  ValidationJWT,
@@ -476,7 +473,7 @@ func TestClearCache(t *testing.T) {
 	})
 
 	// Validate token to populate cache
-	_, err = auth.ValidateToken(context.Background(), token)
+	_, err = auth.ValidateToken(context.Background(), sealedForTest(t, token))
 	if err != nil {
 		t.Fatalf("ValidateToken() failed: %v", err)
 	}
@@ -486,7 +483,7 @@ func TestClearCache(t *testing.T) {
 
 	// Cache should be empty now - no way to verify directly without exposing internals
 	// But calling again should work
-	_, err = auth.ValidateToken(context.Background(), token)
+	_, err = auth.ValidateToken(context.Background(), sealedForTest(t, token))
 	if err != nil {
 		t.Fatalf("ValidateToken() after cache clear failed: %v", err)
 	}
@@ -504,7 +501,7 @@ func TestClose_CleansUpResources(t *testing.T) {
 	config := &Config{
 		Provider:     Google(),
 		ClientID:     "test-client",
-		ClientSecret: "test-secret",
+		ClientSecret: sealedForTest(t, "test-secret"),
 		Flow:         FlowTokenValidation,
 		Validation: TokenValidationConfig{
 			Method:  ValidationJWT,

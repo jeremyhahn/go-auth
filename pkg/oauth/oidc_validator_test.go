@@ -179,7 +179,7 @@ func TestOIDCValidator_ValidateOIDCClaims(t *testing.T) {
 			IssuedAt:  now.Unix(),
 		}
 
-		err := baseValidator.validateOIDCClaims(claims, "", "", discovery)
+		err := baseValidator.validateOIDCClaims(claims, "", nil, "RS256", discovery)
 		if err != nil {
 			t.Errorf("validateOIDCClaims() error = %v", err)
 		}
@@ -194,7 +194,7 @@ func TestOIDCValidator_ValidateOIDCClaims(t *testing.T) {
 			IssuedAt:  now.Unix(),
 		}
 
-		err := baseValidator.validateOIDCClaims(claims, "", "", discovery)
+		err := baseValidator.validateOIDCClaims(claims, "", nil, "RS256", discovery)
 		if err == nil {
 			t.Error("validateOIDCClaims() should error on issuer mismatch")
 		}
@@ -209,7 +209,7 @@ func TestOIDCValidator_ValidateOIDCClaims(t *testing.T) {
 			IssuedAt:  now.Unix(),
 		}
 
-		err := baseValidator.validateOIDCClaims(claims, "", "", discovery)
+		err := baseValidator.validateOIDCClaims(claims, "", nil, "RS256", discovery)
 		if err == nil {
 			t.Error("validateOIDCClaims() should error when audience missing client_id")
 		}
@@ -225,7 +225,7 @@ func TestOIDCValidator_ValidateOIDCClaims(t *testing.T) {
 			IssuedAt:  now.Unix(),
 		}
 
-		err := baseValidator.validateOIDCClaims(claims, "", "", discovery)
+		err := baseValidator.validateOIDCClaims(claims, "", nil, "RS256", discovery)
 		if err != nil {
 			t.Errorf("validateOIDCClaims() error = %v", err)
 		}
@@ -241,7 +241,7 @@ func TestOIDCValidator_ValidateOIDCClaims(t *testing.T) {
 			IssuedAt:  now.Unix(),
 		}
 
-		err := baseValidator.validateOIDCClaims(claims, "", "", discovery)
+		err := baseValidator.validateOIDCClaims(claims, "", nil, "RS256", discovery)
 		if err == nil {
 			t.Error("validateOIDCClaims() should error on wrong azp")
 		}
@@ -276,7 +276,7 @@ func TestOIDCValidator_ValidateNonce(t *testing.T) {
 			IssuedAt:  time.Now().Unix(),
 		}
 
-		err := validator.validateOIDCClaims(claims, nonce, "", discovery)
+		err := validator.validateOIDCClaims(claims, nonce, nil, "RS256", discovery)
 		if err != nil {
 			t.Errorf("validateOIDCClaims() error = %v", err)
 		}
@@ -295,7 +295,7 @@ func TestOIDCValidator_ValidateNonce(t *testing.T) {
 			IssuedAt:  time.Now().Unix(),
 		}
 
-		err := validator.validateOIDCClaims(claims, nonce1, "", discovery)
+		err := validator.validateOIDCClaims(claims, nonce1, nil, "RS256", discovery)
 		if err == nil {
 			t.Error("validateOIDCClaims() should error on nonce mismatch")
 		}
@@ -312,7 +312,7 @@ func TestOIDCValidator_ValidateNonce(t *testing.T) {
 			IssuedAt:  time.Now().Unix(),
 		}
 
-		err := validator.validateOIDCClaims(claims, nonce, "", discovery)
+		err := validator.validateOIDCClaims(claims, nonce, nil, "RS256", discovery)
 		if err == nil {
 			t.Error("validateOIDCClaims() should error when nonce missing in token")
 		}
@@ -425,26 +425,6 @@ func TestOIDCValidator_ValidateTimeClaims(t *testing.T) {
 	})
 }
 
-func TestOIDCValidator_ValidateAtHash(t *testing.T) {
-	validator := &oidcValidator{}
-
-	t.Run("validates correct at_hash", func(t *testing.T) {
-		// This is a simplified test - in reality you'd need to generate proper hashes
-		// For now, we test the structure and error handling
-		err := validator.validateAtHash("", "access-token", nil)
-		if err != nil {
-			t.Errorf("validateAtHash() with nil hash func should not error, got %v", err)
-		}
-	})
-
-	t.Run("skips validation with nil hash function", func(t *testing.T) {
-		err := validator.validateAtHash("some-hash", "access-token", nil)
-		if err != nil {
-			t.Errorf("validateAtHash() should skip with nil hash func, got %v", err)
-		}
-	})
-}
-
 func TestOIDCValidator_ValidateACR(t *testing.T) {
 	discovery := &OIDCDiscoveryConfig{
 		Issuer: "https://example.com",
@@ -471,7 +451,7 @@ func TestOIDCValidator_ValidateACR(t *testing.T) {
 			IssuedAt:  time.Now().Unix(),
 		}
 
-		err := validator.validateOIDCClaims(claims, "", "", discovery)
+		err := validator.validateOIDCClaims(claims, "", nil, "RS256", discovery)
 		if err != nil {
 			t.Errorf("validateOIDCClaims() error = %v", err)
 		}
@@ -498,7 +478,7 @@ func TestOIDCValidator_ValidateACR(t *testing.T) {
 			IssuedAt:  time.Now().Unix(),
 		}
 
-		err := validator.validateOIDCClaims(claims, "", "", discovery)
+		err := validator.validateOIDCClaims(claims, "", nil, "RS256", discovery)
 		if err == nil {
 			t.Error("validateOIDCClaims() should error on invalid ACR")
 		}
@@ -557,61 +537,6 @@ func TestContainsString(t *testing.T) {
 	}
 }
 
-func TestGetJWTAlgorithm(t *testing.T) {
-	t.Run("extracts RS256", func(t *testing.T) {
-		// Create a simple JWT header
-		token := "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.payload.signature"
-		alg := getJWTAlgorithm(token)
-
-		if alg != "RS256" {
-			t.Errorf("getJWTAlgorithm() = %s, want RS256", alg)
-		}
-	})
-
-	t.Run("handles invalid token", func(t *testing.T) {
-		alg := getJWTAlgorithm("invalid")
-		if alg != "" {
-			t.Errorf("getJWTAlgorithm() = %s, want empty", alg)
-		}
-	})
-}
-
-func TestGetHashFuncForAlg(t *testing.T) {
-	tests := []struct {
-		name string
-		alg  string
-	}{
-		{"RS256", "RS256"},
-		{"RS384", "RS384"},
-		{"RS512", "RS512"},
-		{"ES256", "ES256"},
-		{"ES384", "ES384"},
-		{"ES512", "ES512"},
-		{"PS256", "PS256"},
-		{"PS384", "PS384"},
-		{"PS512", "PS512"},
-		{"HS256", "HS256"},
-		{"HS384", "HS384"},
-		{"HS512", "HS512"},
-		{"unknown", "unknown"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			hashFunc := getHashFuncForAlg(tt.alg)
-			if hashFunc == nil {
-				t.Errorf("getHashFuncForAlg(%s) returned nil", tt.alg)
-			}
-
-			// Test that hash function works
-			h := hashFunc()
-			if h == nil {
-				t.Errorf("getHashFuncForAlg(%s) hash function returned nil", tt.alg)
-			}
-		})
-	}
-}
-
 func TestOIDCValidator_ValidateIDToken_Errors(t *testing.T) {
 	config := &Config{
 		ClientID: "test-client",
@@ -630,21 +555,21 @@ func TestOIDCValidator_ValidateIDToken_Errors(t *testing.T) {
 			},
 		}
 
-		_, err := disabledValidator.ValidateIDToken(context.Background(), "token", "", "")
+		_, err := disabledValidator.ValidateIDToken(context.Background(), sealedForTest(t, "token"), "", nil)
 		if err != ErrOIDCNotEnabled {
 			t.Errorf("ValidateIDToken() error = %v, want %v", err, ErrOIDCNotEnabled)
 		}
 	})
 
 	t.Run("errors on empty token", func(t *testing.T) {
-		_, err := validator.ValidateIDToken(context.Background(), "", "", "")
+		_, err := validator.ValidateIDToken(context.Background(), nil, "", nil)
 		if err != ErrOIDCMissingIDToken {
 			t.Errorf("ValidateIDToken() error = %v, want %v", err, ErrOIDCMissingIDToken)
 		}
 	})
 
 	t.Run("errors on malformed token", func(t *testing.T) {
-		_, err := validator.ValidateIDToken(context.Background(), "malformed.token", "", "")
+		_, err := validator.ValidateIDToken(context.Background(), sealedForTest(t, "malformed.token"), "", nil)
 		if err == nil {
 			t.Error("ValidateIDToken() should error on malformed token")
 		}

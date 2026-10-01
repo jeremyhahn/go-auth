@@ -3,6 +3,7 @@ package oauth
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,7 +14,19 @@ import (
 
 	"github.com/MicahParks/keyfunc/v3"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/jeremyhahn/go-enclave"
 )
+
+// asymmetricJWTAlgorithms is the JWS algorithm allowlist for every JWT this
+// package verifies — access tokens and ID tokens alike. Only asymmetric
+// algorithms verified against the provider's JWKS are admitted: "none" and the
+// HMAC family are refused, so a token cannot choose an algorithm that turns a
+// public key into a shared secret (alg confusion).
+var asymmetricJWTAlgorithms = []string{
+	"RS256", "RS384", "RS512",
+	"ES256", "ES384", "ES512",
+	"PS256", "PS384", "PS512",
+}
 
 // tokenValidator handles token validation using JWT and/or introspection.
 type tokenValidator struct {
@@ -40,35 +53,60 @@ func newTokenValidator(config *Config, httpClient HTTPClient) (*tokenValidator, 
 	return v, nil
 }
 
-// validate validates a token using the configured method.
-func (v *tokenValidator) validate(ctx context.Context, token string) (*TokenClaims, error) {
-	if strings.TrimSpace(token) == "" {
+// validationMethods maps each validation method to the function that applies
+// it. The token is borrowed by every one of them.
+var validationMethods = map[ValidationMethod]func(v *tokenValidator, ctx context.Context, token *enclave.MemoryEnclave) (*TokenClaims, error){
+	ValidationJWT:           (*tokenValidator).validateJWT,
+	ValidationIntrospection: (*tokenValidator).introspectToken,
+	ValidationHybrid:        (*tokenValidator).validateHybrid,
+}
+
+// validate validates a token using the configured method. The token is
+// borrowed, not destroyed.
+func (v *tokenValidator) validate(ctx context.Context, token *enclave.MemoryEnclave) (*TokenClaims, error) {
+	if !token.IsAlive() {
 		return nil, ErrMissingToken
 	}
 
-	switch v.config.Validation.Method {
-	case ValidationJWT:
-		return v.validateJWT(ctx, token)
-	case ValidationIntrospection:
-		return v.introspectToken(ctx, token)
-	case ValidationHybrid:
-		// Try JWT first, fall back to introspection
-		claims, err := v.validateJWT(ctx, token)
-		if err == nil {
-			return claims, nil
-		}
-		// If introspection URL is configured, try it
-		if v.config.Validation.IntrospectionURL != "" {
-			return v.introspectToken(ctx, token)
-		}
-		return nil, err
-	default:
+	method, ok := validationMethods[v.config.Validation.Method]
+	if !ok {
 		return nil, fmt.Errorf("%w: %s", ErrInvalidConfiguration, v.config.Validation.Method)
 	}
+	return method(v, ctx, token)
 }
 
-// validateJWT validates a JWT token locally using JWKS.
-func (v *tokenValidator) validateJWT(ctx context.Context, tokenString string) (*TokenClaims, error) {
+// validateHybrid tries JWT validation first and falls back to introspection
+// when an introspection endpoint is configured.
+func (v *tokenValidator) validateHybrid(ctx context.Context, token *enclave.MemoryEnclave) (*TokenClaims, error) {
+	claims, err := v.validateJWT(ctx, token)
+	if err == nil {
+		return claims, nil
+	}
+	if v.config.Validation.IntrospectionURL != "" {
+		return v.introspectToken(ctx, token)
+	}
+	return nil, err
+}
+
+// validateJWT validates a JWT held in an enclave.
+func (v *tokenValidator) validateJWT(ctx context.Context, token *enclave.MemoryEnclave) (*TokenClaims, error) {
+	var claims *TokenClaims
+	err := token.WithBytes(func(b []byte) error {
+		// Residue (JWT parse boundary): golang-jwt parses only from a string.
+		var err error
+		claims, err = v.validateJWTString(ctx, string(b))
+		return err
+	})
+	if errors.Is(err, enclave.ErrEnclaveDestroyed) {
+		return nil, ErrMissingToken
+	}
+	return claims, err
+}
+
+// validateJWTString validates a JWT token locally using JWKS. It is the parse
+// boundary: tokenString is the residue copy validateJWT and the OIDC validator
+// make for golang-jwt, and must not be taken from anywhere else.
+func (v *tokenValidator) validateJWTString(ctx context.Context, tokenString string) (*TokenClaims, error) {
 	v.jwksMu.RLock()
 	jwks := v.jwks
 	v.jwksMu.RUnlock()
@@ -78,11 +116,7 @@ func (v *tokenValidator) validateJWT(ctx context.Context, tokenString string) (*
 	}
 
 	// Parse and validate the JWT
-	token, err := jwt.Parse(tokenString, jwks.Keyfunc, jwt.WithValidMethods([]string{
-		"RS256", "RS384", "RS512",
-		"ES256", "ES384", "ES512",
-		"PS256", "PS384", "PS512",
-	}))
+	token, err := jwt.Parse(tokenString, jwks.Keyfunc, jwt.WithValidMethods(asymmetricJWTAlgorithms))
 
 	if err != nil {
 		if strings.Contains(err.Error(), "expired") {
@@ -126,24 +160,48 @@ func (v *tokenValidator) validateJWT(ctx context.Context, tokenString string) (*
 	return claims, nil
 }
 
-// introspectToken validates a token using OAuth introspection endpoint.
-func (v *tokenValidator) introspectToken(ctx context.Context, token string) (*TokenClaims, error) {
+// introspectToken validates a token using OAuth introspection endpoint. The
+// token is form-escaped from its enclave into a locked request body.
+func (v *tokenValidator) introspectToken(ctx context.Context, token *enclave.MemoryEnclave) (*TokenClaims, error) {
 	if v.config.Validation.IntrospectionURL == "" {
 		return nil, fmt.Errorf("%w: introspection url not configured", ErrInvalidConfiguration)
 	}
 
-	// Build introspection request
-	data := url.Values{}
-	data.Set("token", token)
-	data.Set("token_type_hint", "access_token")
+	public := url.Values{}
+	public.Set("token_type_hint", "access_token")
 
-	req, err := http.NewRequestWithContext(ctx, "POST", v.config.Validation.IntrospectionURL, strings.NewReader(data.Encode()))
+	var claims *TokenClaims
+	err := withFormBody(public, []sealedFormField{{name: "token", value: token}}, func(body []byte) error {
+		var err error
+		claims, err = v.sendIntrospection(ctx, body)
+		return err
+	})
+	if err != nil {
+		if errors.Is(err, ErrIntrospectionFailed) || errors.Is(err, ErrInvalidToken) || errors.Is(err, ErrInvalidClaims) {
+			return nil, err
+		}
+		return nil, errors.Join(ErrIntrospectionFailed, err)
+	}
+	return claims, nil
+}
+
+// sendIntrospection posts a locked introspection body, authenticating with the
+// client secret, and converts the response to claims. body is borrowed, as in
+// sendTokenRequest.
+func (v *tokenValidator) sendIntrospection(ctx context.Context, body []byte) (*TokenClaims, error) {
+	req, reader, err := newFormRequest(ctx, v.config.Validation.IntrospectionURL, body)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrIntrospectionFailed, err)
 	}
+	defer reader.release()
 
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.SetBasicAuth(v.config.ClientID, v.config.ClientSecret)
+	if err := v.config.ClientSecret.WithBytes(func(clientSecret []byte) error {
+		// Residue R5: net/http carries Basic credentials only as a header string.
+		req.SetBasicAuth(v.config.ClientID, string(clientSecret))
+		return nil
+	}); err != nil {
+		return nil, errors.Join(ErrIntrospectionFailed, ErrCredentialUnavailable, err)
+	}
 
 	// Execute request
 	resp, err := v.httpClient.Do(req)
