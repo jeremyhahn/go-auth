@@ -309,4 +309,4 @@ When adding new OIDC tests:
 - [OpenID Connect Core 1.0](https://openid.net/specs/openid-connect-core-1_0.html)
 - [OpenID Connect Discovery 1.0](https://openid.net/specs/openid-connect-discovery-1_0.html)
 - [ORY Hydra Documentation](https://www.ory.sh/docs/hydra/)
-- [OAuth 2.0 for Go](https://pkg.go.dev/golang.org/x/oauth2)
+- [RFC 6749: The OAuth 2.0 Authorization Framework](https://www.rfc-editor.org/rfc/rfc6749) — `pkg/oauth` implements the token exchange in-repo since [#47](https://github.com/jeremyhahn/go-auth/issues/47) (`golang.org/x/oauth2` was removed so tokens never become Go strings)
