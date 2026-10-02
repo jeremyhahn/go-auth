@@ -108,6 +108,17 @@ Comprehensive authentication library for Go with support for multiple authentica
 go get github.com/jeremyhahn/go-auth
 ```
 
+Requirements:
+
+- **Go 1.27.1 or newer** (the module's `go` directive since v0.4.0-alpha).
+- **Locked memory.** Every credential — passwords, shared secrets, OTP seeds,
+  OAuth secrets and tokens — is held in a go-enclave `MemoryEnclave`, which
+  `mlock`s its pages and **fails closed** with
+  `enclave.ErrLockedMemoryUnavailable` rather than fall back to ordinary memory.
+  Containers commonly start with a 64 KiB `RLIMIT_MEMLOCK`; raise it for
+  services that hold many credentials at once. See
+  [Operational requirements](credentials.md#operational-requirements).
+
 ### Basic Usage
 
 ```go
