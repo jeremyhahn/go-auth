@@ -80,7 +80,7 @@ func mentionsAnalyser(s string) bool {
 }
 
 // No step may install an analyser on a Gitea runner: that is the install that
-// overwrote the baked golangci-lint v2.13.2 with v2.12.2.
+// overwrote the baked golangci-lint v2.14.0 with v2.12.2.
 func TestWorkflow_AnalyserInstallsAreGithubOnly(t *testing.T) {
 	wf := loadCI(t)
 	for jobName, job := range wf.Jobs {

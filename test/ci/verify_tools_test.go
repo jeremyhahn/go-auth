@@ -62,11 +62,11 @@ func (f *fakeEnv) tool(name, body string) {
 }
 
 func (f *fakeEnv) golangciLint(version string) {
-	f.tool("golangci-lint", `echo 'golangci-lint has version `+version+` built with go1.27.0 from (unknown, modified: ?, mod sum: "h1:fake") on (unknown)'`)
+	f.tool("golangci-lint", `echo 'golangci-lint has version `+version+` built with go1.27.1 from (unknown, modified: ?, mod sum: "h1:fake") on (unknown)'`)
 }
 
 func (f *fakeEnv) gosec()       { f.tool("gosec", "exit 0") }
-func (f *fakeEnv) govulncheck() { f.tool("govulncheck", `echo "Scanner: govulncheck@v1.7.0"`) }
+func (f *fakeEnv) govulncheck() { f.tool("govulncheck", `echo "Scanner: govulncheck@v1.8.0"`) }
 
 // make runs a make target from the repo root with PATH holding only the fakes.
 func (f *fakeEnv) make(target string) (string, error) {
@@ -143,7 +143,7 @@ func TestVerifyLintTool_OtherVersionFails(t *testing.T) {
 		"the pre-1.27 pin":           "2.12.2",
 		"pin as a prefix":            pin + "0",
 		"pin with a suffix":          pin + "-rc.1",
-		"a different patch":          "2.13.3",
+		"a different patch":          "2.14.1",
 		"version string unparseable": "dev",
 	}
 	for name, reported := range cases {
@@ -185,7 +185,7 @@ func TestVerifySecurityTools_PresentPassesAndLogsImageRecord(t *testing.T) {
 	}
 	out, err := f.make("verify-security-tools")
 	mustPass(t, out, err)
-	for _, want := range []string{record, "govulncheck@v1.7.0"} {
+	for _, want := range []string{record, "govulncheck@v1.8.0"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("log does not record %q:\n%s", want, out)
 		}

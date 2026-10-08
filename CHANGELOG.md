@@ -6,6 +6,12 @@ the release versioning of the company conventions (`release-versioning.md`).
 
 ## [Unreleased]
 
+### Changed
+
+- CI tool pins move to the upstream latest, in step with the ci-runner image:
+  golangci-lint `v2.13.2` → `v2.14.0` (govulncheck `v1.8.0`, gosec `v2.29.0`
+  and Go `1.27.1` are the baked versions) ([#60]).
+
 ## [0.4.0-alpha] - 2026-10-01
 
 ### Changed
@@ -446,6 +452,7 @@ Migration:
 [#22]: https://github.com/jeremyhahn/go-auth/issues/22
 [#42]: https://github.com/jeremyhahn/go-auth/issues/42
 [#43]: https://github.com/jeremyhahn/go-auth/issues/43
+[#60]: https://github.com/jeremyhahn/go-auth/issues/60
 
 ## [0.2.0-alpha] - 2026-08-19
 

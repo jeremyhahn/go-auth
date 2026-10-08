@@ -136,7 +136,7 @@ security: gosec govulncheck mod-verify trivy-fs
 # in place, with the reason" clause). It must equal the version baked into the
 # ci-runner image; verify-lint-tool fails on any other version rather than
 # installing over it. test/ci checks this pin against go.mod.
-GOLANGCI_LINT_VERSION := 2.13.2
+GOLANGCI_LINT_VERSION := 2.14.0
 
 .PHONY: print-golangci-lint-version
 print-golangci-lint-version:

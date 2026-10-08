@@ -33,7 +33,7 @@ verify_lint() {
 	got=$(golangci-lint version 2>&1) ||
 		fail "'golangci-lint version' failed: $got"
 	printf '%s\n' "$got"
-	# The trailing space keeps 2.13.2 from matching 2.13.20.
+	# The trailing space keeps 2.14.0 from matching 2.14.00.
 	case "$got" in
 	*"has version $want "* | *"has version v$want "*) ;;
 	*) fail "golangci-lint is not version $want: move the pin and the runner image together" ;;
