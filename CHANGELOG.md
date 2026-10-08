@@ -6,6 +6,8 @@ the release versioning of the company conventions (`release-versioning.md`).
 
 ## [Unreleased]
 
+## [0.5.0-alpha] - 2026-10-08
+
 ### Changed
 
 - CI tool pins move to the upstream latest, in step with the ci-runner image:
