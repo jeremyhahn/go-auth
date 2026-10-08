@@ -28,7 +28,11 @@ func newSeed(t *testing.T, raw string) *enclave.MemoryEnclave {
 	if err != nil {
 		t.Fatalf("NewMemoryEnclaveCopy: %v", err)
 	}
-	t.Cleanup(seed.Destroy)
+	t.Cleanup(func() {
+		if err := seed.Destroy(); err != nil {
+			t.Errorf("Destroy: %v", err)
+		}
+	})
 	return seed
 }
 
@@ -79,10 +83,14 @@ func codeOf(t *testing.T, code string) *enclave.MemoryEnclave {
 	if code == "" {
 		return nil
 	}
-	e, err := enclave.NewMemoryEnclaveFromString(code)
+	e, err := enclave.NewMemoryEnclave([]byte(code))
 	if err != nil {
-		t.Fatalf("NewMemoryEnclaveFromString: %v", err)
+		t.Fatalf("NewMemoryEnclave: %v", err)
 	}
-	t.Cleanup(e.Destroy)
+	t.Cleanup(func() {
+		if err := e.Destroy(); err != nil {
+			t.Errorf("Destroy: %v", err)
+		}
+	})
 	return e
 }

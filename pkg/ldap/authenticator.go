@@ -26,10 +26,13 @@ type Authenticator struct {
 	// applied, opens it only for the duration of a single service bind, and
 	// destroys it in Close (or in NewAuthenticator, if construction fails).
 	servicePassword *enclave.MemoryEnclave
-	startTLS        bool
-	tlsConfig       *tls.Config
-	timeout         time.Duration
-	implicitTLS     bool
+	// optionErr collects a failed Destroy of a password an option replaced.
+	// Options cannot return an error, so NewAuthenticator reports it.
+	optionErr   error
+	startTLS    bool
+	tlsConfig   *tls.Config
+	timeout     time.Duration
+	implicitTLS bool
 	// lifecycle orders Close against in-flight calls: every call holds the
 	// read lock for its whole length and Close takes the write lock, so the
 	// credential is destroyed only once no call can still need it.
@@ -65,7 +68,7 @@ func WithUserDNTemplate(template string) Option {
 func WithServiceAccount(dn string, password *enclave.MemoryEnclave) Option {
 	return func(a *Authenticator) {
 		if a.servicePassword != password {
-			a.servicePassword.Destroy()
+			a.optionErr = credential.DestroyAll(a.optionErr, a.servicePassword)
 		}
 		a.serviceBindDN = dn
 		a.servicePassword = password
@@ -140,9 +143,12 @@ func NewAuthenticator(url string, opts ...Option) (*Authenticator, error) {
 		}
 	}
 
-	if err := auth.validate(); err != nil {
-		auth.servicePassword.Destroy()
-		return nil, err
+	err := auth.validate()
+	if auth.optionErr != nil {
+		err = errors.Join(err, auth.optionErr)
+	}
+	if err != nil {
+		return nil, credential.DestroyAll(err, auth.servicePassword)
 	}
 
 	if strings.HasPrefix(strings.ToLower(url), "ldaps://") {
@@ -176,7 +182,7 @@ func (a *Authenticator) Close() error {
 	a.lifecycle.Lock()
 	defer a.lifecycle.Unlock()
 	a.closed = true
-	return a.servicePassword.DestroyErr()
+	return a.servicePassword.Destroy()
 }
 
 // Authenticate binds to LDAP using the derived user DN.

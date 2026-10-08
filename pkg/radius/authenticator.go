@@ -181,7 +181,7 @@ type Authenticator struct {
 // sharedSecret is the shared secret that protects Access-Request packets, in
 // locked memory; build it with enclave.NewMemoryEnclave (which wipes the
 // caller's slice) or, from a configuration string, with
-// enclave.NewMemoryEnclaveFromString. Options adjust transport behavior,
+// enclave.NewMemoryEnclave([]byte(s)). Options adjust transport behavior,
 // enable TLS, or supply custom packet exchangers.
 //
 // It TAKES OWNERSHIP of sharedSecret on every return path: when it returns an
@@ -195,8 +195,7 @@ type Authenticator struct {
 func NewAuthenticator(address string, sharedSecret *enclave.MemoryEnclave, opts ...Option) (*Authenticator, error) {
 	auth, err := newAuthenticator(address, sharedSecret, opts)
 	if err != nil {
-		sharedSecret.Destroy()
-		return nil, err
+		return nil, credential.DestroyAll(err, sharedSecret)
 	}
 	return auth, nil
 }
@@ -267,7 +266,7 @@ func (a *Authenticator) Close() error {
 	a.lifecycle.Lock()
 	defer a.lifecycle.Unlock()
 	a.closed = true
-	return a.secret.DestroyErr()
+	return a.secret.Destroy()
 }
 
 // Authenticate validates the provided username/password pair.

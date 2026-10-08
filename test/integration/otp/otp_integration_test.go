@@ -49,7 +49,11 @@ func newSeed(t *testing.T) *enclave.MemoryEnclave {
 	if err != nil {
 		t.Fatalf("GenerateProtectedSecret: %v", err)
 	}
-	t.Cleanup(seed.Destroy)
+	t.Cleanup(func() {
+		if err := seed.Destroy(); err != nil {
+			t.Errorf("Destroy: %v", err)
+		}
+	})
 	return seed
 }
 
@@ -68,7 +72,12 @@ func seedCopies(t *testing.T, n int) []*enclave.MemoryEnclave {
 		if err != nil {
 			t.Fatalf("DecodeSeed: %v", err)
 		}
-		t.Cleanup(seeds[i].Destroy)
+		seed := seeds[i]
+		t.Cleanup(func() {
+			if err := seed.Destroy(); err != nil {
+				t.Errorf("Destroy: %v", err)
+			}
+		})
 	}
 	return seeds
 }

@@ -1,6 +1,7 @@
 package oauth
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -72,14 +73,17 @@ func (t *Token) IDToken() *enclave.MemoryEnclave {
 }
 
 // Destroy wipes and releases every credential the Token holds. It is
-// idempotent and safe on a nil *Token, so it can always be deferred.
-func (t *Token) Destroy() {
+// idempotent and safe on a nil *Token, so it can always be deferred. Every
+// credential is destroyed even when one fails; the failures are joined.
+func (t *Token) Destroy() error {
 	if t == nil {
-		return
+		return nil
 	}
-	t.accessToken.Destroy()
-	t.refreshToken.Destroy()
-	t.idToken.Destroy()
+	return errors.Join(
+		t.accessToken.Destroy(),
+		t.refreshToken.Destroy(),
+		t.idToken.Destroy(),
+	)
 }
 
 // Valid returns true if the token is not expired.

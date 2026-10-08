@@ -245,15 +245,16 @@ func parseTokenResponse(respBody []byte) (*Token, error) {
 	for _, field := range fields {
 		sealed, err := sealJSONString(field.raw)
 		if err != nil {
-			token.Destroy()
-			return nil, errors.Join(ErrTokenExchangeFailed, err)
+			return nil, errors.Join(ErrTokenExchangeFailed, err, token.Destroy())
 		}
 		*field.dest = sealed
 	}
 
 	if token.accessToken == nil {
-		token.Destroy()
-		return nil, fmt.Errorf("%w: no access token in response", ErrTokenExchangeFailed)
+		return nil, errors.Join(
+			fmt.Errorf("%w: no access token in response", ErrTokenExchangeFailed),
+			token.Destroy(),
+		)
 	}
 
 	if tokenResp.TokenType == "" {

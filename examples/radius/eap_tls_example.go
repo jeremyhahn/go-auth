@@ -62,7 +62,7 @@ func main() {
 	// The shared secret travels in go-enclave locked memory. In production
 	// build it with enclave.NewMemoryEnclave over a []byte read from a key
 	// file or secrets manager, which wipes that slice.
-	sharedSecret, err := enclave.NewMemoryEnclaveFromString("shared-secret")
+	sharedSecret, err := enclave.NewMemoryEnclave([]byte("shared-secret"))
 	if err != nil {
 		log.Fatalf("Failed to seal the shared secret: %v", err)
 	}

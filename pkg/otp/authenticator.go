@@ -195,7 +195,7 @@ func NewAuthenticator(cfg Config) (auth *Authenticator, err error) {
 	seed := cfg.Seed
 	defer func() {
 		if err != nil {
-			seed.Destroy()
+			err = credential.DestroyAll(err, seed)
 		}
 	}()
 
@@ -228,7 +228,7 @@ func (a *Authenticator) Close() error {
 	if a == nil {
 		return ErrNilAuthenticator
 	}
-	return a.seed.DestroyErr()
+	return a.seed.Destroy()
 }
 
 // Authenticate validates an OTP code.

@@ -10,10 +10,14 @@ import (
 // enclave an authenticator has already destroyed.
 func pw(t *testing.T, s string) *enclave.MemoryEnclave {
 	t.Helper()
-	e, err := enclave.NewMemoryEnclaveFromString(s)
+	e, err := enclave.NewMemoryEnclave([]byte(s))
 	if err != nil {
-		t.Fatalf("NewMemoryEnclaveFromString: %v", err)
+		t.Fatalf("NewMemoryEnclave: %v", err)
 	}
-	t.Cleanup(e.Destroy)
+	t.Cleanup(func() {
+		if err := e.Destroy(); err != nil {
+			t.Errorf("Destroy: %v", err)
+		}
+	})
 	return e
 }

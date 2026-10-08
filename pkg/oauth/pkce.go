@@ -10,6 +10,8 @@ import (
 	"sync"
 
 	"github.com/jeremyhahn/go-enclave"
+
+	"github.com/jeremyhahn/go-auth/pkg/internal/credential"
 )
 
 // PKCE code verifier shape (RFC 7636 §4.1). The generated verifier is 32 random
@@ -65,8 +67,7 @@ type Verifier struct {
 // memory and never has any other form of it at all.
 func NewVerifier(codeVerifier *enclave.MemoryEnclave) (*Verifier, error) {
 	if err := codeVerifier.WithBytes(validatePKCEVerifier); err != nil {
-		codeVerifier.Destroy()
-		return nil, errors.Join(ErrInvalidConfiguration, err)
+		return nil, errors.Join(ErrInvalidConfiguration, credential.DestroyAll(err, codeVerifier))
 	}
 
 	return &Verifier{sealed: codeVerifier}, nil
@@ -126,13 +127,14 @@ func (v *Verifier) Size() int {
 // Destroy releases the verifier. It is idempotent, safe on a nil *Verifier, and
 // safe to defer next to BuildAuthURLPKCE: the exchange consumes the verifier, so
 // a deferred Destroy after a successful exchange is a no-op, and on every path
-// that never reaches the exchange it is what ends the credential's life.
-func (v *Verifier) Destroy() {
+// that never reaches the exchange it is what ends the credential's life. The
+// error is go-enclave's Destroy report: nil for an ordinary release.
+func (v *Verifier) Destroy() error {
 	sealed, err := v.consume()
 	if err != nil {
-		return
+		return nil
 	}
-	sealed.Destroy()
+	return sealed.Destroy()
 }
 
 // String renders a redaction rather than a value, so a stray %v, %s or log field
@@ -193,7 +195,9 @@ func (a *Authenticator) BuildAuthURLPKCE(state string, additionalParams map[stri
 
 	authURL, err = a.flows.buildAuthURL(state, challenge, additionalParams)
 	if err != nil {
-		verifier.Destroy()
+		if derr := verifier.Destroy(); derr != nil {
+			err = errors.Join(err, derr)
+		}
 		return "", nil, err
 	}
 
@@ -214,14 +218,26 @@ func (a *Authenticator) BuildAuthURLPKCE(state string, additionalParams map[stri
 // racing on one login from both reaching the token endpoint. The loser, and any
 // later call, gets ErrVerifierConsumed wrapped in ErrTokenExchangeFailed.
 // Verifier.Destroy is idempotent, so a caller's own defer remains correct.
-func (a *Authenticator) ExchangeAuthorizationCodePKCE(ctx context.Context, code string, verifier *Verifier) (*Token, error) {
+func (a *Authenticator) ExchangeAuthorizationCodePKCE(ctx context.Context, code string, verifier *Verifier) (token *Token, err error) {
 	sealed, err := verifier.consume()
 	if err != nil {
 		// Both sentinels are wrapped: a caller reacting to a failed exchange
 		// still needs to tell a replay from a network error.
 		return nil, fmt.Errorf("%w: %w", ErrTokenExchangeFailed, err)
 	}
-	defer sealed.Destroy()
+	defer func() {
+		derr := sealed.Destroy()
+		if derr == nil {
+			return
+		}
+		// A verifier that could not be wiped fails the exchange, and the token
+		// it produced is destroyed rather than handed out.
+		err = errors.Join(err, derr)
+		if token != nil {
+			err = errors.Join(err, token.Destroy())
+			token = nil
+		}
+	}()
 
 	if ctx == nil {
 		ctx = context.Background()
@@ -263,11 +279,10 @@ func newPKCEVerifier() (*enclave.MemoryEnclave, string, error) {
 	if err != nil {
 		return nil, "", errors.Join(ErrInvalidConfiguration, err)
 	}
-	defer raw.Destroy()
 
 	verifier, err := enclave.NewMemoryEnclaveSized(pkceVerifierLen)
 	if err != nil {
-		return nil, "", errors.Join(ErrInvalidConfiguration, err)
+		return nil, "", errors.Join(ErrInvalidConfiguration, credential.DestroyAll(err, raw))
 	}
 
 	err = raw.WithBytes(func(r []byte) error {
@@ -283,14 +298,18 @@ func newPKCEVerifier() (*enclave.MemoryEnclave, string, error) {
 		err = verifier.Freeze()
 	}
 	if err != nil {
-		verifier.Destroy()
-		return nil, "", errors.Join(ErrInvalidConfiguration, err)
+		return nil, "", errors.Join(ErrInvalidConfiguration, credential.DestroyAll(err, raw, verifier))
+	}
+
+	// The scratch held the raw random bytes: a failure to wipe it fails the
+	// verifier, which is destroyed with it rather than handed out.
+	if err := raw.Destroy(); err != nil {
+		return nil, "", errors.Join(ErrInvalidConfiguration, credential.DestroyAll(err, verifier))
 	}
 
 	challenge, err := pkceChallenge(verifier)
 	if err != nil {
-		verifier.Destroy()
-		return nil, "", err
+		return nil, "", credential.DestroyAll(err, verifier)
 	}
 
 	return verifier, challenge, nil

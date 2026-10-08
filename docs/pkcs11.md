@@ -87,8 +87,8 @@ func main() {
 
     // The PIN travels in go-enclave locked memory. Build it with
     // enclave.NewMemoryEnclave from the bytes you read (that wipes them);
-    // NewMemoryEnclaveFromString is for values that only exist as strings.
-    pin, err := enclave.NewMemoryEnclaveFromString("1234")
+    // NewMemoryEnclave([]byte(s)) is for values that only exist as strings.
+    pin, err := enclave.NewMemoryEnclave([]byte("1234"))
     if err != nil {
         log.Fatal(err) // enclave.ErrLockedMemoryUnavailable: fail closed
     }

@@ -42,7 +42,7 @@ func basicExample() {
 	// Create TACACS+ authenticator
 	// The address must include both host and port (typically 49 for TACACS+)
 	// The shared secret is used to encrypt communication with the server
-	sharedSecret, err := enclave.NewMemoryEnclaveFromString("shared-secret")
+	sharedSecret, err := enclave.NewMemoryEnclave([]byte("shared-secret"))
 	if err != nil {
 		log.Fatalf("Failed to seal the shared secret: %v", err)
 	}
@@ -67,7 +67,7 @@ func basicExample() {
 	// The password travels in go-enclave locked memory. In production it
 	// comes from enclave.NewMemoryEnclave over a []byte the reader fills,
 	// which wipes that slice; a string literal is only for the example.
-	password, err := enclave.NewMemoryEnclaveFromString("adminpass")
+	password, err := enclave.NewMemoryEnclave([]byte("adminpass"))
 	if err != nil {
 		log.Fatalf("Failed to seal the password: %v", err)
 	}
@@ -101,7 +101,7 @@ func privilegeLevelExample() {
 	// Create TACACS+ authenticator with custom privilege level
 	// Privilege levels typically range from 0 (least privileged) to 15 (most privileged)
 	// Common levels: 1 (normal user), 15 (admin/enable)
-	sharedSecret, err := enclave.NewMemoryEnclaveFromString("shared-secret")
+	sharedSecret, err := enclave.NewMemoryEnclave([]byte("shared-secret"))
 	if err != nil {
 		log.Fatalf("Failed to seal the shared secret: %v", err)
 	}
@@ -125,7 +125,7 @@ func privilegeLevelExample() {
 	// The password travels in go-enclave locked memory. In production it
 	// comes from enclave.NewMemoryEnclave over a []byte the reader fills,
 	// which wipes that slice; a string literal is only for the example.
-	password, err := enclave.NewMemoryEnclaveFromString("adminpass")
+	password, err := enclave.NewMemoryEnclave([]byte("adminpass"))
 	if err != nil {
 		log.Fatalf("Failed to seal the password: %v", err)
 	}

@@ -44,7 +44,7 @@ type Config struct {
 	ClientID string
 	// APIKey is the base64 API key issued by Yubico, in locked memory. Build
 	// it with enclave.NewMemoryEnclave (which wipes the caller's slice) or,
-	// from a configuration string, enclave.NewMemoryEnclaveFromString.
+	// from a configuration string, enclave.NewMemoryEnclave([]byte(s)).
 	//
 	// NewAuthenticator TAKES OWNERSHIP of it on every return path, and Close
 	// destroys it. Do not use or destroy it afterwards.
@@ -92,8 +92,7 @@ func NewAuthenticator(cfg Config, validator OTPValidator) (*Authenticator, error
 		validator = systemValidator
 	}
 	if err := checkConstruction(cfg, validator); err != nil {
-		cfg.APIKey.Destroy()
-		return nil, err
+		return nil, credential.DestroyAll(err, cfg.APIKey)
 	}
 	return &Authenticator{cfg: cfg, validator: validator}, nil
 }
@@ -123,7 +122,7 @@ func (a *Authenticator) Close() error {
 	a.lifecycle.Lock()
 	defer a.lifecycle.Unlock()
 	a.closed = true
-	return a.cfg.APIKey.DestroyErr()
+	return a.cfg.APIKey.Destroy()
 }
 
 // Authenticate validates the provided OTP.

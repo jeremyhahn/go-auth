@@ -40,7 +40,7 @@ config := &oauth.Config{
 auth, _ := oauth.NewAuthenticator(config)
 defer auth.Close()
 
-bearer, _ := enclave.NewMemoryEnclaveFromString(tokenFromRequest)
+bearer, _ := enclave.NewMemoryEnclave([]byte(tokenFromRequest))
 defer bearer.Destroy() // ValidateToken borrows it
 
 claims, err := auth.ValidateToken(ctx, bearer)
@@ -209,7 +209,7 @@ if err != nil {
 defer auth.Close()
 
 // Seal the bearer token as soon as it is read from the request.
-bearer, err := enclave.NewMemoryEnclaveFromString(accessToken)
+bearer, err := enclave.NewMemoryEnclave([]byte(accessToken))
 if err != nil {
     return err
 }

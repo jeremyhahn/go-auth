@@ -11,6 +11,23 @@ the release versioning of the company conventions (`release-versioning.md`).
 - CI tool pins move to the upstream latest, in step with the ci-runner image:
   golangci-lint `v2.13.2` → `v2.14.0` (govulncheck `v1.8.0`, gosec `v2.29.0`
   and Go `1.27.1` are the baked versions) ([#60]).
+- go-enclave `v0.6.1-alpha` → `v0.8.0-alpha` ([#62], owner ruling 2026-10-07).
+  Every caller of a removed or changed go-enclave API is migrated:
+  `NewMemoryEnclaveFromString(s)` → `NewMemoryEnclave([]byte(s))`,
+  `OpenString()` → a copy taken inside `WithBytes`, `DestroyErr()` → `Destroy()`,
+  `EqualTo` now returns `(bool, error)`, and a `Destroy` error is returned or
+  joined to the caller's error instead of being dropped. A `Destroy` that fails
+  is reported by `api.Service.Login`, the constructors that take ownership of a
+  credential, and every `Close`. Nothing else changes for users of this library
+  beyond the two signatures below.
+- **BREAKING (source-compatible for callers that ignore the result):**
+  `oauth.Token.Destroy` and `oauth.Verifier.Destroy` return `error`, as
+  go-enclave's `Destroy` does; it joins the failures of the credentials the
+  value holds. `oauth.Authenticator.Close` also reports a failed `Destroy` of a
+  cached entry.
+- The credential-residue scan in `test/ci` no longer counts `Open` and
+  `OpenString`, which go-enclave removed; `WithBytes` is the one plaintext
+  method left.
 
 ## [0.4.0-alpha] - 2026-10-01
 
@@ -453,6 +470,7 @@ Migration:
 [#42]: https://github.com/jeremyhahn/go-auth/issues/42
 [#43]: https://github.com/jeremyhahn/go-auth/issues/43
 [#60]: https://github.com/jeremyhahn/go-auth/issues/60
+[#62]: https://github.com/jeremyhahn/go-auth/issues/62
 
 ## [0.2.0-alpha] - 2026-08-19
 

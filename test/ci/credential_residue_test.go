@@ -13,14 +13,12 @@ package ci_test
 //
 // What counts as a site:
 //
-//   - x.WithBytes(fn) with exactly one argument, and x.OpenString() and
-//     x.Open() with none. Those are go-enclave's plaintext-exposing methods
-//     and their arities. Matching on name and arity rather than on the
+//   - x.WithBytes(fn) with exactly one argument. That is go-enclave's one
+//     plaintext-exposing method and its arity (Open and OpenString are gone
+//     since v0.8.0-alpha). Matching on name and arity rather than on the
 //     receiver's type keeps this test free of a type-checker (pkg/pam and
 //     pkg/pkcs11 have cgo files that cannot be type-checked without libpam
-//     and the pkcs11 tag). The arity is what excludes the module's other
-//     Open methods — SessionProvider.Open(ctx, cfg), SessionOpener.Open(ctx,
-//     service, user), TPMProvider.Open(ctx, cfg) — which all take arguments.
+//     and the pkcs11 tag).
 //   - credential.WithTransientString(e, fn), the internal helper that lends a
 //     credential to a string-only dependency. Its own WithBytes call is a site
 //     too; the calls to it are counted separately because each is a distinct
@@ -58,9 +56,7 @@ const (
 // plaintextMethods maps each plaintext-exposing go-enclave method to the
 // number of arguments it takes.
 var plaintextMethods = map[string]int{
-	"WithBytes":  1,
-	"OpenString": 0,
-	"Open":       0,
+	"WithBytes": 1,
 }
 
 // plaintextHelpers are package-qualified functions that lend plaintext.
@@ -108,11 +104,9 @@ type T struct{ e interface{} }
 
 func (t *T) Use(e enclaveLike) {
 	_ = e.WithBytes(func([]byte) error { return nil })
-	_, _ = e.OpenString()
-	_, _ = e.Open()
 	_ = credential.WithTransientString(e, nil)
 	_, _ = provider.Open(ctx, cfg) // not a site: takes arguments
-	_ = e.EqualTo(nil)             // not a site: does not expose plaintext
+	_, _ = e.EqualTo(nil)          // not a site: does not expose plaintext
 }
 
 func Free(e enclaveLike) {
@@ -131,7 +125,7 @@ func Free(e enclaveLike) {
 		t.Fatalf("scan fixture: %v", err)
 	}
 	want := map[string]int{
-		filepath.ToSlash(filepath.Join(filepath.Base(dir), "fixture.go")) + ":T.Use": 4,
+		filepath.ToSlash(filepath.Join(filepath.Base(dir), "fixture.go")) + ":T.Use": 2,
 		filepath.ToSlash(filepath.Join(filepath.Base(dir), "fixture.go")) + ":Free":  1,
 	}
 	if diff := diffSiteCounts(want, got); diff != "" {

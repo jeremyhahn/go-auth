@@ -38,7 +38,7 @@ func ExampleNewAuthenticator_tokenValidation() {
 
 	// Seal the bearer token from the inbound request as soon as it is read.
 	// ValidateToken borrows it; destroy it once the request is done.
-	bearer, err := enclave.NewMemoryEnclaveFromString("access-token")
+	bearer, err := enclave.NewMemoryEnclave([]byte("access-token"))
 	if err != nil {
 		log.Fatal(err)
 	}

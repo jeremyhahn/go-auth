@@ -189,7 +189,7 @@ func computeSignature(values url.Values, apiKey *enclave.MemoryEnclave) (string,
 // what this package has always done — Yubico issues base64 keys, but callers
 // have been known to configure the raw value, and changing that here would
 // break their signatures rather than protect anything.
-func withDecodedAPIKey(encoded []byte, fn func(key []byte) error) error {
+func withDecodedAPIKey(encoded []byte, fn func(key []byte) error) (err error) {
 	// base64 needs two characters to carry a byte, so a key shorter than that
 	// decodes to nothing and can only be a raw one. Asking for a zero-length
 	// scratch buffer would fail before the fallback could run, which would
@@ -203,7 +203,9 @@ func withDecodedAPIKey(encoded []byte, fn func(key []byte) error) error {
 	if err != nil {
 		return err
 	}
-	defer scratch.Destroy()
+	defer func() {
+		err = credential.DestroyAll(err, scratch)
+	}()
 
 	return scratch.WithBytes(func(buf []byte) error {
 		n, err := base64.StdEncoding.Decode(buf, encoded)

@@ -41,6 +41,9 @@ type sealedLRU struct {
 	closed  bool
 	alloc   allocFunc
 	now     func() time.Time
+	// destroyErr is the first failed Destroy of an entry that left the cache.
+	// Eviction and expiry have no caller to report to, so close returns it.
+	destroyErr error
 }
 
 // newSealedLRU returns a cache bounded to maxSize entries (defaultCacheMaxSize
@@ -154,13 +157,15 @@ func (c *sealedLRU) clear() {
 }
 
 // close destroys every entry and closes the cache for good: every later set
-// fails with ErrCacheClosed. It is idempotent.
-func (c *sealedLRU) close() {
+// fails with ErrCacheClosed. It is idempotent. The error is the first failed
+// Destroy of any entry the cache has dropped, now or earlier.
+func (c *sealedLRU) close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	c.closed = true
 	c.clearLocked()
+	return c.destroyErr
 }
 
 // removeExpired destroys every expired entry.
@@ -182,7 +187,7 @@ func (c *sealedLRU) len() int {
 // clearLocked destroys every entry (must be called with lock held).
 func (c *sealedLRU) clearLocked() {
 	for elem := c.lruList.Front(); elem != nil; elem = elem.Next() {
-		elem.Value.(*lruEntry).sealed.Destroy()
+		c.noteDestroy(elem.Value.(*lruEntry).sealed)
 	}
 	c.items = make(map[string]*list.Element)
 	c.lruList.Init()
@@ -207,9 +212,17 @@ func (c *sealedLRU) removeExpiredLocked() {
 // lock held).
 func (c *sealedLRU) removeElement(elem *list.Element) {
 	entry := elem.Value.(*lruEntry)
-	entry.sealed.Destroy()
+	c.noteDestroy(entry.sealed)
 	delete(c.items, entry.key)
 	c.lruList.Remove(elem)
+}
+
+// noteDestroy destroys an entry's enclave and keeps the first failure for
+// close to report (must be called with lock held).
+func (c *sealedLRU) noteDestroy(sealed *enclave.MemoryEnclave) {
+	if err := sealed.Destroy(); err != nil && c.destroyErr == nil {
+		c.destroyErr = err
+	}
 }
 
 // lockedMemoryRefused reports whether an allocation failed for want of locked

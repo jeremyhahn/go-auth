@@ -36,7 +36,7 @@ func main() {
 	// The API key travels in go-enclave locked memory. In production build it
 	// with enclave.NewMemoryEnclave over a []byte read from a key file or a
 	// secrets manager, which wipes that slice.
-	apiKey, err := enclave.NewMemoryEnclaveFromString("your-base64-encoded-api-key=")
+	apiKey, err := enclave.NewMemoryEnclave([]byte("your-base64-encoded-api-key="))
 	if err != nil {
 		log.Fatalf("Failed to seal the API key: %v", err)
 	}
@@ -64,7 +64,7 @@ func main() {
 	// Example: ccccccbcgujhingjrdejhgfnuetrgigvejhhgbkugded
 	// The OTP is a credential for as long as the service would accept it, so
 	// it travels in an enclave too. Authenticate borrows it.
-	otp, err := enclave.NewMemoryEnclaveFromString("ccccccbcgujhingjrdejhgfnuetrgigvejhhgbkugded")
+	otp, err := enclave.NewMemoryEnclave([]byte("ccccccbcgujhingjrdejhgfnuetrgigvejhhgbkugded"))
 	if err != nil {
 		log.Fatalf("Failed to seal the OTP: %v", err)
 	}

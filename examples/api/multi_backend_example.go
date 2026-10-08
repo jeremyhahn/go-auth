@@ -269,7 +269,7 @@ func mustDecodeSeed(encoded string) *enclave.MemoryEnclave {
 // generated codes in this example are strings only because Generate returns
 // one.
 func sealCredential(value string) *enclave.MemoryEnclave {
-	e, err := enclave.NewMemoryEnclaveFromString(value)
+	e, err := enclave.NewMemoryEnclave([]byte(value))
 	if err != nil {
 		log.Fatalf("Failed to seal credential: %v", err)
 	}

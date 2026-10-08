@@ -28,11 +28,15 @@ func sealForTest(t *testing.T, s string) *enclave.MemoryEnclave {
 	if s == "" {
 		return nil
 	}
-	e, err := enclave.NewMemoryEnclaveFromString(s)
+	e, err := enclave.NewMemoryEnclave([]byte(s))
 	if err != nil {
-		t.Fatalf("NewMemoryEnclaveFromString: %v", err)
+		t.Fatalf("NewMemoryEnclave: %v", err)
 	}
-	t.Cleanup(e.Destroy)
+	t.Cleanup(func() {
+		if err := e.Destroy(); err != nil {
+			t.Errorf("Destroy: %v", err)
+		}
+	})
 	return e
 }
 
@@ -40,9 +44,13 @@ func sealForTest(t *testing.T, s string) *enclave.MemoryEnclave {
 // string-only API under test.
 func openForTest(t *testing.T, e *enclave.MemoryEnclave) string {
 	t.Helper()
-	s, err := e.OpenString()
+	var s string
+	err := e.WithBytes(func(b []byte) error {
+		s = string(b)
+		return nil
+	})
 	if err != nil {
-		t.Fatalf("OpenString: %v", err)
+		t.Fatalf("WithBytes: %v", err)
 	}
 	return s
 }

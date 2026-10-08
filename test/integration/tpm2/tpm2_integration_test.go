@@ -844,7 +844,7 @@ func BenchmarkAuthenticate(b *testing.B) {
 		b.Fatalf("failed to create authenticator: %v", err)
 	}
 
-	password, err := enclave.NewMemoryEnclaveFromString(correctPassword)
+	password, err := enclave.NewMemoryEnclave([]byte(correctPassword))
 	if err != nil {
 		b.Fatalf("seal password: %v", err)
 	}

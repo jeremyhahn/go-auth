@@ -92,8 +92,8 @@ import (
 func main() {
     // Credentials travel in go-enclave locked memory. Build them with
     // enclave.NewMemoryEnclave from bytes you read (that wipes them);
-    // NewMemoryEnclaveFromString is for values that only exist as strings.
-    apiKey, err := enclave.NewMemoryEnclaveFromString("base64-encoded-api-key")
+    // NewMemoryEnclave([]byte(s)) is for values that only exist as strings.
+    apiKey, err := enclave.NewMemoryEnclave([]byte("base64-encoded-api-key"))
     if err != nil {
         log.Fatal(err) // enclave.ErrLockedMemoryUnavailable: fail closed
     }
@@ -117,7 +117,7 @@ func main() {
     // types the OTP; it is a credential until it has been accepted, so it
     // travels in an enclave too. Authenticate only borrows it.
     ctx := context.Background()
-    otp, err := enclave.NewMemoryEnclaveFromString("ccccccbcgujhingjrdejhgfnuetrgigvejhhgbkugded")
+    otp, err := enclave.NewMemoryEnclave([]byte("ccccccbcgujhingjrdejhgfnuetrgigvejhhgbkugded"))
     if err != nil {
         log.Fatal(err)
     }
@@ -422,7 +422,7 @@ func TestAuthentication(t *testing.T) {
         t.Fatal(err)
     }
 
-    otp, err := enclave.NewMemoryEnclaveFromString("test-otp")
+    otp, err := enclave.NewMemoryEnclave([]byte("test-otp"))
     if err != nil {
         t.Fatal(err)
     }
@@ -827,7 +827,7 @@ func TestYubiKeyAuthentication(t *testing.T) {
         t.Run(tt.name, func(t *testing.T) {
             mockValidator := &MockValidator{err: tt.mockErr}
             // Each authenticator owns its API key, so each case seals its own.
-            apiKey, err := enclave.NewMemoryEnclaveFromString("test-key")
+            apiKey, err := enclave.NewMemoryEnclave([]byte("test-key"))
             if err != nil {
                 t.Fatal(err)
             }
@@ -842,7 +842,7 @@ func TestYubiKeyAuthentication(t *testing.T) {
             }
             defer auth.Close()
 
-            otp, err := enclave.NewMemoryEnclaveFromString(tt.otp)
+            otp, err := enclave.NewMemoryEnclave([]byte(tt.otp))
             if err != nil {
                 t.Fatal(err)
             }

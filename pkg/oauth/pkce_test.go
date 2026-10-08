@@ -302,9 +302,9 @@ func unvalidatedVerifier(value string) func(t *testing.T) *Verifier {
 	return func(t *testing.T) *Verifier {
 		t.Helper()
 
-		sealed, err := enclave.NewMemoryEnclaveFromString(value)
+		sealed, err := enclave.NewMemoryEnclave([]byte(value))
 		if err != nil {
-			t.Fatalf("NewMemoryEnclaveFromString: %v", err)
+			t.Fatalf("NewMemoryEnclave: %v", err)
 		}
 		return &Verifier{sealed: sealed}
 	}

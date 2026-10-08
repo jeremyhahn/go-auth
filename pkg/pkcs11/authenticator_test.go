@@ -33,7 +33,11 @@ type fakeSession struct {
 func (f *fakeSession) Login(ctx context.Context, pin *enclave.MemoryEnclave) error {
 	f.logins++
 	// A copy taken during the call: the PIN is only borrowed.
-	value, err := pin.OpenString()
+	var value string
+	err := pin.WithBytes(func(b []byte) error {
+		value = string(b)
+		return nil
+	})
 	if err != nil {
 		return err
 	}

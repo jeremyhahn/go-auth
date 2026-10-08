@@ -133,7 +133,7 @@ func main() {
 
     // 3. Bring the credential into locked memory. The caller owns it and
     //    destroys it; Authenticate only borrows it.
-    password, err := enclave.NewMemoryEnclaveFromString("...")
+    password, err := enclave.NewMemoryEnclave([]byte("..."))
     if err != nil {
         log.Fatal(err)
     }
@@ -157,7 +157,7 @@ func main() {
 - Every credential is a go-enclave `*enclave.MemoryEnclave` (see
   [docs/credentials.md](../docs/credentials.md)); read secrets into a
   `[]byte` and use `enclave.NewMemoryEnclave`, which wipes it. The examples
-  use `NewMemoryEnclaveFromString` on literals only for brevity
+  use `NewMemoryEnclave([]byte("..."))` on literals only for brevity
 - Enable TLS/encryption for network authentication (LDAP, RADIUS)
 - Validate certificates in production (disable `InsecureSkipVerify`)
 

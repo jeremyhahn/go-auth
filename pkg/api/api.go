@@ -112,7 +112,7 @@ func NewService(cfg Config) (*Service, error) {
 // TPM authorization value or an OAuth bearer token — and OTP the one-time
 // password for backends that take one. Build them with
 // enclave.NewMemoryEnclave (which wipes the caller's slice) or, at a boundary
-// that hands out strings, enclave.NewMemoryEnclaveFromString.
+// that hands out strings, enclave.NewMemoryEnclave([]byte(s)).
 //
 // Service.Login TAKES OWNERSHIP of both: it destroys them when the attempt
 // completes, whether it succeeds, fails or is refused. Do not use or destroy
@@ -128,10 +128,13 @@ type LoginRequest struct {
 // Login attempts authentication using the configured backends.
 //
 // It owns req.Password and req.OTP and destroys them before returning, on
-// every path. Backends borrow them for the length of their attempt.
-func (s *Service) Login(ctx context.Context, req LoginRequest) error {
-	defer req.Password.Destroy()
-	defer req.OTP.Destroy()
+// every path. Backends borrow them for the length of their attempt. A failed
+// Destroy is joined to the returned error, so a login that succeeded still
+// reports credentials that could not be wiped.
+func (s *Service) Login(ctx context.Context, req LoginRequest) (err error) {
+	defer func() {
+		err = credential.DestroyAll(err, req.Password, req.OTP)
+	}()
 
 	if s == nil || len(s.backends) == 0 {
 		return ErrNoBackends

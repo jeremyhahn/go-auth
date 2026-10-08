@@ -10,6 +10,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/jeremyhahn/go-enclave"
+
+	"github.com/jeremyhahn/go-auth/pkg/internal/credential"
 )
 
 // This file holds the plumbing that keeps OAuth credentials — the client
@@ -69,9 +71,8 @@ func withFormBody(public url.Values, sealed []sealedFormField, fn func(body []by
 	if err != nil {
 		return err
 	}
-	defer scratch.Destroy()
 
-	return scratch.WithBytes(func(body []byte) error {
+	err = scratch.WithBytes(func(body []byte) error {
 		n := copy(body, prefix)
 		for _, field := range sealed {
 			if n > 0 {
@@ -100,6 +101,7 @@ func withFormBody(public url.Values, sealed []sealedFormField, fn func(body []by
 		}
 		return fn(body)
 	})
+	return credential.DestroyAll(err, scratch)
 }
 
 // formUnreserved reports the bytes application/x-www-form-urlencoded leaves
@@ -267,12 +269,10 @@ func sealJSONString(raw json.RawMessage) (*enclave.MemoryEnclave, error) {
 		_, err := unquoteJSONString(raw, dst)
 		return err
 	}); err != nil {
-		sealed.Destroy()
-		return nil, err
+		return nil, credential.DestroyAll(err, sealed)
 	}
 	if err := sealed.Freeze(); err != nil {
-		sealed.Destroy()
-		return nil, err
+		return nil, credential.DestroyAll(err, sealed)
 	}
 	return sealed, nil
 }

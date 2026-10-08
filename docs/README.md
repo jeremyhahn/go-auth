@@ -181,7 +181,7 @@ func main() {
     // application builds them with enclave.NewMemoryEnclave from the bytes it
     // read, which wipes that slice.
     seal := func(v string) *enclave.MemoryEnclave {
-        e, err := enclave.NewMemoryEnclaveFromString(v)
+        e, err := enclave.NewMemoryEnclave([]byte(v))
         if err != nil {
             log.Fatal(err) // enclave.ErrLockedMemoryUnavailable: fail closed
         }

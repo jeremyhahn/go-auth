@@ -122,7 +122,11 @@ func (v *stubYubiValidator) Validate(ctx context.Context, clientID string, apiKe
 	if v.err != nil {
 		return v.err
 	}
-	if !otp.EqualTo([]byte(v.expectedOTP)) {
+	equal, err := otp.EqualTo([]byte(v.expectedOTP))
+	if err != nil {
+		return err
+	}
+	if !equal {
 		return yubikey.ErrInvalidOTP
 	}
 	return nil
@@ -132,10 +136,14 @@ func (v *stubYubiValidator) Validate(ctx context.Context, clientID string, apiKe
 // authenticator has destroyed it.
 func sealed(t *testing.T, s string) *enclave.MemoryEnclave {
 	t.Helper()
-	e, err := enclave.NewMemoryEnclaveFromString(s)
+	e, err := enclave.NewMemoryEnclave([]byte(s))
 	if err != nil {
-		t.Fatalf("NewMemoryEnclaveFromString: %v", err)
+		t.Fatalf("NewMemoryEnclave: %v", err)
 	}
-	t.Cleanup(e.Destroy)
+	t.Cleanup(func() {
+		if err := e.Destroy(); err != nil {
+			t.Errorf("Destroy: %v", err)
+		}
+	})
 	return e
 }

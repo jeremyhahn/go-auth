@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/jeremyhahn/go-enclave"
+
+	"github.com/jeremyhahn/go-auth/pkg/internal/credential"
 )
 
 // seedBytes is the length of a generated seed: 160 bits, RFC 4226 §4 R6's
@@ -41,12 +43,10 @@ func GenerateProtectedSecret() (*enclave.MemoryEnclave, error) {
 		_, err := rand.Read(b)
 		return err
 	}); err != nil {
-		seed.Destroy()
-		return nil, err
+		return nil, credential.DestroyAll(err, seed)
 	}
 	if err := seed.Freeze(); err != nil {
-		seed.Destroy()
-		return nil, err
+		return nil, credential.DestroyAll(err, seed)
 	}
 	return seed, nil
 }
@@ -91,8 +91,6 @@ func DecodeSeed(encoded string) (*enclave.MemoryEnclave, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer scratch.Destroy()
-
 	var seed *enclave.MemoryEnclave
 	err = scratch.WithBytes(func(text []byte) error {
 		// Upper-case in place rather than with strings.ToUpper, which would
@@ -132,18 +130,18 @@ func DecodeSeed(encoded string) (*enclave.MemoryEnclave, error) {
 			}
 			return nil
 		}); err != nil {
-			decoded.Destroy()
-			return err
+			return credential.DestroyAll(err, decoded)
 		}
 		if err := decoded.Freeze(); err != nil {
-			decoded.Destroy()
-			return err
+			return credential.DestroyAll(err, decoded)
 		}
 		seed = decoded
 		return nil
 	})
-	if err != nil {
-		return nil, err
+	// The scratch holds the upper-cased encoding: a failure to wipe it fails
+	// the decode, and the seed built beside it is not handed out.
+	if err = credential.DestroyAll(err, scratch); err != nil {
+		return nil, credential.DestroyAll(err, seed)
 	}
 	return seed, nil
 }
@@ -168,13 +166,13 @@ func EncodeSecret(seed *enclave.MemoryEnclave) (string, error) {
 		if err != nil {
 			return err
 		}
-		defer scratch.Destroy()
-		return scratch.WithBytes(func(buf []byte) error {
+		err = scratch.WithBytes(func(buf []byte) error {
 			seedEncoding.Encode(buf, key)
 			// Residue: the caller needs the text to render a QR code or store it.
 			encoded = string(buf)
 			return nil
 		})
+		return credential.DestroyAll(err, scratch)
 	})
 	if err != nil {
 		return "", err

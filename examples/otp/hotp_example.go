@@ -105,7 +105,7 @@ func main() {
 // on receipt. Authenticate and ValidateCounter only borrow it; the caller
 // destroys it once it has been checked.
 func sealCode(code string) *enclave.MemoryEnclave {
-	e, err := enclave.NewMemoryEnclaveFromString(code)
+	e, err := enclave.NewMemoryEnclave([]byte(code))
 	if err != nil {
 		log.Fatalf("Failed to seal code: %v", err)
 	}

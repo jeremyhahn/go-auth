@@ -184,6 +184,5 @@ func (a *Authenticator) Authenticate(ctx context.Context, password *enclave.Memo
 	unsealed, err := session.Unseal(ctx, a.cfg.SealedHandle, password)
 	// Destroy is nil-safe, and runs on the error path too: a session that
 	// returns material alongside an error must not leave it alive.
-	unsealed.Destroy()
-	return err
+	return credential.DestroyAll(err, unsealed)
 }

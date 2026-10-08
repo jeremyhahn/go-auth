@@ -69,7 +69,7 @@
 //	defer auth.Close()
 //
 //	// Seal the bearer token as soon as it is read from the request.
-//	bearer, err := enclave.NewMemoryEnclaveFromString(accessToken)
+//	bearer, err := enclave.NewMemoryEnclave([]byte(accessToken))
 //	if err != nil {
 //	    return err
 //	}

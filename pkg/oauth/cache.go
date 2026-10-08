@@ -106,12 +106,13 @@ func (c *lruCache) removeExpiredEntries() {
 }
 
 // Close stops the cleanup goroutine and destroys every cached entry. It is
-// idempotent; a closed cache stores nothing.
-func (c *lruCache) Close() {
+// idempotent; a closed cache stores nothing. The error is the first failed
+// Destroy of a cached entry.
+func (c *lruCache) Close() error {
 	c.cleanupOnce.Do(func() {
 		close(c.stopCleanup)
 	})
-	c.close()
+	return c.close()
 }
 
 // noopCache is a cache implementation that does nothing (caching disabled).

@@ -77,7 +77,7 @@ func googleExample() {
 	//
 	// Seal it as soon as it is read from the request: ValidateToken borrows
 	// the enclave and never sees a plaintext string.
-	token, err := enclave.NewMemoryEnclaveFromString("eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...") // Truncated for example
+	token, err := enclave.NewMemoryEnclave([]byte("eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...")) // Truncated for example
 	if err != nil {
 		log.Fatalf("Failed to seal token: %v", err)
 	}
@@ -158,7 +158,7 @@ func apiIntegrationExample() {
 	// Authenticate using the service. The bearer token is passed in the
 	// Password field, in locked memory; Login takes ownership of it and
 	// destroys it when the attempt completes.
-	bearer, err := enclave.NewMemoryEnclaveFromString("oauth-access-token")
+	bearer, err := enclave.NewMemoryEnclave([]byte("oauth-access-token"))
 	if err != nil {
 		log.Fatalf("Failed to seal the token: %v", err)
 	}

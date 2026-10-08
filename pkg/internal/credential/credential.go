@@ -1,7 +1,7 @@
-// Package credential holds the two helpers every go-auth backend shares for
-// credentials held in go-enclave memory: the argument check, and the one
-// sanctioned way to lend a credential to a dependency that only accepts a Go
-// string.
+// Package credential holds the helpers every go-auth backend shares for
+// credentials held in go-enclave memory: the argument check, the destroy that
+// keeps a failure, and the one sanctioned way to lend a credential to a
+// dependency that only accepts a Go string.
 //
 // Every credential in go-auth is a *enclave.MemoryEnclave. Backends borrow
 // the plaintext through WithBytes, which scopes it to a callback over the
@@ -39,14 +39,32 @@ func Require(e *enclave.MemoryEnclave, missing error) error {
 	return nil
 }
 
+// DestroyAll destroys every enclave in es and folds a failed Destroy into err,
+// for the paths that own a credential and must hand its error back.
+//
+// err is returned unchanged when every Destroy succeeds, so a caller that
+// compares it with == or matches a sentinel with errors.Is sees exactly what it
+// would have seen before. When err is nil and a Destroy fails, that failure is
+// returned; when both fail, the result is joined and matches both. A nil
+// enclave is skipped, and Destroy is idempotent, so a credential that was
+// already destroyed adds nothing.
+func DestroyAll(err error, es ...*enclave.MemoryEnclave) error {
+	for _, e := range es {
+		if derr := e.Destroy(); derr != nil {
+			err = errors.Join(err, derr)
+		}
+	}
+	return err
+}
+
 // WithTransientString lends fn the material of e as a Go string, for the one
 // call into a dependency that accepts nothing else, and wipes that string's
 // bytes when fn returns.
 //
 // The string is backed by a heap buffer this function allocates, fills from
 // inside e.WithBytes and zeroes before returning, on every path. Converting
-// with string(b) or calling OpenString would leave an immutable copy behind
-// until the collector reuses it; this leaves a buffer of zeros. What it cannot
+// with string(b) would leave an immutable copy behind until the collector
+// reuses it; this leaves a buffer of zeros. What it cannot
 // reach is whatever the dependency copies out of the string during the call —
 // a BER packet, a C.CString, a protocol buffer. Those copies are the residue
 // each call site names.

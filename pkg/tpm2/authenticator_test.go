@@ -68,7 +68,11 @@ type mockTPMSession struct {
 
 func (m *mockTPMSession) Unseal(ctx context.Context, handle Handle, password *enclave.MemoryEnclave) (*enclave.MemoryEnclave, error) {
 	m.unsealCount.Add(1)
-	value, err := password.OpenString()
+	var value string
+	err := password.WithBytes(func(b []byte) error {
+		value = string(b)
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -688,7 +692,7 @@ func TestAuthenticateRejectsDestroyedPassword(t *testing.T) {
 type leakySession struct{ returned *enclave.MemoryEnclave }
 
 func (l *leakySession) Unseal(context.Context, Handle, *enclave.MemoryEnclave) (*enclave.MemoryEnclave, error) {
-	e, err := enclave.NewMemoryEnclaveFromString("unsealed")
+	e, err := enclave.NewMemoryEnclave([]byte("unsealed"))
 	if err != nil {
 		return nil, err
 	}

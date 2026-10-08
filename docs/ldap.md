@@ -66,8 +66,8 @@ func main() {
 
     // The password travels in go-enclave locked memory. Build it with
     // enclave.NewMemoryEnclave from the bytes you read (that wipes them);
-    // NewMemoryEnclaveFromString is for values that only exist as strings.
-    password, err := enclave.NewMemoryEnclaveFromString("password")
+    // NewMemoryEnclave([]byte(s)) is for values that only exist as strings.
+    password, err := enclave.NewMemoryEnclave([]byte("password"))
     if err != nil {
         log.Fatal(err) // enclave.ErrLockedMemoryUnavailable: fail closed
     }

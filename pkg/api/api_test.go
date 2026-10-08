@@ -17,11 +17,15 @@ func sealed(t *testing.T, s string) *enclave.MemoryEnclave {
 	if s == "" {
 		return nil
 	}
-	e, err := enclave.NewMemoryEnclaveFromString(s)
+	e, err := enclave.NewMemoryEnclave([]byte(s))
 	if err != nil {
-		t.Fatalf("NewMemoryEnclaveFromString: %v", err)
+		t.Fatalf("NewMemoryEnclave: %v", err)
 	}
-	t.Cleanup(e.Destroy)
+	t.Cleanup(func() {
+		if err := e.Destroy(); err != nil {
+			t.Errorf("Destroy: %v", err)
+		}
+	})
 	return e
 }
 
@@ -31,7 +35,11 @@ func reveal(e *enclave.MemoryEnclave) string {
 	if !e.IsAlive() {
 		return ""
 	}
-	s, err := e.OpenString()
+	var s string
+	err := e.WithBytes(func(b []byte) error {
+		s = string(b)
+		return nil
+	})
 	if err != nil {
 		return ""
 	}

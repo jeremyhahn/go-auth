@@ -3,10 +3,13 @@ package oauth
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 
 	"github.com/jeremyhahn/go-enclave"
+
+	"github.com/jeremyhahn/go-auth/pkg/internal/credential"
 )
 
 // Authenticator is the main OAuth 2.0 authentication handler.
@@ -33,7 +36,7 @@ func NewAuthenticator(config *Config) (auth *Authenticator, err error) {
 
 	defer func() {
 		if err != nil {
-			config.ClientSecret.Destroy()
+			err = credential.DestroyAll(err, config.ClientSecret)
 		}
 	}()
 
@@ -61,7 +64,9 @@ func NewAuthenticator(config *Config) (auth *Authenticator, err error) {
 	if config.Flow == FlowTokenValidation || config.Validation.Method != "" {
 		validator, verr := newTokenValidator(config, httpClient)
 		if verr != nil {
-			auth.closeCache()
+			if cerr := auth.closeCache(); cerr != nil {
+				verr = errors.Join(verr, cerr)
+			}
 			return nil, verr
 		}
 		auth.validator = validator
@@ -284,10 +289,10 @@ func (a *Authenticator) Close() error {
 		a.validator.Close()
 	}
 
-	a.closeCache()
+	errs := []error{a.closeCache()}
 
 	if a.userInfoClient != nil {
-		a.userInfoClient.Close()
+		errs = append(errs, a.userInfoClient.Close())
 	}
 
 	// Close OIDC components
@@ -295,16 +300,15 @@ func (a *Authenticator) Close() error {
 		a.oidcValidator.Close()
 	}
 
-	a.config.ClientSecret.Destroy()
-
-	return nil
+	return errors.Join(append(errs, a.config.ClientSecret.Destroy())...)
 }
 
 // closeCache closes the LRU cache, if one is in use, destroying its entries.
-func (a *Authenticator) closeCache() {
+func (a *Authenticator) closeCache() error {
 	if lru, ok := a.cache.(*lruCache); ok {
-		lru.Close()
+		return lru.Close()
 	}
+	return nil
 }
 
 // OIDC-specific methods

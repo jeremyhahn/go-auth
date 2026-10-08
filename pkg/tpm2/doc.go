@@ -37,7 +37,7 @@
 //	// The authorization value is a go-enclave enclave the caller owns;
 //	// Authenticate borrows it, and destroys the unsealed data the session
 //	// returns before it returns.
-//	password, err := enclave.NewMemoryEnclaveFromString("password123")
+//	password, err := enclave.NewMemoryEnclave([]byte("password123"))
 //	if err != nil {
 //		log.Fatal(err)
 //	}

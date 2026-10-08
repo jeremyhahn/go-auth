@@ -73,7 +73,7 @@ func main() {
 
     // A submitted code is a credential for its validity window, so it is
     // validated from an enclave. Authenticate borrows it.
-    submitted, err := enclave.NewMemoryEnclaveFromString(code)
+    submitted, err := enclave.NewMemoryEnclave([]byte(code))
     if err != nil {
         log.Fatal(err)
     }
@@ -113,7 +113,7 @@ currentCounter := uint64(0)
 code, _ := auth.Generate(currentCounter)
 
 // Validate and get new counter; the submitted code is borrowed from an enclave
-submitted, err := enclave.NewMemoryEnclaveFromString(code)
+submitted, err := enclave.NewMemoryEnclave([]byte(code))
 if err != nil {
     log.Fatal(err)
 }
@@ -412,7 +412,7 @@ err = qrcode.WriteFile(uri, qrcode.Medium, 256, "qr.png")
 func otpAuthHandler(w http.ResponseWriter, r *http.Request) {
     // net/http has already parsed the form into strings (residue R5); bring
     // the code into an enclave at once and drop the string.
-    code, err := enclave.NewMemoryEnclaveFromString(r.FormValue("code"))
+    code, err := enclave.NewMemoryEnclave([]byte(r.FormValue("code")))
     if err != nil {
         http.Error(w, "Invalid code", http.StatusBadRequest)
         return

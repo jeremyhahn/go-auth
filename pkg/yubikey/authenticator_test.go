@@ -20,12 +20,20 @@ type fakeValidator struct {
 func (f *fakeValidator) Validate(_ context.Context, clientID string, apiKey, otp *enclave.MemoryEnclave) error {
 	f.calls++
 	f.lastClient = clientID
-	key, err := apiKey.OpenString()
+	var key string
+	err := apiKey.WithBytes(func(b []byte) error {
+		key = string(b)
+		return nil
+	})
 	if err != nil {
 		return err
 	}
 	f.lastKey = key
-	code, err := otp.OpenString()
+	var code string
+	err = otp.WithBytes(func(b []byte) error {
+		code = string(b)
+		return nil
+	})
 	if err != nil {
 		return err
 	}

@@ -11,15 +11,15 @@ import (
 var errMissing = errors.New("test: credential required")
 
 func TestRequire(t *testing.T) {
-	live, err := enclave.NewMemoryEnclaveFromString("pw")
+	live, err := enclave.NewMemoryEnclave([]byte("pw"))
 	if err != nil {
-		t.Fatalf("NewMemoryEnclaveFromString: %v", err)
+		t.Fatalf("NewMemoryEnclave: %v", err)
 	}
 	defer live.Destroy()
 
-	dead, err := enclave.NewMemoryEnclaveFromString("pw")
+	dead, err := enclave.NewMemoryEnclave([]byte("pw"))
 	if err != nil {
-		t.Fatalf("NewMemoryEnclaveFromString: %v", err)
+		t.Fatalf("NewMemoryEnclave: %v", err)
 	}
 	dead.Destroy()
 
@@ -35,13 +35,43 @@ func TestRequire(t *testing.T) {
 	}
 }
 
+// TestDestroyAll proves the helper destroys every enclave, tolerates nil and
+// already-destroyed ones, and hands the caller's error back unchanged when no
+// Destroy fails, so == and errors.Is on a sentinel keep working.
+func TestDestroyAll(t *testing.T) {
+	first, err := enclave.NewMemoryEnclave([]byte("pw"))
+	if err != nil {
+		t.Fatalf("NewMemoryEnclave: %v", err)
+	}
+	second, err := enclave.NewMemoryEnclave([]byte("pw"))
+	if err != nil {
+		t.Fatalf("NewMemoryEnclave: %v", err)
+	}
+	if err := second.Destroy(); err != nil {
+		t.Fatalf("Destroy: %v", err)
+	}
+
+	if got := DestroyAll(errMissing, first, nil, second); got != errMissing {
+		t.Fatalf("DestroyAll(err) = %v, want err returned unchanged", got)
+	}
+	if first.IsAlive() {
+		t.Fatal("DestroyAll left an enclave alive")
+	}
+	if got := DestroyAll(nil, first, second, nil); got != nil {
+		t.Fatalf("DestroyAll(nil) = %v, want nil", got)
+	}
+	if got := DestroyAll(errMissing); got != errMissing {
+		t.Fatalf("DestroyAll(err) with no enclaves = %v, want err", got)
+	}
+}
+
 // TestWithTransientStringWipesTheCopy proves the one heap copy a string-only
 // dependency forces is zeroed when the borrow ends: a reference retained past
 // fn reads zeros, not the credential.
 func TestWithTransientStringWipesTheCopy(t *testing.T) {
-	e, err := enclave.NewMemoryEnclaveFromString("hunter2")
+	e, err := enclave.NewMemoryEnclave([]byte("hunter2"))
 	if err != nil {
-		t.Fatalf("NewMemoryEnclaveFromString: %v", err)
+		t.Fatalf("NewMemoryEnclave: %v", err)
 	}
 	defer e.Destroy()
 
@@ -65,9 +95,9 @@ func TestWithTransientStringWipesTheCopy(t *testing.T) {
 }
 
 func TestWithTransientStringPropagatesErrors(t *testing.T) {
-	e, err := enclave.NewMemoryEnclaveFromString("pw")
+	e, err := enclave.NewMemoryEnclave([]byte("pw"))
 	if err != nil {
-		t.Fatalf("NewMemoryEnclaveFromString: %v", err)
+		t.Fatalf("NewMemoryEnclave: %v", err)
 	}
 	defer e.Destroy()
 

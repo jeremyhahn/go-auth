@@ -58,8 +58,8 @@ import (
 func main() {
     // Credentials travel in go-enclave locked memory. Build them with
     // enclave.NewMemoryEnclave from bytes you read (that wipes them);
-    // NewMemoryEnclaveFromString is for values that only exist as strings.
-    sharedSecret, err := enclave.NewMemoryEnclaveFromString("shared-secret")
+    // NewMemoryEnclave([]byte(s)) is for values that only exist as strings.
+    sharedSecret, err := enclave.NewMemoryEnclave([]byte("shared-secret"))
     if err != nil {
         log.Fatal(err) // enclave.ErrLockedMemoryUnavailable: fail closed
     }
@@ -72,7 +72,7 @@ func main() {
     }
     defer auth.Close()
 
-    password, err := enclave.NewMemoryEnclaveFromString("password")
+    password, err := enclave.NewMemoryEnclave([]byte("password"))
     if err != nil {
         log.Fatal(err)
     }

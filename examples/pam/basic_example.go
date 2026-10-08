@@ -46,7 +46,7 @@ func main() {
 	// The password travels in go-enclave locked memory. In production it
 	// comes from enclave.NewMemoryEnclave over a []byte the reader fills,
 	// which wipes that slice; a string literal is only for the example.
-	password, err := enclave.NewMemoryEnclaveFromString("testpass")
+	password, err := enclave.NewMemoryEnclave([]byte("testpass"))
 	if err != nil {
 		log.Fatalf("Failed to seal the password: %v", err)
 	}

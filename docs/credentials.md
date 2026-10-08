@@ -35,7 +35,7 @@ that error and never falls back to ordinary memory (ruling §10.4).
 |---|---|---|
 | `enclave.NewMemoryEnclaveSized(n)` + `WithBytes` fill + `Freeze` | the value is generated or decoded here | none |
 | `enclave.NewMemoryEnclave(b)` | the value was read into a `[]byte` you own | none — `b` is wiped for you |
-| `enclave.NewMemoryEnclaveFromString(s)` | the value only exists as a Go string (env var, YAML, flag) | `s` itself, which cannot be wiped — residue R7 |
+| `enclave.NewMemoryEnclave([]byte(s))` | the value only exists as a Go string (env var, YAML, flag) | `s` itself, which cannot be wiped — residue R7 |
 
 ```go
 raw, err := os.ReadFile("/run/secrets/radius")   // []byte, not string
@@ -54,9 +54,10 @@ defer auth.Close() // destroys secret
 ```
 
 Read the material only through `WithBytes`: the slice it lends aliases the
-locked pages and is valid for the callback alone. `OpenString` and `Open` exist
-for the few dependencies that force a copy; every place this module calls them
-is registered (below).
+locked pages and is valid for the callback alone. go-enclave v0.8.0-alpha
+removed `Open` and `OpenString`, whose slice outlived the lock. A dependency
+that forces a copy gets one taken inside `WithBytes`; every place this module
+does that is registered (below).
 
 ## Ownership rules
 
@@ -82,8 +83,9 @@ Three rules, the same in every package:
 The one exception is the facade: **`api.Service.Login` takes ownership of
 `LoginRequest.Password` and `LoginRequest.OTP`** and destroys both when the
 attempt completes — on success, on failure and on every refusal. The backends
-it dispatches to borrow them for their attempt. Build a fresh request per
-login.
+it dispatches to borrow them for their attempt. A `Destroy` that fails is
+joined to the error `Login` returns, so a login that succeeded still reports a
+credential that could not be wiped. Build a fresh request per login.
 
 A nil enclave is "not supplied" and fails with the package's typed sentinel
 (`ErrMissingPassword`, `ErrMissingPIN`, `ErrMissingOTP`, …). A destroyed one
@@ -120,7 +122,7 @@ copy. Those places are finite, each is named at its call site with a residue
 ID, and they are listed in the
 [credential residue register](security/credential-residues.md). CI enforces
 the list: `test/ci/credential_residue_test.go` enumerates every
-`WithBytes` / `OpenString` / `Open` call and every
+`WithBytes` call and every
 `credential.WithTransientString` call in `pkg/` and fails on any site that is
 not in `test/ci/testdata/credential-residues.allow`, or listed but gone.
 

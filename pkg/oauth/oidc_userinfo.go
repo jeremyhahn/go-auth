@@ -210,9 +210,9 @@ func (c *userInfoClient) ClearCache() {
 // Close destroys every cached entry and closes the cache for good: a later
 // insert — including one from a request that was in flight during Close —
 // fails with ErrCacheClosed instead of leaving an enclave nothing will destroy.
-// It is idempotent.
-func (c *userInfoClient) Close() {
-	c.cache.close()
+// It is idempotent. The error is the first failed Destroy of a cached entry.
+func (c *userInfoClient) Close() error {
+	return c.cache.close()
 }
 
 // isUserInfoEnabled checks if UserInfo endpoint calls are enabled.

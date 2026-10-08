@@ -185,7 +185,11 @@ func TestGenerateProtectedSecret(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DecodeSeed: %v", err)
 	}
-	if !reimported.EqualTo(openSeed(t, seed)) {
+	same, err := reimported.EqualTo(openSeed(t, seed))
+	if err != nil {
+		t.Fatalf("EqualTo: %v", err)
+	}
+	if !same {
 		t.Fatal("re-imported seed differs from the original")
 	}
 

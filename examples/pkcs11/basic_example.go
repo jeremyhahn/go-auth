@@ -64,7 +64,7 @@ func tokenLabelExample() {
 	// The PIN travels in go-enclave locked memory. In production it
 	// comes from enclave.NewMemoryEnclave over a []byte the reader fills,
 	// which wipes that slice; a string literal is only for the example.
-	pin, err := enclave.NewMemoryEnclaveFromString("1234")
+	pin, err := enclave.NewMemoryEnclave([]byte("1234"))
 	if err != nil {
 		log.Fatalf("Failed to seal the PIN: %v", err)
 	}
@@ -121,7 +121,7 @@ func slotExample() {
 	// The PIN travels in go-enclave locked memory. In production it
 	// comes from enclave.NewMemoryEnclave over a []byte the reader fills,
 	// which wipes that slice; a string literal is only for the example.
-	pin, err := enclave.NewMemoryEnclaveFromString("1234")
+	pin, err := enclave.NewMemoryEnclave([]byte("1234"))
 	if err != nil {
 		log.Fatalf("Failed to seal the PIN: %v", err)
 	}

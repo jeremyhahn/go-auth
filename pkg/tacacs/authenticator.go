@@ -100,7 +100,7 @@ func WithDialContext(dial func(ctx context.Context, network, addr string) (net.C
 //
 // sharedSecret is the RFC 8907 shared secret in locked memory; build it with
 // enclave.NewMemoryEnclave (which wipes the caller's slice) or, from a
-// configuration string, enclave.NewMemoryEnclaveFromString.
+// configuration string, enclave.NewMemoryEnclave([]byte(s)).
 //
 // It TAKES OWNERSHIP of sharedSecret on every return path: when it returns an
 // error — the FIPS refusal included — the enclave has already been destroyed,
@@ -112,8 +112,7 @@ func WithDialContext(dial func(ctx context.Context, network, addr string) (net.C
 // learn the backend is unavailable.
 func NewAuthenticator(addr string, sharedSecret *enclave.MemoryEnclave, opts ...Option) (*Authenticator, error) {
 	if err := validateArgs(addr, sharedSecret); err != nil {
-		sharedSecret.Destroy()
-		return nil, err
+		return nil, credential.DestroyAll(err, sharedSecret)
 	}
 
 	a := &Authenticator{
@@ -148,7 +147,7 @@ func (a *Authenticator) Close() error {
 	a.lifecycle.Lock()
 	defer a.lifecycle.Unlock()
 	a.closed = true
-	return a.secret.DestroyErr()
+	return a.secret.Destroy()
 }
 
 // Authenticate verifies username/password credentials against the TACACS+ server.

@@ -30,7 +30,7 @@ func ExampleNewAuthenticator() {
 
 	// The authorization value travels in locked memory. The caller owns it
 	// and destroys it; Authenticate only borrows it.
-	password, err := enclave.NewMemoryEnclaveFromString("password123")
+	password, err := enclave.NewMemoryEnclave([]byte("password123"))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func ExampleAuthenticator_Authenticate_pcrMismatch() {
 		log.Fatal(err)
 	}
 
-	password, err := enclave.NewMemoryEnclaveFromString("password")
+	password, err := enclave.NewMemoryEnclave([]byte("password"))
 	if err != nil {
 		log.Fatal(err)
 	}

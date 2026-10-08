@@ -43,7 +43,7 @@
 //	// Validate a code from the user's authenticator app. A code is a
 //	// credential for its validity window, so it arrives in an enclave too;
 //	// Authenticate borrows it and never destroys it.
-//	code, err := enclave.NewMemoryEnclaveFromString(submitted)
+//	code, err := enclave.NewMemoryEnclave([]byte(submitted))
 //	if err != nil {
 //	    log.Fatal(err)
 //	}
