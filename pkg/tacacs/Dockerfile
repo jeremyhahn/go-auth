@@ -1,4 +1,4 @@
-FROM golang:1.27.1-bookworm
+FROM golang:1.27.2-bookworm
 
 WORKDIR /workspace
 COPY go.mod go.sum ./
