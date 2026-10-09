@@ -1,5 +1,8 @@
 # go-auth Documentation
 
+> **Status: NORMATIVE** · Scope: go-auth · Last verified: 2026-10-09
+> Conflicts with this document are defects. Fix them here first.
+
 Comprehensive authentication library for Go with support for multiple authentication methods and hardware tokens.
 
 ## Overview
@@ -362,22 +365,6 @@ signs with HMAC-SHA-1), and the OTP algorithm a FIPS deployment must provision.
 
 ## Performance Considerations
 
-### Latency Comparison
-
-Typical authentication latency (local network):
-
-| Module | Latency | Notes |
-|--------|---------|-------|
-| PAM | 5-20ms | Local system calls |
-| LDAP | 10-50ms | Network + directory lookup |
-| RADIUS | 5-20ms | UDP, minimal overhead |
-| TACACS+ | 10-30ms | TCP, full encryption |
-| OAuth | 50-200ms | HTTPS + validation |
-| OTP | <1ms | Local computation |
-| PKCS#11 | 50-200ms | Hardware operation |
-| YubiKey | 100-500ms | Cloud validation |
-| TPM2 | 10-30ms | Local hardware |
-
 ### Optimization Strategies
 
 1. **Connection pooling** - Reuse connections where applicable
@@ -393,13 +380,14 @@ Typical authentication latency (local network):
 Some modules require CGO:
 
 ```bash
-# PAM
+# PAM: pkg/pam builds against libpam whenever cgo is on (no build tag)
 sudo apt-get install libpam0g-dev
-CGO_ENABLED=1 go build -tags pam
+CGO_ENABLED=1 go build ./...
 
-# PKCS#11
+# PKCS#11: the `pkcs11` build tag, with cgo, selects the real provider
+# (pkg/pkcs11/system_provider_pkcs11.go); without it a stub is built
 sudo apt-get install libpcsclite-dev
-CGO_ENABLED=1 go build -tags pkcs11
+CGO_ENABLED=1 go build -tags pkcs11 ./...
 ```
 
 ### Pure Go Modules
@@ -410,8 +398,11 @@ These modules work without CGO:
 - TACACS+
 - OAuth
 - OTP
-- YubiKey (with custom validator)
+- YubiKey
 - TPM2 (with go-tpm)
+
+`pkg/pam` also compiles without CGO, but its system session opener then
+reports itself unavailable.
 
 ## Testing
 
@@ -425,44 +416,21 @@ go test ./pkg/...
 
 ### Integration Tests
 
-Integration tests require actual services:
+Integration tests (build tag `integration`, under `test/integration/`) run in
+Docker, one image per module:
 
 ```bash
-# Set up test services (see module docs)
-docker-compose up -d
-
-# Run integration tests
-go test -tags integration ./test/integration/...
+make integration-test            # every module
+make ldap-integration-test       # one module: pam, radius, tacacs, ldap,
+                                 # pkcs11, yubikey, oauth, otp, tpm2
 ```
-
-### Coverage
-
-Check test coverage:
-
-```bash
-go test -cover ./pkg/...
-```
-
-Target coverage: 90%+ for all modules
 
 ## Examples
 
-Example code for each module:
-
-```bash
-examples/
-├── pam_example.go
-├── ldap_example.go
-├── radius_example.go
-├── tacacs_example.go
-├── oauth_example.go
-├── otp_example.go
-├── pkcs11_example.go
-├── yubikey_example.go
-└── tpm2_example.go
-```
-
-See individual module documentation for detailed examples.
+Example code lives under `examples/`, one directory per module (`pam`, `ldap`,
+`radius`, `tacacs`, `oauth`, `otp`, `pkcs11`, `yubikey`, `tpm2`, `api`). See
+[examples/README.md](../examples/README.md) and the individual module
+documentation.
 
 ## Troubleshooting
 
@@ -488,33 +456,13 @@ See individual module documentation for detailed examples.
    - Verify certificate validity
    - Check hostname matching
 
-### Debug Logging
-
-Enable debug logging in each module (implementation varies):
-
-```go
-// Example for OAuth module
-config.Debug = true
-```
-
-## Migration Guide
-
-### From v1.x to v2.x
-
-(Include migration instructions when applicable)
-
-## Contributing
-
-See [CONTRIBUTING.md](../CONTRIBUTING.md) for guidelines.
-
 ## License
 
-See [LICENSE](../LICENSE) for details.
+See [LICENSE.md](../LICENSE.md) for details.
 
 ## Support
 
 - **Documentation**: This directory
-- **Issues**: GitHub issue tracker
 - **Examples**: `examples/` directory
 - **Integration Tests**: `test/integration/` directory
 

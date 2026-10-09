@@ -1,5 +1,8 @@
 # PAM (Pluggable Authentication Modules) Package
 
+> **Status: NORMATIVE** · Scope: go-auth · Last verified: 2026-10-09
+> Conflicts with this document are defects. Fix them here first.
+
 The `pam` package provides authentication against the system's Pluggable Authentication Modules stack, enabling integration with standard Linux/Unix authentication mechanisms.
 
 ## Overview
@@ -124,7 +127,7 @@ ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 defer cancel()
 
 err := auth.Authenticate(ctx, "username", password)
-if err == context.DeadlineExceeded {
+if errors.Is(err, context.DeadlineExceeded) {
     log.Println("Authentication timed out")
 }
 
@@ -139,6 +142,10 @@ go func() {
 
 err = auth.Authenticate(ctx, "username", password)
 ```
+
+The context is checked before the PAM transaction is opened and again before
+it authenticates. The libpam calls themselves are not interruptible, so a
+deadline does not abort one already running.
 
 ## Testing
 
@@ -201,20 +208,20 @@ sudo apt-get install libpam0g-dev
 # RHEL/CentOS/Fedora:
 sudo dnf install pam-devel
 
-# Build with CGO
-CGO_ENABLED=1 go build -tags pam
+# Build with CGO; there is no build tag, cgo alone selects the system opener
+CGO_ENABLED=1 go build ./...
 ```
 
-### Stub Build (Testing)
+### Without CGO (Testing)
 
-For testing without PAM libraries, use the default build (without CGO):
+For testing without PAM libraries, build without CGO. The package still
+compiles; only the system opener is absent:
 
 ```bash
-# Build without PAM support (mock only)
-CGO_ENABLED=0 go build
+CGO_ENABLED=0 go build ./...
 ```
 
-Without CGO, creating an authenticator with `nil` opener will fail with:
+Without CGO, creating an authenticator with a `nil` opener fails with:
 ```
 pam: system session opener unavailable; requires cgo build with PAM support
 ```
@@ -345,16 +352,7 @@ into a `C.CString` buffer which the PAM module owns and frees (Linux-PAM's
 the module stack keeps, is residue **R6** in the
 [credential residue register](security/credential-residues.md).
 
-Always use parameterized PAM configurations to prevent injection attacks.
-
 ## Performance
-
-### Benchmark Results
-
-Typical authentication latency:
-- Local user (pam_unix): 5-20ms
-- LDAP backend: 50-200ms
-- Kerberos backend: 20-100ms
 
 Performance depends heavily on the underlying PAM configuration and backend systems.
 
@@ -376,11 +374,10 @@ Error: pam: system session opener unavailable
 Causes:
 - Built without CGO support
 - PAM development libraries not installed
-- Incorrect build tags
 
 Solution:
 ```bash
-CGO_ENABLED=1 go build -tags pam
+CGO_ENABLED=1 go build ./...
 ```
 
 ### Authentication Failures
@@ -410,12 +407,11 @@ Some PAM modules require elevated privileges:
 
 ## Integration Tests
 
-Integration tests require a working PAM installation:
+The integration tests (build tag `integration`) need a working PAM stack.
+`make pam-integration-test` builds and runs them in Docker:
 
 ```bash
-# Run integration tests (requires PAM libraries)
-cd test/integration/pam
-CGO_ENABLED=1 go test -v
+make pam-integration-test
 ```
 
 Tests validate:

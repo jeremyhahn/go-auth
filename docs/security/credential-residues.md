@@ -1,5 +1,8 @@
 # Credential residue register
 
+> **Status: NORMATIVE** · Scope: go-auth · Last verified: 2026-10-09
+> Conflicts with this document are defects. Fix them here first.
+
 go-auth holds every credential in a go-enclave `*enclave.MemoryEnclave`
 ([credentials.md](../credentials.md)). This register lists every place where
 plaintext must nevertheless leave locked memory because a dependency accepts

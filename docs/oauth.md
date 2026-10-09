@@ -1,6 +1,9 @@
 # OAuth 2.0 / OIDC Package
 
-The `oauth` package provides comprehensive OAuth 2.0 and OpenID Connect (OIDC) authentication support for the go-auth library.
+> **Status: NORMATIVE** · Scope: go-auth · Last verified: 2026-10-09
+> Conflicts with this document are defects. Fix them here first.
+
+The `oauth` package provides OAuth 2.0 and OpenID Connect (OIDC) authentication support for the go-auth library.
 
 ## Features
 
@@ -575,8 +578,8 @@ err := service.Login(ctx, api.LoginRequest{
 ### Flow-Specific Requirements
 
 **FlowTokenValidation:**
-- `Validation.JWKSURL` (for JWT validation)
-- `Validation.IntrospectionURL` (for introspection)
+- `Validation.JWKSURL` (required for `ValidationJWT` and `ValidationHybrid`)
+- `Validation.IntrospectionURL` and a live `ClientSecret` (required for `ValidationIntrospection`)
 
 **FlowClientCredentials:**
 - `ClientSecret` (a live `*enclave.MemoryEnclave`)
@@ -605,7 +608,7 @@ err := service.Login(ctx, api.LoginRequest{
 - Clock Skew: 60 seconds
 - Cache MaxSize: 1000
 - Cache TTL: 5 minutes
-- Validation Method: Hybrid (when JWKS URL provided)
+- Validation Method: Hybrid (which requires `Validation.JWKSURL`; `IntrospectionURL` is optional)
 
 ## Error Handling
 
@@ -695,14 +698,6 @@ defer auth.Close() // Releases JWKS and cache resources; destroys the client sec
 - **Retry logic** handles transient failures (3 attempts with exponential backoff)
 
 ## Testing
-
-The package includes comprehensive tests covering:
-- Configuration validation
-- Provider implementations
-- Token validation
-- Caching mechanisms
-- Error handling
-- Concurrent access
 
 Run unit tests:
 

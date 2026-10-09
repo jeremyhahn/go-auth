@@ -68,8 +68,28 @@ jobs:
       - name: Verify golangci-lint version
         run: make verify-lint-tool
 
-      # `make lint` is gofmt -l, go vet and the golangci-lint umbrella, which
-      # is the same command a developer runs (devops.md §4). The security
+      # `make lint` runs actionlint over these workflows (devops.md §4) and
+      # fails when actionlint or shellcheck is absent (go-auth#66). actionlint
+      # is unpinned, like gosec and govulncheck: the documented-pin clause
+      # (devops.md §9) is for a tool with a reason to freeze, which actionlint
+      # does not have. Bounded retry for the sum.golang.org flake class.
+      - name: Install actionlint
+        run: |
+          for i in 1 2 3; do
+            go install github.com/rhysd/actionlint/cmd/actionlint@latest && exit 0
+            if [ "$i" -lt 3 ]; then echo "install attempt $i failed; retrying"; sleep 10; fi
+          done
+          echo "actionlint install failed after 3 attempts"; exit 1
+
+      # actionlint delegates every SC* rule to shellcheck and disables them,
+      # still exiting 0, when shellcheck is absent. The installer pins the
+      # version and checks the SHA-256 recorded in the script. setup-go puts
+      # GOPATH/bin on PATH, so actionlint finds it by name.
+      - name: Install shellcheck
+        run: ./scripts/install-shellcheck.sh "$(go env GOPATH)/bin"
+
+      # `make lint` is gofmt -l, actionlint, go vet and the golangci-lint
+      # umbrella, which is the same command a developer runs (devops.md §4). The security
       # linters staticcheck/errcheck/unused/ineffassign/misspell/gocritic are
       # enabled in .golangci.yml as §8 requires.
       - name: Lint

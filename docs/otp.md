@@ -1,5 +1,8 @@
 # OTP Authentication Package
 
+> **Status: NORMATIVE** · Scope: go-auth · Last verified: 2026-10-09
+> Conflicts with this document are defects. Fix them here first.
+
 The `otp` package provides TOTP (Time-based One-Time Password) and HOTP (HMAC-based One-Time Password) authentication following RFC 6238 and RFC 4226 respectively.
 
 ## Features
@@ -7,6 +10,13 @@ The `otp` package provides TOTP (Time-based One-Time Password) and HOTP (HMAC-ba
 - **TOTP Support**: Time-based codes that change every 30 seconds (configurable)
 - **HOTP Support**: Counter-based codes for hardware tokens
 - **Multiple Hash Algorithms**: SHA1, SHA256, SHA512
+- **Flexible Digit Lengths**: 6, 7, or 8 digit codes
+- **Clock Skew Tolerance**: Configurable time window for TOTP validation
+- **Provisioning URIs**: Generate `otpauth://` URIs (Google Authenticator Key URI Format) for QR codes
+- **Seeds in locked memory**: the shared key lives only in a go-enclave `*enclave.MemoryEnclave`
+- **Context Support**: `Authenticate` and `ValidateCounter` check the context on entry
+- **Thread-Safe**: Safe for concurrent use
+- **No OTP dependency**: RFC 4226 / RFC 6238 are implemented in-repo over the standard library
 
 > **FIPS 140-3 deployments must use SHA256 or SHA512.** `AlgorithmSHA1` — RFC
 > 6238's default and the only digest some authenticator apps implement —
@@ -17,13 +27,6 @@ The `otp` package provides TOTP (Time-based One-Time Password) and HOTP (HMAC-ba
 > enrollments are validated with. Seeds shorter than 112 bits are rejected there too, so users
 > enrolled with an 80-bit seed need re-enrollment before FIPS is activated. The
 > rest of the package is unaffected. See [FIPS 140-3 compliance](fips.md).
-- **Flexible Digit Lengths**: 6, 7, or 8 digit codes
-- **Clock Skew Tolerance**: Configurable time window for TOTP validation
-- **Provisioning URIs**: Generate `otpauth://` URIs (Google Authenticator Key URI Format) for QR codes
-- **Seeds in locked memory**: the shared key lives only in a go-enclave `*enclave.MemoryEnclave`
-- **Context Support**: All operations support context cancellation
-- **Thread-Safe**: Safe for concurrent use
-- **No OTP dependency**: RFC 4226 / RFC 6238 are implemented in-repo over the standard library
 
 ## Installation
 
@@ -342,6 +345,9 @@ default:
 
 ## QR Code Generation
 
+`go-auth` does not depend on a QR library; this example uses the third-party
+`github.com/skip2/go-qrcode`.
+
 ```go
 import "github.com/skip2/go-qrcode"
 
@@ -419,7 +425,8 @@ func otpAuthHandler(w http.ResponseWriter, r *http.Request) {
     }
     defer code.Destroy()
 
-    // Load the user's stored seed and settings
+    // Load the user's stored seed and settings (getUserOTP and userID are
+    // the application's own)
     stored := getUserOTP(r.Context(), userID)
     seed, err := otp.DecodeSeed(stored.Seed) // residue R7: the stored text
     if err != nil {
@@ -474,4 +481,4 @@ See the `examples/otp/` directory for complete examples:
 
 ## License
 
-See repository LICENSE file.
+See [LICENSE.md](../LICENSE.md).

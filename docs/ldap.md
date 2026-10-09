@@ -1,5 +1,8 @@
 # LDAP Authentication Package
 
+> **Status: NORMATIVE** · Scope: go-auth · Last verified: 2026-10-09
+> Conflicts with this document are defects. Fix them here first.
+
 The `ldap` package provides Lightweight Directory Access Protocol (LDAP) authentication for validating credentials against directory services like Active Directory, OpenLDAP, and other LDAP-compliant systems.
 
 ## Overview
@@ -27,7 +30,7 @@ Common use cases:
 - Configurable user DN templates
 - Custom TLS configuration
 - Timeout support
-- Context-aware operation
+- Context checked on entry
 - Thread-safe concurrent usage
 
 ## Quick Start
@@ -118,7 +121,8 @@ err = auth.Authenticate(ctx, "username", password)
 
 ### With Service Account
 
-Use a service account for initial bind (required for user lookup):
+Bind with a service account before the user bind (no directory search is
+performed; the user DN always comes from the template):
 
 ```go
 auth, err := ldap.NewAuthenticator(
@@ -199,9 +203,8 @@ auth, err := ldap.NewAuthenticator(
 ```
 
 Use service accounts when:
-- Anonymous binds are disabled
-- User lookup is required before authentication
-- Additional directory access is needed
+- The directory refuses user binds on connections that have not bound first
+- A bind policy requires a prior service bind
 
 #### WithStartTLS
 
@@ -254,7 +257,7 @@ auth, err := ldap.NewAuthenticator(
 
 #### WithTimeout
 
-Set dial and read timeout:
+Set the dial timeout:
 
 ```go
 import "time"
@@ -266,10 +269,9 @@ auth, err := ldap.NewAuthenticator(
 )
 ```
 
-Timeout applies to:
-- Connection establishment
-- LDAP bind operations
-- Network read/write operations
+The timeout is the `net.Dialer` timeout of the connection attempt
+(`pkg/ldap/authenticator.go`, `dial`). It does not bound a bind or a read once
+the connection is up.
 
 ## Authentication Flow
 
@@ -526,8 +528,11 @@ import "time"
 ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 defer cancel()
 
+// Authenticate checks the context on entry. An expired or cancelled context
+// returns its error before any connection is made; it does not interrupt a
+// dial or bind already in progress (use WithTimeout for the dial).
 err := auth.Authenticate(ctx, "username", password)
-if err == context.DeadlineExceeded {
+if errors.Is(err, context.DeadlineExceeded) {
     log.Println("LDAP authentication timed out")
 }
 ```
@@ -628,16 +633,7 @@ BER packet keeps a copy until it is collected. That is residue **R1** in the
 
 ## Performance
 
-### Benchmark Results
-
-Typical authentication latency:
-- Local network: 10-50ms
-- WAN: 50-200ms
-- With TLS: +10-30ms overhead
-- Active Directory: 20-100ms
-- OpenLDAP: 10-50ms
-
-Performance factors:
+### Factors
 - Network latency to LDAP server
 - Server processing time
 - TLS handshake overhead
@@ -740,71 +736,31 @@ auth, err := ldap.NewAuthenticator(
 
 ## Testing
 
-### Mock Implementation
+### Test Seam
 
-```go
-type MockConn struct {
-    bindErr     error
-    startTLSErr error
-}
-
-func (m *MockConn) Bind(username, password string) error {
-    return m.bindErr
-}
-
-func (m *MockConn) StartTLS(config *tls.Config) error {
-    return m.startTLSErr
-}
-
-func (m *MockConn) Close() error {
-    return nil
-}
-
-// Use in tests
-func TestAuthentication(t *testing.T) {
-    mockConn := &MockConn{}
-
-    dialFunc := func(ctx context.Context) (ldap.LdapConn, error) {
-        return mockConn, nil
-    }
-
-    auth, err := ldap.NewAuthenticator(
-        "ldap://test",
-        ldap.WithUserDNTemplate("cn=%s,dc=test"),
-        ldap.WithDialContext(dialFunc),
-    )
-    if err != nil {
-        t.Fatal(err)
-    }
-
-    err = auth.Authenticate(context.Background(), "user", password)
-    // ... assertions
-}
-```
+`WithDialContext` replaces the dial step with
+`func(ctx context.Context) (ldapConn, error)`, where `ldapConn` (`Bind`,
+`StartTLS`, `Close`) is unexported. Only tests inside `pkg/ldap` can supply
+one (`pkg/ldap/authenticator_test.go`). Code outside the package tests against
+a real or stub LDAP server instead, as `test/integration/ldap/` does.
 
 ## Integration Tests
 
-Run integration tests with an LDAP server:
+The integration tests (build tag `integration`, `test/integration/ldap/`) talk
+to an in-process stub LDAP server, so they need no external directory and no
+environment variables:
 
 ```bash
-# Export test configuration
-export LDAP_URL=ldap://ldap.example.com:389
-export LDAP_USER_DN_TEMPLATE="uid=%s,ou=users,dc=example,dc=com"
-export LDAP_USERNAME=testuser
-export LDAP_PASSWORD=testpass
-
-# Run integration tests
-cd test/integration/ldap
-go test -v
+make ldap-integration-test   # builds and runs the Docker image
+# or directly:
+go test -tags integration ./test/integration/ldap/...
 ```
 
-Integration tests validate:
-- LDAP connection
+They cover:
+- Successful and failed (wrong password) user binds
+- Service account bind failure
 - LDAPS connection
-- StartTLS upgrade
-- Service account binding
-- User authentication
-- Error handling
+- StartTLS upgrade and a refused StartTLS
 
 ## References
 

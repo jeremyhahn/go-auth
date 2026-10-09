@@ -1,5 +1,8 @@
 # PKCS#11 Authentication Package
 
+> **Status: NORMATIVE** · Scope: go-auth · Last verified: 2026-10-09
+> Conflicts with this document are defects. Fix them here first.
+
 The `pkcs11` package provides authentication using hardware security modules (HSMs), smart cards, and other cryptographic tokens via the PKCS#11 (Cryptoki) standard interface.
 
 ## Overview
@@ -198,7 +201,8 @@ cfg := pkcs11.Config{
 }
 ```
 
-Either `TokenLabel` or `Slot` must be specified (not both).
+At least one of `TokenLabel` or `Slot` must be specified; `NewAuthenticator`
+returns `pkcs11.ErrMissingTokenSelector` otherwise.
 
 ## Authentication Flow
 
@@ -260,34 +264,30 @@ err := auth.Authenticate(ctx, nil)
 ```go
 // No system provider available (not built with PKCS#11)
 auth, err := pkcs11.NewAuthenticator(cfg, nil)
-// Error: "pkcs11: system provider unavailable; build with PKCS#11 support"
+// Error: "pkcs11: system provider unavailable; build with PKCS#11 support to use default"
 ```
 
 ## Build Requirements
 
 ### With PKCS#11 Support
 
-Requires PKCS#11 libraries and build tags:
+The system provider is compiled in only with cgo and the `pkcs11` build tag
+(`pkg/pkcs11/system_provider_pkcs11.go`); the vendor's PKCS#11 module is loaded
+at run time from `Config.ModulePath`:
 
 ```bash
-# Install PKCS#11 development libraries
-# Debian/Ubuntu:
-sudo apt-get install libpcsclite-dev
-
-# RHEL/CentOS/Fedora:
-sudo dnf install pcsc-lite-devel
-
-# Build with PKCS#11 support
-go build -tags pkcs11
+CGO_ENABLED=1 go build -tags pkcs11 ./...
 ```
 
 ### Without PKCS#11 Support (Testing)
 
-For testing with mock providers:
+Without the tag, or without cgo, a stub is built instead. The package still
+compiles; creating an authenticator with a `nil` provider fails with the
+"system provider unavailable" error unless a provider is installed with
+`SetSystemSessionProvider` or passed explicitly:
 
 ```bash
-# Build without PKCS#11
-go build
+go build ./...
 ```
 
 ## Testing
@@ -365,7 +365,7 @@ ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 defer cancel()
 
 err := auth.Authenticate(ctx, pin)
-if err == context.DeadlineExceeded {
+if errors.Is(err, context.DeadlineExceeded) {
     log.Println("Token authentication timed out")
 }
 ```
@@ -517,14 +517,6 @@ PKCS#11 tokens provide strong two-factor authentication:
 Combined with username/password provides three-factor authentication.
 
 ## Performance
-
-### Benchmark Results
-
-Typical authentication latency:
-- Software HSM (SoftHSM): 50-200ms
-- Smart card: 100-500ms
-- USB token: 50-300ms
-- Hardware HSM (network): 100-1000ms
 
 Performance factors:
 - Token type and generation
@@ -693,23 +685,12 @@ Note: Some PKCS#11 modules may serialize operations internally.
 
 ## Integration Tests
 
-Run integration tests with SoftHSM:
+The integration test (build tags `integration && cgo && pkcs11`, in
+`test/integration/auth`) runs against SoftHSM. `make pkcs11-integration-test`
+builds an image with SoftHSM and an initialized token and runs it:
 
 ```bash
-# Install SoftHSM
-sudo apt-get install softhsm2
-
-# Initialize test token
-softhsm2-util --init-token --slot 0 --label "TestToken" --pin 1234 --so-pin 5678
-
-# Export configuration
-export PKCS11_MODULE=/usr/lib/softhsm/libsofthsm2.so
-export PKCS11_TOKEN_LABEL=TestToken
-export PKCS11_PIN=1234
-
-# Run integration tests
-cd test/integration/auth
-go test -v -run TestSoftHSM
+make pkcs11-integration-test
 ```
 
 Integration tests validate:

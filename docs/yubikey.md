@@ -1,5 +1,8 @@
 # YubiKey OTP Authentication Package
 
+> **Status: NORMATIVE** · Scope: go-auth · Last verified: 2026-10-09
+> Conflicts with this document are defects. Fix them here first.
+
 The `yubikey` package provides authentication using YubiKey hardware tokens via One-Time Passwords (OTP). It validates YubiKey-generated OTPs against Yubico's validation service or compatible servers.
 
 ## Overview
@@ -139,11 +142,13 @@ func main() {
 
 ### With System Validator
 
-Set a default validator for all authenticators:
+The package installs an `HTTPValidator` for YubiCloud as the system validator at
+start-up. Replace it for all authenticators that pass a `nil` validator:
 
 ```go
-// In application initialization
-validator := NewYubiCloudValidator()
+// In application initialization: a self-hosted endpoint and a client with a timeout
+validator := yubikey.NewHTTPValidator(&http.Client{Timeout: 10 * time.Second},
+    "https://yubikey.company.com/wsapi/2.0/verify")
 yubikey.SetSystemValidator(validator)
 
 // Later, create authenticators without explicit validator
@@ -176,7 +181,8 @@ type Config struct {
 2. **Configure self-hosted server**:
    - Install ykval (YubiKey Validation Server)
    - Generate client ID and API key
-   - Use custom validator implementation
+   - Point `yubikey.NewHTTPValidator` at its verify endpoint, or use a custom
+     validator implementation
 
 ### Configuration Validation
 
@@ -204,9 +210,9 @@ cfg := yubikey.Config{ClientID: "12345"}
 auth, err := yubikey.NewAuthenticator(cfg, nil)
 // Error: "yubikey: api key must not be empty"
 
-// No validator
+// No validator: only if SetSystemValidator(nil) removed the default
 auth, err := yubikey.NewAuthenticator(cfg, nil)
-// Error: "yubikey: system validator unavailable"
+// Error: "yubikey: system validator unavailable; configure a validator implementation"
 ```
 
 ## OTP Format
@@ -325,76 +331,30 @@ Both enclaves are **borrowed** for the call: read them with `WithBytes`, do not
 retain the bytes, and never destroy them. The authenticator owns the API key;
 the caller owns the OTP.
 
-### Yubico Cloud Validator Example
+### Built-in YubiCloud Validator
 
 ```go
-import (
-    "context"
-    "crypto/hmac"
-    "crypto/sha1"
-    "encoding/base64"
-    "fmt"
-    "net/http"
-    "net/url"
-)
+func NewHTTPValidator(client *http.Client, endpoint string) *HTTPValidator
+```
 
-type YubiCloudValidator struct {
-    apiURL string
-    client *http.Client
-}
+`HTTPValidator` is the package's `OTPValidator` for the Yubico Validation
+Protocol 2.0. A `nil` client selects `http.DefaultClient`, which has no
+timeout, so pass a client with one or a context with a deadline. An empty
+`endpoint` selects `https://api.yubico.com/wsapi/2.0/verify`.
 
-func NewYubiCloudValidator() *YubiCloudValidator {
-    return &YubiCloudValidator{
-        apiURL: "https://api.yubico.com/wsapi/2.0/verify",
-        client: &http.Client{Timeout: 10 * time.Second},
-    }
-}
+It sends a signed request with a random nonce and returns:
 
-func (v *YubiCloudValidator) Validate(ctx context.Context, clientID string, apiKey, otp *enclave.MemoryEnclave) error {
-    // Build request
-    nonce := generateNonce() // Random nonce for replay protection
+- `nil` when the service answers `OK` with a matching nonce and OTP and a valid
+  response signature
+- `yubikey.ErrInvalidOTP` for any other status
+- `yubikey.ErrResponseNonceMismatch`, `yubikey.ErrResponseOTPMismatch` or
+  `yubikey.ErrResponseSignatureInvalid` when the response does not belong to
+  the request or was not signed with the API key
+- `yubikey.ErrFIPSUnsupported` under FIPS 140-only mode, before anything is sent
 
-    params := url.Values{}
-    params.Set("id", clientID)
-    params.Set("nonce", nonce)
-    // The OTP must go into the query string; read it inside the borrow.
-    if err := otp.WithBytes(func(code []byte) error {
-        params.Set("otp", string(code))
-        return nil
-    }); err != nil {
-        return err
-    }
-
-    // Generate HMAC signature, keyed from inside the API key's borrow
-    signature, err := generateSignature(params, apiKey) // apiKey.WithBytes(...)
-    if err != nil {
-        return err
-    }
-    params.Set("h", signature)
-
-    // Make request
-    reqURL := fmt.Sprintf("%s?%s", v.apiURL, params.Encode())
-    req, _ := http.NewRequestWithContext(ctx, "GET", reqURL, nil)
-
-    resp, err := v.client.Do(req)
-    if err != nil {
-        return err
-    }
-    defer resp.Body.Close()
-
-    // Parse and verify response
-    result := parseResponse(resp.Body)
-    if result.Status != "OK" {
-        return yubikey.ErrInvalidOTP
-    }
-
-    // Verify response signature
-    if !verifyResponseSignature(result, apiKey) {
-        return errors.New("invalid response signature")
-    }
-
-    return nil
-}
+```go
+validator := yubikey.NewHTTPValidator(&http.Client{Timeout: 10 * time.Second}, "")
+auth, err := yubikey.NewAuthenticator(cfg, validator)
 ```
 
 ### Mock Validator for Testing
@@ -444,7 +404,7 @@ ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 defer cancel()
 
 err := auth.Authenticate(ctx, otp)
-if err == context.DeadlineExceeded {
+if errors.Is(err, context.DeadlineExceeded) {
     log.Println("Validation service did not respond in time")
 }
 ```
@@ -471,7 +431,7 @@ import (
     "github.com/jeremyhahn/go-auth/pkg/yubikey"
 )
 
-validator := NewYubiCloudValidator()
+validator := yubikey.NewHTTPValidator(nil, "")
 cfg := yubikey.Config{
     ClientID: "12345",
     APIKey:   apiKey, // *enclave.MemoryEnclave; NewAuthenticator takes ownership
@@ -611,7 +571,9 @@ err := auth.Authenticate(ctx, otp)
 
 ### Self-Hosted Validation Server
 
-Implement custom validator for self-hosted server:
+A self-hosted ykval server that speaks Validation Protocol 2.0 needs no custom
+code: pass its verify URL to `yubikey.NewHTTPValidator`. For a server with a
+different API, implement `OTPValidator`:
 
 ```go
 type SelfHostedValidator struct {
@@ -686,13 +648,6 @@ wg.Wait()
 
 ## Performance
 
-### Benchmark Results
-
-Typical authentication latency:
-- Yubico cloud: 100-500ms (depends on location)
-- Self-hosted (local network): 20-100ms
-- Self-hosted (same datacenter): 10-50ms
-
 Performance factors:
 - Network latency to validation service
 - Validation service load
@@ -711,9 +666,8 @@ Performance factors:
 
 ### Invalid OTP Format
 
-```
-Error: invalid OTP format
-```
+The package does not check the format; a malformed OTP is rejected by the
+validation service and surfaces as `yubikey: invalid OTP`.
 
 Causes:
 - OTP too short or too long
@@ -766,7 +720,7 @@ Solutions:
 ### Signature Verification Failed
 
 ```
-Error: invalid response signature
+Error: yubikey: response signature invalid
 ```
 
 Causes:

@@ -1,5 +1,8 @@
 # RADIUS Authentication Package
 
+> **Status: NORMATIVE** · Scope: go-auth · Last verified: 2026-10-09
+> Conflicts with this document are defects. Fix them here first.
+
 The `radius` package provides Remote Authentication Dial-In User Service (RADIUS) authentication with support for PAP, EAP-TLS, and RadSec (RADIUS-over-TLS).
 
 ## Overview
@@ -28,7 +31,7 @@ RADIUS is a networking protocol that provides centralized authentication, author
 - Packet validation and authenticator verification
 - Fragment handling for EAP-TLS
 - Thread-safe concurrent operation
-- Context-aware with proper cancellation
+- Context-aware: cancellation is honored on entry and during the exchange
 
 ## Quick Start
 
@@ -447,7 +450,7 @@ ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 defer cancel()
 
 err := auth.Authenticate(ctx, "username", password)
-if err == context.DeadlineExceeded {
+if errors.Is(err, context.DeadlineExceeded) {
     log.Println("RADIUS server did not respond in time")
 }
 ```
@@ -604,14 +607,6 @@ if err != nil {
 
 ## Performance
 
-### Benchmark Results
-
-Typical authentication latency:
-- PAP (local network): 5-20ms
-- PAP (WAN): 50-200ms
-- RadSec: +10-30ms (TLS overhead)
-- EAP-TLS: 100-300ms (certificate exchange)
-
 ### Optimization
 
 - **Connection pooling** - Not applicable (stateless protocol)
@@ -681,9 +676,8 @@ tlsConfig.RootCAs = caCertPool
 
 ### EAP-TLS Handshake Failures
 
-```
-Error: radius: EAP-TLS handshake failed
-```
+A failed handshake is reported by `crypto/tls`; a conversation that does not
+converge ends with `radius: eap-tls exceeded the maximum number of round trips`.
 
 Causes:
 - Client certificate not trusted by server
@@ -699,18 +693,13 @@ Solutions:
 
 ## Integration Tests
 
-Run integration tests with a RADIUS server:
+The integration tests (build tag `integration`) expect a RADIUS server on
+`127.0.0.1:1812` (RadSec on `127.0.0.1:2083`) and read their client certificates
+from `pkg/radius/testdata/certs`. `make radius-integration-test` builds and
+runs them in Docker:
 
 ```bash
-# Export test configuration
-export RADIUS_SERVER=radius.example.com:1812
-export RADIUS_SECRET=testing123
-export RADIUS_USERNAME=testuser
-export RADIUS_PASSWORD=testpass
-
-# Run integration tests
-cd test/integration/radius
-go test -v
+make radius-integration-test
 ```
 
 Integration tests validate:

@@ -1,5 +1,8 @@
 # FIPS 140-3 compliance
 
+> **Status: NORMATIVE** · Scope: go-auth · Last verified: 2026-10-09
+> Conflicts with this document are defects. Fix them here first.
+
 go-auth's CI runs a FIPS job with `GOFIPS140=latest` and `GODEBUG=fips140=only`
 (company convention `configuration.md` §5).
 
@@ -52,7 +55,7 @@ protocol needs, over a fixed non-secret input, once per process, and observing
 whether the runtime refuses (`pkg/radius/fips.go`, `pkg/tacacs/fips.go`,
 `pkg/yubikey/fips.go`). That is not the obvious mechanism, so the reason is
 worth recording. `crypto/fips140.Enabled()` answers a different question —
-measured on go1.26.6:
+measured on go1.27.2:
 
 | build | `GODEBUG` | `fips140.Enabled()` | HMAC-MD5 |
 |---|---|---|---|
@@ -198,39 +201,12 @@ instead. `TestFIPSActivation`
 also re-executes the test binary under `GODEBUG=fips140=only`, so every
 ordinary test run exercises the real runtime refusal, not just the FIPS job.
 
-## Not exemptions — fixed in place
-
-Two problems the `fips140=only` gate surfaced were real defects, and were fixed
-rather than exempted.
-
-- **`pkg/otp` HOTP validation ignored the configured algorithm.** Both
-  validation entry points — `Authenticate` and `ValidateCounter` — called
-  `github.com/pquerna/otp`'s `hotp.Validate`, which hardcodes 6 digits and SHA-1
-  regardless of how the authenticator was built, while `Generate` honoured the
-  configuration. A SHA-256 or 7/8-digit HOTP secret could therefore never
-  validate a code it had just generated. The dependency has since been removed
-  ([#46]); HOTP and TOTP are derived in-repo from the configured options.
-- **The OTP test fixture used an 80-bit secret.** `JBSWY3DPEHPK3PXP` is the
-  widely copied Google Authenticator doc example; it base32-decodes to 10
-  bytes, below the 112-bit floor FIPS 140-3 sets for HMAC keys. Every fixture
-  the FIPS job runs now uses the RFC 4226 Appendix D reference seed (20 bytes /
-  160 bits), which is also what `GenerateProtectedSecret` emits. The algorithm
-  was never the problem, only the key length of the fixture.
-
-  The example's length is still used deliberately elsewhere, as a subject
-  rather than a convenience: `pkg/otp/fips_test.go` checks that a seed of that
-  length is *rejected* when FIPS is activated, and accepted otherwise, because
-  an ordinary deployment has no key-length floor and must go on working for
-  callers who enrolled against it.
-
 ## What is *not* an acceptable response to a red FIPS job
 
 Setting `GODEBUG` back to `fips140=on`, adding a tag that skips the job, or
 narrowing the test scope so a failing package is simply not covered. A gate
 that cannot fail on the thing it exists to catch is decoration. If a failure
 cannot be fixed or honestly exempted, it gets escalated, not silenced.
-
-[#46]: https://github.com/jeremyhahn/go-auth/issues/46
 
 ## Credentials in locked memory
 

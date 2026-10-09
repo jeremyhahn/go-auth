@@ -68,14 +68,14 @@ func (f *fakeEnv) golangciLint(version string) {
 func (f *fakeEnv) gosec()       { f.tool("gosec", "exit 0") }
 func (f *fakeEnv) govulncheck() { f.tool("govulncheck", `echo "Scanner: govulncheck@v1.8.0"`) }
 
-// make runs a make target from the repo root with PATH holding only the fakes.
-func (f *fakeEnv) make(target string) (string, error) {
+// make runs make from the repo root with PATH holding only the fakes.
+func (f *fakeEnv) make(args ...string) (string, error) {
 	f.t.Helper()
 	makeBin, err := exec.LookPath("make")
 	if err != nil {
 		f.t.Fatalf("make is required to exercise the CI targets: %v", err)
 	}
-	cmd := exec.Command(makeBin, "--no-print-directory", target)
+	cmd := exec.Command(makeBin, append([]string{"--no-print-directory"}, args...)...)
 	cmd.Dir = repoRoot
 	cmd.Env = []string{
 		"PATH=" + f.bin,

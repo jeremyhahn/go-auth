@@ -34,8 +34,30 @@ fmt-check:
 		exit 1; \
 	fi
 
+# actionlint checks the workflows themselves: Actions syntax, expressions and
+# runner labels, before CI reads them (devops.md §4, the `make lint` row). It
+# picks up .github/actionlint.yaml on its own if the repository adds one to
+# declare self-hosted runner labels. actionlint delegates every SC* rule to
+# shellcheck and, with shellcheck absent, disables those rules and still exits
+# 0, so the target requires both rather than passing with half the checks off.
+# Neither tool is installed here (devops.md §4: a make target does not mutate
+# the developer's machine); CI's lint job installs both before `make lint`.
+.PHONY: actionlint
+actionlint:
+	@if ! command -v actionlint >/dev/null 2>&1; then \
+		echo "actionlint is not installed: the workflows cannot be checked" >&2; \
+		echo "  Install: go install github.com/rhysd/actionlint/cmd/actionlint@latest" >&2; \
+		exit 1; \
+	fi
+	@if ! command -v shellcheck >/dev/null 2>&1; then \
+		echo "shellcheck is not installed: actionlint would skip every run: script check" >&2; \
+		echo "  Install: scripts/install-shellcheck.sh \"\$$(go env GOPATH)/bin\"" >&2; \
+		exit 1; \
+	fi
+	actionlint
+
 .PHONY: lint
-lint: fmt-check
+lint: fmt-check actionlint
 	$(GO) vet $(shell $(GO) list ./... | grep -v /examples/)
 	@LINTER=$$(command -v golangci-lint 2>/dev/null); \
 	if [ -n "$$LINTER" ]; then \
@@ -80,8 +102,8 @@ test-race:
 # snippets, which are not part of the module build.
 #
 # The tools are not installed by these targets — devops.md §4 forbids a make
-# target mutating the developer's machine. A missing tool prints how to get it
-# and the target skips. CI does not install them either: it uses the copies
+# target mutating the developer's machine. A missing gosec or govulncheck
+# prints how to get it and the target skips; a missing trivy fails trivy-fs. CI does not install them either: it uses the copies
 # baked into the ci-runner image and runs verify-security-tools first, which
 # fails when one is absent, so a skip cannot turn the gate green (go-auth#26).
 
@@ -114,15 +136,17 @@ govulncheck:
 mod-verify:
 	$(GO) mod verify
 
+# trivy-fs fails when trivy is absent, unlike gosec and govulncheck above,
+# which CI guards with verify-security-tools. A skip that exits 0 let
+# `make security` pass with no filesystem scan at all (go-auth#66).
 .PHONY: trivy-fs
 trivy-fs:
-	@if command -v trivy >/dev/null 2>&1; then \
-		trivy fs --scanners vuln,secret --severity CRITICAL,HIGH --exit-code 1 . || exit 1; \
-	else \
-		echo "trivy not installed, skipping filesystem scan"; \
-		echo "  Install: curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin"; \
-		echo "  CI installs trivy unconditionally, so this scan still gates every push."; \
+	@if ! command -v trivy >/dev/null 2>&1; then \
+		echo "trivy is not installed: the filesystem scan cannot run" >&2; \
+		echo "  Install: https://github.com/aquasecurity/trivy/releases (the release tarball for your platform)" >&2; \
+		exit 1; \
 	fi
+	trivy fs --scanners vuln,secret --severity CRITICAL,HIGH --exit-code 1 .
 
 .PHONY: security
 security: gosec govulncheck mod-verify trivy-fs

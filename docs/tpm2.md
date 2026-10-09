@@ -1,5 +1,8 @@
 # TPM 2.0 Authentication Module
 
+> **Status: NORMATIVE** · Scope: go-auth · Last verified: 2026-10-09
+> Conflicts with this document are defects. Fix them here first.
+
 The `tpm2` package provides hardware-based authentication using TPM 2.0 devices. It implements platform integrity verification by unsealing secrets that are sealed to specific Platform Configuration Register (PCR) values.
 
 ## Overview
@@ -100,7 +103,8 @@ func main() {
         PCRSelection: []int{0, 1, 7},
     }
 
-    // Create authenticator with real provider
+    // Create authenticator with a provider. The package ships none; the
+    // host application supplies one (see Real Provider Implementation).
     provider := NewRealTPMProvider() // Implementation not shown
     auth, err := tpm2.NewAuthenticator(cfg, provider)
     if err != nil {
@@ -178,7 +182,21 @@ tpm2.SetSystemTPMProvider(provider)
 
 // Create authenticators without explicit provider
 auth, err := tpm2.NewAuthenticator(cfg, nil)
+// With no provider installed: "tpm2: system provider unavailable; configure a TPM provider"
 ```
+
+### Configuration Errors
+
+`NewAuthenticator` validates the configuration before it looks at the provider:
+
+- `tpm2: device path must not be empty`
+- `tpm2: sealed handle must be specified` (a zero `SealedHandle`)
+- `tpm2: at least one PCR must be selected`
+- `tpm2: PCR <n> is invalid; must be between 0 and 23`
+- `tpm2: unsupported hash algorithm: <name>`
+
+`Authenticate` returns `tpm2.ErrEmptyPassword` for a nil or destroyed password
+enclave and `tpm2.ErrNilAuthenticator` on a nil authenticator.
 
 ### Context Management
 
@@ -257,39 +275,43 @@ func TestMyCode(t *testing.T) {
 
 ### Real Provider Implementation
 
-A real TPM provider uses `github.com/google/go-tpm/tpm2`:
+A real TPM provider uses `github.com/google/go-tpm/tpm2` and its `transport`
+package; `tpm2auth` below is this package, imported as
+`tpm2auth "github.com/jeremyhahn/go-auth/pkg/tpm2"`. The sketch is not
+compiled; the integration test
+`test/integration/tpm2/tpm2_integration_test.go` holds a complete provider:
 
 ```go
 type RealTPMProvider struct{}
 
-func (p *RealTPMProvider) Open(ctx context.Context, cfg Config) (TPMSession, error) {
+func (p *RealTPMProvider) Open(ctx context.Context, cfg tpm2auth.Config) (tpm2auth.TPMSession, error) {
     // Open TPM device
-    rwc, err := tpm2.OpenTPM(cfg.DevicePath)
+    tpm, err := transport.OpenTPM(cfg.DevicePath)
     if err != nil {
-        return nil, tpm2.ErrTPMUnavailable
+        return nil, tpm2auth.ErrTPMUnavailable
     }
 
     return &RealTPMSession{
-        transport: tpm2.Transport(rwc),
+        transport: tpm,
         handle: cfg.SealedHandle,
         // ... configure PCR policy
     }, nil
 }
 
 type RealTPMSession struct {
-    transport tpm2.Transport
-    handle Handle
+    transport transport.TPMCloser
+    handle tpm2auth.Handle
 }
 
-func (s *RealTPMSession) Unseal(ctx context.Context, handle Handle, password *enclave.MemoryEnclave) (*enclave.MemoryEnclave, error) {
+func (s *RealTPMSession) Unseal(ctx context.Context, handle tpm2auth.Handle, password *enclave.MemoryEnclave) (*enclave.MemoryEnclave, error) {
     // Borrow the authorization value only for the command:
     //   password.WithBytes(func(auth []byte) error {
     //       rsp, err = tpm2.Unseal{ItemHandle: tpm2.AuthHandle{..., Auth: tpm2.PasswordAuth(auth)}}.Execute(s.transport)
     //       ...
     //   })
     // The unseal operation automatically validates PCR policy
-    // Return ErrPCRMismatch if PCR policy validation fails
-    // Return ErrInvalidPassword if password is wrong
+    // Return tpm2auth.ErrPCRMismatch if PCR policy validation fails
+    // Return tpm2auth.ErrInvalidPassword if password is wrong
     //
     // Move the response straight into locked memory: NewMemoryEnclave wipes
     // go-tpm's response buffer, so the plaintext never stays on the heap.
@@ -358,16 +380,6 @@ PCR values change with firmware/software updates:
 
 ## Performance
 
-### Benchmark Results
-
-Typical authentication latency:
-- Config validation: < 1µs
-- TPM session open: 1-5ms
-- Unseal operation: 5-20ms (depends on PCR count and policy)
-- Session close: < 1ms
-
-Total authentication time: 10-30ms typical
-
 ### Optimization
 
 - Reuse authenticator instances (thread-safe for concurrent use)
@@ -415,18 +427,15 @@ Causes:
 - Wrong password provided
 - Sealed object created with different authorization
 
-## Coverage
+## Integration Tests
 
-Test coverage: 97.4%
+The integration tests (build tag `integration`, in `test/integration/tpm2`)
+need a TPM or simulator. `make tpm2-integration-test` builds and runs them in
+Docker:
 
-Tests include:
-- Configuration validation (valid/invalid paths, handles, PCRs, algorithms)
-- Authenticator creation (with/without provider)
-- Authentication success/failure scenarios
-- Context handling (nil, cancelled, timeout)
-- Session cleanup (success, error, close errors)
-- Concurrent authentication
-- Error types and sentinel errors
+```bash
+make tpm2-integration-test
+```
 
 ## References
 

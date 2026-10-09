@@ -1,5 +1,8 @@
 # TACACS+ Authentication Package
 
+> **Status: NORMATIVE** · Scope: go-auth · Last verified: 2026-10-09
+> Conflicts with this document are defects. Fix them here first.
+
 The `tacacs` package provides Terminal Access Controller Access-Control System Plus (TACACS+) authentication for network device access control and centralized AAA (Authentication, Authorization, and Accounting).
 
 ## Overview
@@ -160,7 +163,7 @@ Set the privilege level for authentication requests:
 auth, err := tacacs.NewAuthenticator(
     "tacacs.example.com:49",
     sharedSecret,
-    tacacs.WithPrivLevel(15), // Privilege level 0-15
+    tacacs.WithPrivLevel(15), // uint8, sent as-is; the server interprets it
 )
 ```
 
@@ -185,10 +188,12 @@ auth, err := tacacs.NewAuthenticator(
 )
 ```
 
-Timeout applies to:
-- Initial connection establishment
+The timeout is set as the connection's read and write timeout, so it applies to:
 - Reading authentication responses
 - Writing authentication requests
+
+To bound the whole call, connection establishment included, pass a `context`
+with a deadline to `Authenticate`, or supply a dialer with `WithDialContext`.
 
 ## Authentication Flow
 
@@ -219,11 +224,13 @@ The package handles all interactive flows automatically.
 The server can respond with various status codes:
 - **PASS** - Authentication successful
 - **FAIL** - Authentication failed
-- **ERROR** - Server error
+- **ERROR** - Server error; returned as `tacacs: <server message>`
 - **GETUSER** - Server requests username
 - **GETPASS** - Server requests password
-- **GETDATA** - Server requests additional data
-- **RESTART** - Server requests restart of authentication
+- **GETDATA** - Answered with the password, as GETPASS
+- **RESTART** - Server requests restart; the client continues with an empty message
+
+Any other status fails with `tacacs: unsupported reply status`.
 
 ## Error Handling
 
@@ -307,7 +314,7 @@ ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 defer cancel()
 
 err := auth.Authenticate(ctx, "username", password)
-if err == context.DeadlineExceeded {
+if errors.Is(err, context.DeadlineExceeded) {
     log.Println("TACACS+ server did not respond in time")
 }
 ```
@@ -406,7 +413,6 @@ TACACS+ encrypts the entire packet body (unlike RADIUS which only encrypts passw
 - All authentication data is encrypted
 - Uses MD5-based obfuscation with shared secret
 - Protection against eavesdropping
-- Replay attack protection via session IDs
 
 ### Shared Secret Security
 
@@ -553,13 +559,6 @@ if err := adminAuth.Authenticate(ctx, "username", enablePassword); err != nil {
 
 ## Performance
 
-### Benchmark Results
-
-Typical authentication latency:
-- Local network: 10-30ms
-- WAN: 50-200ms
-- With timeout failures: 3-10s (depending on timeout)
-
 Performance factors:
 - Network latency to TACACS+ server
 - Server processing time
@@ -696,18 +695,12 @@ func TestAuthentication(t *testing.T) {
 
 ## Integration Tests
 
-Run integration tests with a TACACS+ server:
+The integration tests (build tag `integration`) start an in-process `tacplus`
+server on `127.0.0.1` and need no environment variables. `make
+tacacs-integration-test` builds and runs them in Docker:
 
 ```bash
-# Export test configuration
-export TACACS_SERVER=tacacs.example.com:49
-export TACACS_SECRET=testing123
-export TACACS_USERNAME=testuser
-export TACACS_PASSWORD=testpass
-
-# Run integration tests
-cd test/integration/tacacs
-go test -v
+make tacacs-integration-test
 ```
 
 Integration tests validate:
@@ -720,7 +713,7 @@ Integration tests validate:
 
 ## TACACS+ Server Configuration
 
-### Cisco ACS Example
+### Cisco IOS Example
 
 ```
 # Define TACACS+ client
@@ -760,7 +753,7 @@ group = admins {
 | Transport | TCP (port 49) | UDP (port 1812) |
 | Encryption | Full packet body | Password only |
 | AAA Separation | Separate AAA functions | Combined AAA |
-| Packet Size | Variable | Fixed (4096 bytes) |
+| Packet Size | Variable | Up to 4096 bytes |
 | Primary Use | Network device admin | Network access, VPN, WiFi |
 | Vendor | Cisco (open standard) | IETF standard |
 

@@ -1,5 +1,8 @@
 # Credentials in go-enclave memory
 
+> **Status: NORMATIVE** · Scope: go-auth · Last verified: 2026-10-09
+> Conflicts with this document are defects. Fix them here first.
+
 Every credential go-auth handles — passwords, PINs, one-time passwords, shared
 secrets, service-account passwords, API keys, OTP seeds, OAuth client secrets
 and tokens — is a [go-enclave](https://github.com/jeremyhahn/go-enclave)
@@ -65,7 +68,7 @@ Three rules, the same in every package:
 
 1. **Constructors take ownership.** An enclave given to a constructor or put in
    a configuration struct — `radius.NewAuthenticator`'s shared secret,
-   `tacacs.NewAuthenticator`'s shared secret, `ldapauth.WithServiceAccount`'s
+   `tacacs.NewAuthenticator`'s shared secret, `ldap.WithServiceAccount`'s
    password, `yubikey.Config.APIKey`, `otp.Config.Seed`,
    `oauth.Config.ClientSecret` — belongs to the authenticator from that call
    on. The constructor destroys it on **every** return path, including its
@@ -74,7 +77,8 @@ Three rules, the same in every package:
 2. **`Close` destroys.** Each owning authenticator has `Close() error`, which
    waits for in-flight borrows to finish, destroys what it owns, and makes the
    authenticator refuse further use with a typed `ErrClosed` (or, in
-   `pkg/oauth`, `ErrCredentialUnavailable`). It is idempotent.
+   `pkg/oauth`, `ErrCredentialUnavailable`). `pkg/otp`'s `Close` destroys the
+   seed and has no `ErrClosed`; later use fails on the destroyed seed.
 3. **Per-call arguments are borrowed.** The credential passed to
    `Authenticate` (and `ValidateCounter`, `ValidateToken`, `Login` on a
    session, `Unseal`, …) stays the caller's. The callee reads it inside
