@@ -74,12 +74,21 @@ jobs:
       # (devops.md §9) is for a tool with a reason to freeze, which actionlint
       # does not have. Bounded retry for the sum.golang.org flake class.
       - name: Install actionlint
+        # ci-template v1.16: github.com only; Gitea jobs use the runner image's baked, pinned tool.
+        if: github.server_url == 'https://github.com'
         run: |
           for i in 1 2 3; do
             go install github.com/rhysd/actionlint/cmd/actionlint@latest && exit 0
             if [ "$i" -lt 3 ]; then echo "install attempt $i failed; retrying"; sleep 10; fi
           done
           echo "actionlint install failed after 3 attempts"; exit 1
+
+      # Gitea jobs skip the install above, so assert the runner image's baked
+      # actionlint is there rather than let make lint find it missing late.
+      - name: Assert baked actionlint
+        if: github.server_url != 'https://github.com'
+        run: |
+          command -v actionlint >/dev/null || { echo "actionlint missing from the runner image (expected baked)"; exit 1; }
 
       # actionlint delegates every SC* rule to shellcheck and disables them,
       # still exiting 0, when shellcheck is absent. The installer pins the

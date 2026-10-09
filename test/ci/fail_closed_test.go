@@ -6,11 +6,15 @@ package ci_test
 // PATH holds only the fakes, so a missing tool really is missing.
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// giteaOnly is the condition of a step that runs on Gitea runners alone.
+const giteaOnly = "github.server_url != 'https://github.com'"
 
 // recorder writes a fake that appends its arguments to a log and exits rc.
 func (f *fakeEnv) recorder(name, rc string) string {
@@ -123,31 +127,96 @@ func TestWorkflow_LintInstallsActionlintAndShellcheckFirst(t *testing.T) {
 	if !ok {
 		t.Fatal("ci.yml has no lint job")
 	}
-	needles := []string{"rhysd/actionlint/cmd/actionlint", "scripts/install-shellcheck.sh"}
-	at := map[string]int{}
-	lintAt := -1
-	for i, s := range job.Steps {
-		for _, n := range needles {
-			if strings.Contains(s.Run, n) {
-				if s.If != "" {
-					t.Errorf("step %q is conditional (if=%q); both hosts need it", s.Name, s.If)
-				}
-				at[n] = i
+	for _, p := range lintToolProblems(job.Steps) {
+		t.Error(p)
+	}
+}
+
+// lintToolProblems checks the lint job's steps. shellcheck must install
+// unconditionally before make lint. actionlint must either install
+// unconditionally, or install on github.com only and be backed by a Gitea-only
+// `command -v actionlint` assertion (the runner image bakes it); each before
+// make lint.
+func lintToolProblems(steps []step) []string {
+	const actionlintNeedle = "rhysd/actionlint/cmd/actionlint"
+	const shellcheckNeedle = "scripts/install-shellcheck.sh"
+	var problems []string
+	lintAt, installAt, shellcheckAt, assertAt := -1, -1, -1, -1
+	installIf := ""
+	for i, s := range steps {
+		if strings.Contains(s.Run, actionlintNeedle) {
+			installAt, installIf = i, strings.TrimSpace(s.If)
+		}
+		if strings.Contains(s.Run, shellcheckNeedle) {
+			if s.If != "" {
+				problems = append(problems, fmt.Sprintf("step %q is conditional (if=%q); both hosts need it", s.Name, s.If))
 			}
+			shellcheckAt = i
+		}
+		if strings.TrimSpace(s.If) == giteaOnly && strings.Contains(s.Run, "command -v actionlint") {
+			assertAt = i
 		}
 		if strings.TrimSpace(s.Run) == "make lint" {
 			lintAt = i
 		}
 	}
 	if lintAt < 0 {
-		t.Fatal("lint job never runs make lint")
+		return append(problems, "lint job never runs make lint")
 	}
-	for _, n := range needles {
-		i, ok := at[n]
-		if !ok {
-			t.Errorf("lint job never runs %s", n)
-		} else if i > lintAt {
-			t.Errorf("lint job runs %s after make lint", n)
-		}
+	if shellcheckAt < 0 {
+		problems = append(problems, "lint job never runs "+shellcheckNeedle)
+	} else if shellcheckAt > lintAt {
+		problems = append(problems, "lint job runs "+shellcheckNeedle+" after make lint")
+	}
+	switch {
+	case installAt < 0:
+		problems = append(problems, "lint job never runs "+actionlintNeedle)
+	case installAt > lintAt:
+		problems = append(problems, "lint job runs "+actionlintNeedle+" after make lint")
+	case installIf == "":
+		// Unconditional install: both hosts covered.
+	case installIf != githubOnly:
+		problems = append(problems, fmt.Sprintf("actionlint install has if=%q; only unconditional or %q is allowed", installIf, githubOnly))
+	case assertAt < 0:
+		problems = append(problems, "actionlint install is github.com only but no Gitea-only `command -v actionlint` step asserts the baked tool")
+	case assertAt > lintAt:
+		problems = append(problems, "baked actionlint assertion runs after make lint")
+	}
+	return problems
+}
+
+func TestLintToolProblems(t *testing.T) {
+	install := step{Name: "Install actionlint", Run: "go install github.com/rhysd/actionlint/cmd/actionlint@latest"}
+	shellcheck := step{Name: "Install shellcheck", Run: "./scripts/install-shellcheck.sh bin"}
+	assert := step{Name: "Assert", If: giteaOnly, Run: "command -v actionlint"}
+	lint := step{Name: "Lint", Run: "make lint"}
+	ghInstall := install
+	ghInstall.If = githubOnly
+
+	tests := []struct {
+		name  string
+		steps []step
+		ok    bool
+	}{
+		{"unconditional install", []step{install, shellcheck, lint}, true},
+		{"github install plus gitea assertion", []step{ghInstall, assert, shellcheck, lint}, true},
+		{"github install without assertion", []step{ghInstall, shellcheck, lint}, false},
+		{"assertion not gitea-only", []step{ghInstall, {Name: "A", Run: "command -v actionlint"}, shellcheck, lint}, false},
+		{"assertion after make lint", []step{ghInstall, shellcheck, lint, assert}, false},
+		{"install after make lint", []step{shellcheck, lint, install}, false},
+		{"no install", []step{shellcheck, lint}, false},
+		{"conditional shellcheck", []step{install, {Name: "sc", If: githubOnly, Run: shellcheck.Run}, lint}, false},
+		{"no shellcheck", []step{install, lint}, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := lintToolProblems(tc.steps)
+			if tc.ok && len(got) > 0 {
+				t.Errorf("want accepted, got %v", got)
+			}
+			if !tc.ok && len(got) == 0 {
+				t.Error("want rejected, got accepted")
+			}
+		})
 	}
 }
