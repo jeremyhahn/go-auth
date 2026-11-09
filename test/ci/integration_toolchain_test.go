@@ -65,7 +65,9 @@ func TestIntegrationWorkflow_GoVersionMatchesGoMod(t *testing.T) {
 	if err := yaml.Unmarshal(data, &wf); err != nil {
 		t.Fatalf("parse integration.yml: %v", err)
 	}
-	if got, want := wf.Env["GO_VERSION"], goModVersion(t); got != want {
-		t.Fatalf("integration.yml GO_VERSION %q != go.mod directive %q: the toolchain moves in one pass", got, want)
+	// Same rule as ci.yml: the pin may lead the directive by patch versions on
+	// the same minor (Company Agent convention, m2289 (4)).
+	if err := checkPinCoversDirective("integration.yml", wf.Env["GO_VERSION"], goModVersion(t)); err != nil {
+		t.Fatal(err)
 	}
 }

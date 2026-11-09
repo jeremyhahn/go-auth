@@ -34,7 +34,7 @@ github.com/jcmturner/gokrb5/v8 v8.4.4 h1:x1Sv4HaTpepFkXbt2IkL29DXRf8sOfZXo8eRKh6
 github.com/jcmturner/gokrb5/v8 v8.4.4/go.mod h1:1btQEpgT6k+unzCwX1KdWMEwPPkkgBtP+F6aCACiMrs=
 github.com/jcmturner/rpc/v2 v2.0.3 h1:7FXXj8Ti1IaVFpSAziCZWNzbNuZmnvw/i6CqLNdWfZY=
 github.com/jcmturner/rpc/v2 v2.0.3/go.mod h1:VUJYCIDm3PVOEHw8sgt091/20OJjskO/YJki3ELg/Hc=
-github.com/jeremyhahn/go-enclave v0.8.0-alpha h1:NCS8KM9S2wKvauLYOyblJQTFW+Tie+M75XxbJXjkx5c=
+github.com/jeremyhahn/go-enclave v0.8.0-alpha h1:Z2ArumW4O9DPkF54DdTT0w6JlcYaGqkF/S4SwEBEPsY=
 github.com/jeremyhahn/go-enclave v0.8.0-alpha/go.mod h1:EVeqp4qW6mUSpMWfDPsTjzTX4On/huPWUIZiaD5RsmE=
 github.com/miekg/pkcs11 v1.1.2 h1:/VxmeAX5qU6Q3EwafypogwWbYryHFmF2RpkJmw3m4MQ=
 github.com/miekg/pkcs11 v1.1.2/go.mod h1:XsNlhZGX73bx86s2hdc/FuaLm2CPZJemRLMA+WTFxgs=
