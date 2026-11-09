@@ -1,6 +1,7 @@
 package ci_test
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -173,9 +174,54 @@ func goModVersion(t *testing.T) string {
 	return string(m[1])
 }
 
+// checkPinCoversDirective reports whether a CI GO_VERSION pin may build a
+// module whose go directive is directive. The workflows and go.mod still move
+// together, never piecemeal, but by the Company Agent convention (m2289 (4))
+// each module's go directive stays on the lowest patch importers need while
+// every CI pin carries the security patch (1.27.2 directive, 1.27.3 pin for
+// GO-2026-6809). So the pin must share the directive's major.minor and its
+// patch must be at or above the directive's.
+func checkPinCoversDirective(file, pin, directive string) error {
+	p, d := strings.Split(pin, "."), strings.Split(directive, ".")
+	if len(p) != 3 || len(d) != 3 {
+		return fmt.Errorf("%s GO_VERSION %q, go.mod directive %q: both must be major.minor.patch", file, pin, directive)
+	}
+	pp, perr := strconv.Atoi(p[2])
+	dp, derr := strconv.Atoi(d[2])
+	if perr != nil || derr != nil {
+		return fmt.Errorf("%s GO_VERSION %q, go.mod directive %q: patch is not a number", file, pin, directive)
+	}
+	if p[0] != d[0] || p[1] != d[1] || pp < dp {
+		return fmt.Errorf("%s GO_VERSION %q does not cover go.mod directive %q: the pin must be on the same minor at or above its patch, and the toolchain moves in one pass", file, pin, directive)
+	}
+	return nil
+}
+
+func TestCheckPinCoversDirective(t *testing.T) {
+	for _, tc := range []struct {
+		name, pin, directive string
+		ok                   bool
+	}{
+		{"equal", "1.27.2", "1.27.2", true},
+		{"higher patch", "1.27.3", "1.27.2", true},
+		{"lower patch", "1.27.1", "1.27.2", false},
+		{"other minor", "1.28.0", "1.27.2", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := checkPinCoversDirective("ci.yml", tc.pin, tc.directive)
+			if (err == nil) != tc.ok {
+				t.Fatalf("checkPinCoversDirective(%q, %q) = %v, want ok=%v", tc.pin, tc.directive, err, tc.ok)
+			}
+			if err != nil && (!strings.Contains(err.Error(), tc.pin) || !strings.Contains(err.Error(), tc.directive)) {
+				t.Fatalf("error %q does not name both %q and %q", err, tc.pin, tc.directive)
+			}
+		})
+	}
+}
+
 func TestWorkflow_GoVersionMatchesGoMod(t *testing.T) {
-	if got, want := loadCI(t).Env["GO_VERSION"], goModVersion(t); got != want {
-		t.Fatalf("ci.yml GO_VERSION %q != go.mod directive %q: the toolchain moves in one pass", got, want)
+	if err := checkPinCoversDirective("ci.yml", loadCI(t).Env["GO_VERSION"], goModVersion(t)); err != nil {
+		t.Fatal(err)
 	}
 }
 
