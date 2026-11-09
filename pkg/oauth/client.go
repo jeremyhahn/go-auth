@@ -31,8 +31,12 @@ func newDefaultHTTPClient(timeout time.Duration, tlsConfig *tls.Config, insecure
 		customTLS = tlsConfig.Clone()
 	}
 
+	if customTLS.MinVersion < tls.VersionTLS12 {
+		customTLS.MinVersion = tls.VersionTLS12
+	}
+
 	if insecureSkipVerify {
-		customTLS.InsecureSkipVerify = true
+		customTLS.InsecureSkipVerify = true // #nosec G402 -- only when the caller sets Config.InsecureSkipVerify (off by default, documented as not recommended)
 	}
 
 	// Create transport with optimized settings
