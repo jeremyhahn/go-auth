@@ -106,9 +106,14 @@ jobs:
 
   build:
     name: Build
-    runs-on: ubuntu-latest
+    # Docker-free: the self-hosted bigdisk runner for a push to main or a PR
+    # from this repository, ubuntu-latest otherwise (fork PRs). The checkout
+    # persists no token on that runner.
+    runs-on: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk"]') || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-go@v6
         with:
@@ -120,7 +125,10 @@ jobs:
 
   fips:
     name: FIPS
-    runs-on: ubuntu-latest
+    # Docker-free: the self-hosted bigdisk runner for a push to main or a PR
+    # from this repository, ubuntu-latest otherwise (fork PRs). The checkout
+    # persists no token on that runner.
+    runs-on: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk"]') || 'ubuntu-latest' }}
     timeout-minutes: 30
     env:
       GOFIPS140: latest
@@ -131,6 +139,8 @@ jobs:
       GODEBUG: fips140=only
     steps:
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-go@v6
         with:
@@ -174,9 +184,14 @@ jobs:
 
   security:
     name: Security
-    runs-on: ubuntu-latest
+    # Docker-free: the self-hosted bigdisk runner for a push to main or a PR
+    # from this repository, ubuntu-latest otherwise (fork PRs). The checkout
+    # persists no token on that runner.
+    runs-on: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk"]') || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-go@v6
         with:
