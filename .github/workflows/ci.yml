@@ -106,9 +106,19 @@ jobs:
 
   build:
     name: Build
-    runs-on: ubuntu-latest
+    # Docker-free: the self-hosted bigdisk runner for a push to main or a PR
+    # from this repository, ubuntu-latest otherwise (fork PRs). The checkout
+    # persists no token on that runner.
+    runs-on: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk"]') || 'ubuntu-latest' }}
+    # InfoSec O-2: on the pool path, modules come from proxy.golang.org only
+    # (no direct fallback) and go.mod and go.sum are read-only.
+    env:
+      GOPROXY: https://proxy.golang.org
+      GOFLAGS: -mod=readonly
     steps:
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-go@v6
         with:
@@ -120,7 +130,10 @@ jobs:
 
   fips:
     name: FIPS
-    runs-on: ubuntu-latest
+    # Docker-free: the self-hosted bigdisk runner for a push to main or a PR
+    # from this repository, ubuntu-latest otherwise (fork PRs). The checkout
+    # persists no token on that runner.
+    runs-on: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk"]') || 'ubuntu-latest' }}
     timeout-minutes: 30
     env:
       GOFIPS140: latest
@@ -129,8 +142,14 @@ jobs:
       # a regulated path used a prohibited primitive. `only` makes those
       # operations panic (configuration.md §5).
       GODEBUG: fips140=only
+      # InfoSec O-2: on the pool path, modules come from proxy.golang.org only
+      # (no direct fallback) and go.mod and go.sum are read-only.
+      GOPROXY: https://proxy.golang.org
+      GOFLAGS: -mod=readonly
     steps:
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-go@v6
         with:
@@ -174,9 +193,19 @@ jobs:
 
   security:
     name: Security
-    runs-on: ubuntu-latest
+    # Docker-free: the self-hosted bigdisk runner for a push to main or a PR
+    # from this repository, ubuntu-latest otherwise (fork PRs). The checkout
+    # persists no token on that runner.
+    runs-on: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk"]') || 'ubuntu-latest' }}
+    # InfoSec O-2: on the pool path, modules come from proxy.golang.org only
+    # (no direct fallback) and go.mod and go.sum are read-only.
+    env:
+      GOPROXY: https://proxy.golang.org
+      GOFLAGS: -mod=readonly
     steps:
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-go@v6
         with:
