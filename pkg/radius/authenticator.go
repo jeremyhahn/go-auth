@@ -347,7 +347,7 @@ func (t *tlsPacketExchanger) exchange(ctx context.Context, packet *radiuslib.Pac
 		return nil, err
 	}
 
-	// Judge failures against the caller's ctx, which is cancelled before the derived stopCtx.
+	// Judge failures against the caller's ctx, which is canceled before the derived stopCtx.
 	stopCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
