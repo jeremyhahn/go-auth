@@ -1,15 +1,4 @@
-// The YubiCloud validator is in every build and refuses to run when FIPS is
-// activated.
-//
-// Yubico Validation Protocol 2.0 signs every request and response with
-// HMAC-SHA-1 over the sorted parameter list (computeSignature below), and the
-// service rejects any other digest. Go's fips140=only mode admits HMAC over
-// SHA-2 and SHA-3 only, so under that activation every entry point here
-// returns ErrFIPSUnsupported (fips.go) instead of reaching the HMAC, and
-// NewAuthenticator refuses to construct around this validator. init() still
-// installs it as the package default in every build. The rest of pkg/yubikey
-// is unaffected: an injected OTPValidator that speaks to an approved
-// validation service works normally. See docs/fips.md.
+// The YubiCloud validator needs HMAC-SHA-1, so under GODEBUG=fips140=only every entry point returns ErrFIPSUnsupported. See docs/fips.md.
 
 package yubikey
 
@@ -17,12 +6,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
-	// SHA-1 here is protocol-mandated, not a cipher choice: the YubiCloud
-	// validation protocol (Yubico Validation Protocol 2.0) signs every
-	// request and response with HMAC-SHA1 over the sorted parameter list.
-	// Any other digest is rejected by the service. It is used only for HMAC,
-	// never as a bare hash, and SHA-1 collisions do not carry over to
-	// HMAC-SHA1.
+	// SHA-1 is protocol-mandated: Yubico Validation Protocol 2.0 signs with HMAC-SHA1, used only in HMAC.
 	"crypto/sha1" // #nosec G505 -- Yubico Validation Protocol 2.0 signs with HMAC-SHA1 by definition
 	"encoding/base64"
 	"errors"
@@ -73,16 +57,7 @@ func init() {
 	systemValidator = NewHTTPValidator(nil, "")
 }
 
-// Validate implements OTPValidator: it signs the request and verifies the
-// response signature with the API key borrowed from its enclave, and never
-// materializes the key as a string.
-//
-// The OTP has to travel in the request's query string, so it is lent to
-// net/url and net/http as a string that is wiped when Validate returns; their
-// own copies (the encoded URL, the request line) are residue R5.
-//
-// Under FIPS activation it returns ErrFIPSUnsupported before any request is
-// built or sent.
+// Validate signs the request and verifies the response with the borrowed API key; the OTP is a wiped transient string (residue R5).
 func (v *HTTPValidator) Validate(ctx context.Context, clientID string, apiKey, otp *enclave.MemoryEnclave) error {
 	if fips140OnlyActive() {
 		return ErrFIPSUnsupported
@@ -154,13 +129,7 @@ func (v *HTTPValidator) exchange(ctx context.Context, clientID string, apiKey *e
 	return nil
 }
 
-// computeSignature signs the sorted parameter list with the API key, which is
-// borrowed from its enclave and decoded into a locked scratch enclave for the
-// HMAC. Neither the base64 key nor the decoded key reaches ordinary heap
-// (crypto/hmac's ipad/opad blocks are its own derived copies).
-//
-// It is the one path to the HMAC-SHA-1, so it carries the FIPS gate itself and
-// no caller can reach the primitive's panic.
+// computeSignature HMACs the sorted parameters with the API key decoded into locked memory, and carries the FIPS gate.
 func computeSignature(values url.Values, apiKey *enclave.MemoryEnclave) (string, error) {
 	if fips140OnlyActive() {
 		return "", ErrFIPSUnsupported
@@ -182,18 +151,9 @@ func computeSignature(values url.Values, apiKey *enclave.MemoryEnclave) (string,
 	return signature, nil
 }
 
-// withDecodedAPIKey base64-decodes the API key into a locked scratch enclave
-// and calls fn with it; the scratch enclave is destroyed before it returns.
-//
-// A key that is not valid base64 is passed through as its own bytes. That is
-// what this package has always done — Yubico issues base64 keys, but callers
-// have been known to configure the raw value, and changing that here would
-// break their signatures rather than protect anything.
+// withDecodedAPIKey base64-decodes the API key into a locked scratch enclave for fn; a non-base64 key is used as raw bytes.
 func withDecodedAPIKey(encoded []byte, fn func(key []byte) error) (err error) {
-	// base64 needs two characters to carry a byte, so a key shorter than that
-	// decodes to nothing and can only be a raw one. Asking for a zero-length
-	// scratch buffer would fail before the fallback could run, which would
-	// reject a one-byte raw key that Config.validate accepts.
+	// A key under two characters can only be raw.
 	size := base64.StdEncoding.DecodedLen(len(encoded))
 	if size == 0 {
 		return fn(encoded)

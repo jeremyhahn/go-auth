@@ -1,14 +1,4 @@
-// Package credential holds the helpers every go-auth backend shares for
-// credentials held in go-enclave memory: the argument check, the destroy that
-// keeps a failure, and the one sanctioned way to lend a credential to a
-// dependency that only accepts a Go string.
-//
-// Every credential in go-auth is a *enclave.MemoryEnclave. Backends borrow
-// the plaintext through WithBytes, which scopes it to a callback over the
-// locked pages. A few third-party APIs take a string and nothing else —
-// go-ldap's Bind, tacplus's Continue, msteinert/pam's conversation reply and
-// miekg/pkcs11's Login. WithTransientString is the shape those sites use, and
-// docs/security/credential-residues.md registers each of them.
+// Package credential holds shared helpers for go-enclave credentials, including the lend-as-string path registered in docs/security/credential-residues.md.
 package credential
 
 import (
@@ -18,17 +8,7 @@ import (
 	enclave "github.com/jeremyhahn/go-enclave"
 )
 
-// Require reports whether e is usable as a credential argument.
-//
-// A nil enclave returns missing unchanged, so the caller's sentinel keeps
-// meaning "nothing was supplied". A destroyed enclave returns missing joined
-// with enclave.ErrEnclaveDestroyed: the caller supplied a credential and
-// then gave up its material, which is a lifecycle bug on their side rather
-// than an absent field, and errors.Is can tell the two apart.
-//
-// go-enclave refuses to build an enclave over empty material
-// (enclave.ErrEmptyEnclave), so a live enclave is never empty and there is no
-// third case to check.
+// Require returns missing for a nil enclave, and missing joined with enclave.ErrEnclaveDestroyed for a destroyed one.
 func Require(e *enclave.MemoryEnclave, missing error) error {
 	if e == nil {
 		return missing
@@ -39,15 +19,7 @@ func Require(e *enclave.MemoryEnclave, missing error) error {
 	return nil
 }
 
-// DestroyAll destroys every enclave in es and folds a failed Destroy into err,
-// for the paths that own a credential and must hand its error back.
-//
-// err is returned unchanged when every Destroy succeeds, so a caller that
-// compares it with == or matches a sentinel with errors.Is sees exactly what it
-// would have seen before. When err is nil and a Destroy fails, that failure is
-// returned; when both fail, the result is joined and matches both. A nil
-// enclave is skipped, and Destroy is idempotent, so a credential that was
-// already destroyed adds nothing.
+// DestroyAll destroys every enclave in es and folds any Destroy failure into err, which is returned unchanged when all succeed.
 func DestroyAll(err error, es ...*enclave.MemoryEnclave) error {
 	for _, e := range es {
 		if derr := e.Destroy(); derr != nil {
@@ -57,28 +29,7 @@ func DestroyAll(err error, es ...*enclave.MemoryEnclave) error {
 	return err
 }
 
-// WithTransientString lends fn the material of e as a Go string, for the one
-// call into a dependency that accepts nothing else, and wipes that string's
-// bytes when fn returns.
-//
-// The string is backed by a heap buffer this function allocates, fills from
-// inside e.WithBytes and zeroes before returning, on every path. Converting
-// with string(b) would leave an immutable copy behind until the collector
-// reuses it; this leaves a buffer of zeros. What it cannot
-// reach is whatever the dependency copies out of the string during the call —
-// a BER packet, a C.CString, a protocol buffer. Those copies are the residue
-// each call site names.
-//
-// The string must not outlive fn. The sites that use this were checked at
-// their pinned versions to copy the string synchronously and keep no
-// reference; a reference that survived anyway would read zeros rather than
-// the credential, which is the safe failure. The bytes are mutated after the
-// string has been handed out, which Go's string immutability does not
-// anticipate, so a dependency that used the string as a map key across the
-// call would break — none of the registered ones does.
-//
-// fn runs while e's read lock is held: it must not call methods on e, and a
-// Destroy of e waits for fn to return. e is borrowed and is not destroyed.
+// WithTransientString lends e's material to fn as a string backed by a buffer zeroed on return; fn must not retain it or call methods on e.
 func WithTransientString(e *enclave.MemoryEnclave, fn func(string) error) error {
 	return e.WithBytes(func(b []byte) error {
 		buf := make([]byte, len(b))

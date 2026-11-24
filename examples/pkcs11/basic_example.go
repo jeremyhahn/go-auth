@@ -1,16 +1,4 @@
-// Package main demonstrates PKCS#11 smart card/HSM authentication.
-//
-// This example shows how to:
-// - Configure the PKCS#11 authenticator
-// - Authenticate with a PIN
-// - Access hardware security modules or smart cards
-// - Handle errors properly
-//
-// Usage:
-//
-//	go run basic_example.go
-//
-// Note: This example requires PKCS#11 libraries and a connected token/HSM.
+// Package main demonstrates PKCS#11 PIN authentication; requires a PKCS#11 library and a token or HSM.
 package main
 
 import (
@@ -41,12 +29,7 @@ func main() {
 func tokenLabelExample() {
 	fmt.Println("--- Example 1: Authenticate by Token Label ---")
 
-	// Create PKCS#11 authenticator
-	// ModulePath points to the PKCS#11 shared library (.so/.dll)
-	// Common paths:
-	//   - SoftHSM: /usr/lib/softhsm/libsofthsm2.so
-	//   - OpenSC: /usr/lib/x86_64-linux-gnu/opensc-pkcs11.so
-	//   - YubiKey: /usr/local/lib/libykcs11.so
+	// ModulePath is the PKCS#11 library, e.g. /usr/lib/softhsm/libsofthsm2.so.
 	cfg := pkcs11.Config{
 		ModulePath: "/usr/lib/softhsm/libsofthsm2.so",
 		TokenLabel: "MyToken",

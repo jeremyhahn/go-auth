@@ -14,10 +14,7 @@ import (
 	"github.com/jeremyhahn/go-enclave"
 )
 
-// These tests pin the lifecycle of the two enclave-backed caches (Local Codex
-// review of #47): expired entries must be reclaimed before a new entry is
-// allocated, so a locked-memory budget filled with dead entries cannot wedge the
-// cache, and nothing may be inserted once the cache is closed.
+// These tests pin cache lifecycle: expired entries are reclaimed before a new allocation, and nothing is inserted after Close.
 
 // fakeClock is a manually advanced clock, so expiry is exercised without
 // waiting on real time.

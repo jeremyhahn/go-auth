@@ -1,39 +1,5 @@
 #!/bin/sh
-# changelog-assemble.sh — fold changelog.d/ fragments into CHANGELOG.md as the
-# section of the release being cut (go-auth#22; release-versioning.md §5).
-#
-#   changelog-assemble.sh <X.Y.Z-alpha>     (unprefixed, as in VERSION)
-#
-# Run from the repository root by `make release-changelog`, which is a
-# prerequisite of `make release-alpha` and commits the result before the tag
-# is cut. The script only edits the working tree; it never runs git.
-#
-# What it does, when there is something to release:
-#   - inserts "## [<version>] - <UTC date>" directly under "## [Unreleased]";
-#   - moves whatever "## [Unreleased]" already held into that section (the
-#     §5 migration: pre-fragment Unreleased content releases normally);
-#   - appends each fragment, in issue-number order, merging entries under the
-#     same "### <subsection>" heading so the section has one "### Fixed", not
-#     one per fragment, and collecting link definitions ("[#22]: <url>") once
-#     at the end of the section;
-#   - deletes each fragment it folded in. changelog.d/.gitkeep stays.
-#
-# It changes nothing, and exits 0, when there is nothing to fold in: no
-# fragments and an empty Unreleased section, or a section for <version> that
-# already exists (a re-run after the assembly was committed). The release
-# recipe's own CHANGELOG guard then decides whether the release may proceed.
-#
-# It refuses — exit 1, CHANGELOG.md and changelog.d/ untouched — when folding
-# in would lose or misplace an entry: fragments present but the version's
-# section already exists (they would be stranded), no "## [Unreleased]"
-# heading to insert under, a fragment that is not <issue>-<slug>.md, or a
-# fragment carrying a "#" or "##" heading of its own, or a fenced code block
-# left open at the end of a fragment or of CHANGELOG.md.
-#
-# Fenced code blocks (``` or ~~~, CommonMark rules) are content, not
-# structure: a "# comment" or "### Added" line inside one is neither a heading
-# nor a section boundary, a "[x]: y" line inside one is not a link
-# definition, and the block is carried over verbatim.
+# changelog-assemble.sh <X.Y.Z-alpha> folds changelog.d/ fragments into a new CHANGELOG.md section under Unreleased and deletes them; it refuses, untouched, when an entry would be lost.
 
 set -eu
 
@@ -64,10 +30,7 @@ if [ -d "$dir" ]; then
 	done
 fi
 
-# fence_awk is awk shared by both passes. fenced(line) reports whether line
-# belongs to a fenced code block — its opening fence, its content, or its
-# closing fence — and tracks the open fence in infence/fch/flen. Written
-# without regex intervals so mawk, gawk and busybox awk all accept it.
+# fence_awk tracks CommonMark fenced blocks portably across mawk, gawk and busybox awk.
 fence_awk='
 function fence_run(s,   c, k) {
 	c = substr(s, 1, 1)

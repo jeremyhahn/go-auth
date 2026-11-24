@@ -21,10 +21,7 @@ type Authenticator struct {
 	url            string
 	userDNTemplate string
 	serviceBindDN  string
-	// servicePassword is the service account's bind password in locked
-	// memory. The authenticator owns it from the moment WithServiceAccount is
-	// applied, opens it only for the duration of a single service bind, and
-	// destroys it in Close (or in NewAuthenticator, if construction fails).
+	// servicePassword is owned by the authenticator, opened only for a service bind and destroyed in Close.
 	servicePassword *enclave.MemoryEnclave
 	// optionErr collects a failed Destroy of a password an option replaced.
 	// Options cannot return an error, so NewAuthenticator reports it.
@@ -53,18 +50,7 @@ func WithUserDNTemplate(template string) Option {
 	}
 }
 
-// WithServiceAccount sets the DN and password used for an initial bind before
-// authenticating users.
-//
-// The authenticator TAKES OWNERSHIP of password: NewAuthenticator destroys it
-// if construction fails, and Close destroys it otherwise. Do not use or
-// destroy it after passing it here. Applying the option twice replaces the
-// first password, which is destroyed.
-//
-// The password is opened only for the duration of the service bind. go-ldap's
-// Bind takes it as a string, so it is lent through a heap copy that is wiped
-// when the bind returns; go-ldap's BER packet keeps its own copy, which is
-// residue R1 (docs/security/credential-residues.md).
+// WithServiceAccount sets the DN and password for the service bind; the authenticator owns password and destroys it (residue R1 in docs/security/credential-residues.md).
 func WithServiceAccount(dn string, password *enclave.MemoryEnclave) Option {
 	return func(a *Authenticator) {
 		if a.servicePassword != password {
@@ -127,11 +113,7 @@ var (
 	ErrClosed = errors.New("ldap: authenticator is closed")
 )
 
-// NewAuthenticator constructs an LDAP authenticator targeting the provided LDAP URL.
-//
-// It owns the service-account password from WithServiceAccount on every
-// return path: when it returns an error the password has already been
-// destroyed.
+// NewAuthenticator constructs an LDAP authenticator for url; on error the service-account password is already destroyed.
 func NewAuthenticator(url string, opts ...Option) (*Authenticator, error) {
 	auth := &Authenticator{url: url}
 
@@ -174,10 +156,7 @@ func (a *Authenticator) validate() error {
 	return nil
 }
 
-// Close destroys the service-account password the authenticator owns. It
-// waits for every in-flight Authenticate to return first — one that has not
-// reached its service bind yet still needs the password — and it is
-// idempotent. Authenticate fails with ErrClosed afterwards.
+// Close waits for in-flight Authenticate calls, then destroys the service-account password; it is idempotent.
 func (a *Authenticator) Close() error {
 	a.lifecycle.Lock()
 	defer a.lifecycle.Unlock()
@@ -185,10 +164,7 @@ func (a *Authenticator) Close() error {
 	return a.servicePassword.Destroy()
 }
 
-// Authenticate binds to LDAP using the derived user DN.
-//
-// The password is BORROWED: it is opened for the user bind and never
-// destroyed here; the caller still owns it.
+// Authenticate binds as the derived user DN; the password is borrowed, not destroyed.
 func (a *Authenticator) Authenticate(ctx context.Context, username string, password *enclave.MemoryEnclave) error {
 	if ctx == nil {
 		ctx = context.Background()

@@ -9,12 +9,7 @@ import (
 	"time"
 )
 
-// Conn provides an in-memory net.Conn implementation backed by channels.
-//
-// It is primarily used to bridge the Go crypto/tls client handshake with the
-// packet-oriented EAP-TLS transport. Writes performed by the TLS stack are
-// published to the outbound queue for the caller to frame into EAP responses,
-// while inbound TLS handshake bytes are injected by the caller for reads.
+// Conn is a channel-backed in-memory net.Conn bridging crypto/tls to the EAP-TLS transport.
 type Conn struct {
 	outbound chan []byte
 	inbound  chan []byte

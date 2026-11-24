@@ -1,15 +1,6 @@
 //go:build ignore
 
-// Package main demonstrates RADIUS PAP authentication.
-//
-// This example shows how to:
-// - Configure the RADIUS authenticator
-// - Perform PAP (Password Authentication Protocol) authentication
-// - Handle errors properly
-//
-// Usage:
-//
-//	go run pap_example.go
+// Package main demonstrates RADIUS PAP authentication; run with go run pap_example.go.
 package main
 
 import (
@@ -28,12 +19,7 @@ func main() {
 	fmt.Println("==> RADIUS PAP Authentication Example")
 	fmt.Println()
 
-	// Create RADIUS authenticator
-	// The address must include both host and port (typically 1812 for authentication)
-	// The shared secret is used to encrypt the Access-Request packet
-	// The shared secret travels in go-enclave locked memory. In production
-	// build it with enclave.NewMemoryEnclave over a []byte read from a key
-	// file or secrets manager, which wipes that slice.
+	// Address is host:port (usually 1812); the shared secret is an enclave built with enclave.NewMemoryEnclave in production.
 	sharedSecret, err := enclave.NewMemoryEnclave([]byte("shared-secret"))
 	if err != nil {
 		log.Fatalf("Failed to seal the shared secret: %v", err)
@@ -68,9 +54,7 @@ func main() {
 	fmt.Printf("RADIUS server: radius.example.com:1812\n")
 	fmt.Println()
 
-	// Perform authentication
-	// The authenticator sends an Access-Request packet with the username and password
-	// The RADIUS server responds with Access-Accept or Access-Reject
+	// Sends an Access-Request; the server answers Access-Accept or Access-Reject.
 	err = auth.Authenticate(ctx, username, password)
 	if err != nil {
 		if errors.Is(err, radius.ErrRejected) {

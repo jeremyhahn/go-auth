@@ -87,15 +87,7 @@ type Config struct {
 	// ClientID is the OAuth client identifier.
 	ClientID string
 
-	// ClientSecret is the OAuth client secret, held in locked memory. It is
-	// required for the client credentials and password flows and for
-	// introspection, and optional for the authorization code flow (a public
-	// client has none).
-	//
-	// NewAuthenticator TAKES OWNERSHIP of it on every return path: the
-	// Authenticator destroys it in Close, and NewAuthenticator destroys it
-	// itself before returning an error. Do not destroy it, read it, or hand it
-	// to a second Authenticator once it has been passed in.
+	// ClientSecret is the client secret in locked memory, required except for public clients; NewAuthenticator takes ownership of it.
 	ClientSecret *enclave.MemoryEnclave
 
 	// Scopes are the OAuth scopes to request.

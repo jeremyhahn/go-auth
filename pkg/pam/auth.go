@@ -9,11 +9,7 @@ import (
 	"github.com/jeremyhahn/go-auth/pkg/internal/credential"
 )
 
-// Session represents an authenticated PAM transaction lifecycle.
-//
-// Authenticate BORROWS the password for the length of the call: an
-// implementation reads it through WithBytes (or, at the PAM conversation,
-// through a copy it wipes), must not retain it, and must not destroy it.
+// Session is an authenticated PAM transaction; Authenticate borrows the password and must not retain or destroy it.
 type Session interface {
 	Authenticate(ctx context.Context, password *enclave.MemoryEnclave) error
 	Close() error
@@ -59,10 +55,7 @@ func NewAuthenticator(service string, opener SessionOpener) (*Authenticator, err
 	return &Authenticator{service: service, sessionOpener: opener}, nil
 }
 
-// Authenticate validates a user/password pair against the configured PAM service.
-//
-// The password is BORROWED: it is lent to the PAM conversation and never
-// destroyed here; the caller still owns it.
+// Authenticate validates a user/password pair against the PAM service; the password is borrowed.
 func (a *Authenticator) Authenticate(ctx context.Context, username string, password *enclave.MemoryEnclave) (err error) {
 	if ctx == nil {
 		ctx = context.Background()

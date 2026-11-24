@@ -1,11 +1,4 @@
-// TACACS+ is in every build and refuses to run when FIPS is activated.
-//
-// RFC 8907 §4.5 obfuscates every packet body with an MD5-based keystream
-// (a chain of MD5(session_id || key || version || seq_no || prev_hash) blocks
-// XORed over the body). It is the only body encoding the protocol defines, so
-// a conforming TACACS+ client cannot avoid MD5. Under GODEBUG=fips140=only the
-// constructors therefore return ErrFIPSUnsupported (fips.go) rather than
-// shipping a backend that panics on first use. See docs/fips.md.
+// TACACS+ obfuscates bodies with an MD5 keystream (RFC 8907 §4.5), so under GODEBUG=fips140=only the constructors return ErrFIPSUnsupported. See docs/fips.md.
 
 package tacacs
 
@@ -45,22 +38,7 @@ var (
 // Authenticator provides TACACS+ username/password authentication.
 type Authenticator struct {
 	addr string
-	// secret is the TACACS+ shared secret in locked memory. The authenticator
-	// owns it, lends it to tacplus for the length of one Authenticate, and
-	// destroys it in Close.
-	//
-	// Lending the locked pages directly, rather than a copy, is safe because
-	// of where tacplus v0.0.3 reads the key. ConnConfig.Secret is used only by
-	// crypt, which runs in session.readPacket and session.writePacket — and
-	// those run on the goroutine that called SendAuthenStart or Continue, so
-	// every read is over before Authenticate returns. The connection's own
-	// goroutines (serve, readLoop, writeLoop) move ciphertext and never call
-	// crypt. The one handler serve spawns on a client connection, for a packet
-	// that belongs to no session, fails its sequence-number checks before
-	// crypt can run: a new session expects seq 1, and a client rejects odd
-	// sequence numbers. So nothing reads the slice after the borrow ends, and
-	// Close can unmap it. A tacplus upgrade must re-check this; see residue R3
-	// in docs/security/credential-residues.md.
+	// secret is lent to tacplus only for one Authenticate, whose crypt runs on the calling goroutine; re-check on a tacplus upgrade (residue R3).
 	secret      *enclave.MemoryEnclave
 	privLevel   uint8
 	timeout     time.Duration
@@ -96,20 +74,7 @@ func WithDialContext(dial func(ctx context.Context, network, addr string) (net.C
 	}
 }
 
-// NewAuthenticator constructs a TACACS+ authenticator for the given server.
-//
-// sharedSecret is the RFC 8907 shared secret in locked memory; build it with
-// enclave.NewMemoryEnclave (which wipes the caller's slice) or, from a
-// configuration string, enclave.NewMemoryEnclave([]byte(s)).
-//
-// It TAKES OWNERSHIP of sharedSecret on every return path: when it returns an
-// error — the FIPS refusal included — the enclave has already been destroyed,
-// and otherwise Close destroys it. Do not use or destroy it afterwards, and
-// give each authenticator its own enclave.
-//
-// Under FIPS activation this returns ErrFIPSUnsupported ahead of every argument
-// check, so startup code can branch on errors.Is(err, ErrFIPSUnsupported) to
-// learn the backend is unavailable.
+// NewAuthenticator constructs a TACACS+ authenticator; it takes ownership of sharedSecret and returns ErrFIPSUnsupported first under FIPS activation.
 func NewAuthenticator(addr string, sharedSecret *enclave.MemoryEnclave, opts ...Option) (*Authenticator, error) {
 	if err := validateArgs(addr, sharedSecret); err != nil {
 		return nil, credential.DestroyAll(err, sharedSecret)
@@ -150,12 +115,7 @@ func (a *Authenticator) Close() error {
 	return a.secret.Destroy()
 }
 
-// Authenticate verifies username/password credentials against the TACACS+ server.
-//
-// The password is BORROWED and never destroyed here. Under FIPS activation it
-// returns ErrFIPSUnsupported before any packet is built; the constructor
-// already refuses, so this only matters for an authenticator that did not
-// come from it.
+// Authenticate verifies a username and borrowed password; it returns ErrFIPSUnsupported under FIPS activation.
 func (a *Authenticator) Authenticate(ctx context.Context, username string, password *enclave.MemoryEnclave) error {
 	if fips140OnlyActive() {
 		return ErrFIPSUnsupported
@@ -178,12 +138,7 @@ func (a *Authenticator) Authenticate(ctx context.Context, username string, passw
 		return err
 	}
 
-	// The secret keys the obfuscation of every packet body in the session
-	// (RFC 8907 §4.5). tacplus reads it only on this goroutine, inside
-	// SendAuthenStart and Continue (see the secret field), so the borrow
-	// covers every read and Close cannot unmap the pages under one.
-	//
-	// Residue R3: tacplus copies the key into a heap buffer for each packet.
+	// The secret keys body obfuscation (RFC 8907 §4.5); the borrow covers every read. Residue R3: tacplus copies it per packet.
 	return a.secret.WithBytes(func(sessionSecret []byte) error {
 		client := &tacplus.Client{
 			Addr: a.addr,

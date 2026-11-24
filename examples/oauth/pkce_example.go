@@ -1,17 +1,6 @@
 //go:build ignore
 
-// Package main demonstrates OAuth 2.0 authorization code flow with PKCE.
-//
-// This example shows how to:
-// - Configure OAuth for authorization code flow
-// - Generate PKCE challenge and verifier
-// - Build authorization URL
-// - Exchange authorization code for tokens
-// - Handle the OAuth callback
-//
-// Usage:
-//
-//	go run pkce_example.go
+// Package main demonstrates the OAuth 2.0 authorization code flow with PKCE; run with go run pkce_example.go.
 package main
 
 import (
@@ -25,9 +14,7 @@ func main() {
 	fmt.Println("==> OAuth 2.0 Authorization Code with PKCE Example")
 	fmt.Println()
 
-	// PKCE (Proof Key for Code Exchange) is a security extension for OAuth 2.0
-	// It's required for public clients (mobile apps, SPAs) and recommended for all clients
-	// PKCE prevents authorization code interception attacks
+	// PKCE prevents authorization code interception; required for public clients.
 
 	// Example 1: Microsoft authorization code with PKCE
 	microsoftExample()
@@ -60,9 +47,7 @@ func microsoftExample() {
 	// In production, store this in session and validate in callback
 	state := "random-state-for-csrf-protection"
 
-	// Build authorization URL with PKCE. The verifier comes back in protected
-	// memory; keep it against the state until the callback arrives.
-	// The second parameter allows additional query parameters.
+	// Build the authorization URL; keep the returned verifier enclave against the state until the callback.
 	authURL, verifier, err := auth.BuildAuthURLPKCE(state, map[string]string{
 		"prompt": "consent", // Force consent screen
 	})
@@ -87,33 +72,7 @@ func microsoftExample() {
 	fmt.Println("  5. Exchange code for tokens using ExchangeAuthorizationCodePKCE()")
 	fmt.Println()
 
-	// After user authenticates and you receive the callback:
-	// The callback URL will be: http://localhost:8080/callback?code=...&state=...
-	//
-	// Example callback handler:
-	//
-	// func callbackHandler(w http.ResponseWriter, r *http.Request) {
-	//     code := r.URL.Query().Get("code")
-	//     receivedState := r.URL.Query().Get("state")
-	//
-	//     // Validate state to prevent CSRF
-	//     if receivedState != state {
-	//         http.Error(w, "Invalid state", http.StatusBadRequest)
-	//         return
-	//     }
-	//
-	//     ctx := context.Background()
-	//     token, err := auth.ExchangeAuthorizationCodePKCE(ctx, code, verifier)
-	//     if err != nil {
-	//         http.Error(w, "Failed to exchange code", http.StatusInternalServerError)
-	//         return
-	//     }
-	//
-	//     defer token.Destroy()
-	//
-	//     // token.AccessToken(), IDToken() and RefreshToken() lend enclaves;
-	//     // read one only inside WithBytes, at the point you use it
-	// }
+	// On the callback, check state, call ExchangeAuthorizationCodePKCE with the code and verifier, and defer token.Destroy().
 
 	fmt.Println("Example code exchange (after receiving callback):")
 	fmt.Println()

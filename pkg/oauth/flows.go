@@ -29,10 +29,7 @@ func newFlowHandler(config *Config, httpClient HTTPClient) *flowHandler {
 	}
 }
 
-// clientSecretFields returns the client_secret form field, or none for a
-// public client. A secret that was configured and has since been destroyed —
-// by Close — is still returned, so the request fails closed with
-// ErrCredentialUnavailable instead of silently going out unauthenticated.
+// clientSecretFields returns the client_secret field, or none for a public client; a destroyed secret still fails closed.
 func (f *flowHandler) clientSecretFields() []sealedFormField {
 	if f.config.ClientSecret == nil {
 		return nil
@@ -40,8 +37,7 @@ func (f *flowHandler) clientSecretFields() []sealedFormField {
 	return []sealedFormField{{name: "client_secret", value: f.config.ClientSecret}}
 }
 
-// exchangeAuthorizationCode exchanges an authorization code for tokens without
-// PKCE.
+// exchangeAuthorizationCode exchanges an authorization code for tokens without PKCE.
 func (f *flowHandler) exchangeAuthorizationCode(ctx context.Context, code string) (*Token, error) {
 	if strings.TrimSpace(code) == "" {
 		return nil, fmt.Errorf("%w: authorization code is required", ErrTokenExchangeFailed)
@@ -56,13 +52,7 @@ func (f *flowHandler) exchangeAuthorizationCode(ctx context.Context, code string
 	return f.postTokenRequest(ctx, data, f.clientSecretFields())
 }
 
-// exchangeAuthorizationCodePKCE exchanges an authorization code for tokens with
-// a PKCE verifier held in protected memory.
-//
-// The verifier is checked against RFC 7636 inside its enclave and then
-// form-escaped from the enclave straight into the locked request body — see
-// withFormBody. Every character the check admits is unreserved, so the escape
-// is a copy.
+// exchangeAuthorizationCodePKCE exchanges a code with a verifier checked inside its enclave and copied straight into the locked body.
 func (f *flowHandler) exchangeAuthorizationCodePKCE(ctx context.Context, code string, verifier *enclave.MemoryEnclave) (*Token, error) {
 	if strings.TrimSpace(code) == "" {
 		return nil, fmt.Errorf("%w: authorization code is required", ErrTokenExchangeFailed)
@@ -170,13 +160,7 @@ func (f *flowHandler) postTokenRequest(ctx context.Context, public url.Values, s
 	return token, nil
 }
 
-// sendTokenRequest posts an encoded form body to the token endpoint and parses
-// the token response.
-//
-// body is borrowed for the duration of the call and never retained: it is the
-// locked scratch buffer withFormBody unmaps as soon as this returns, so keeping
-// a reference here would be a use-after-free rather than a stale read. The
-// borrowing is enforced rather than promised — see requestBody.
+// sendTokenRequest posts body to the token endpoint and parses the response; body is borrowed and never retained.
 func (f *flowHandler) sendTokenRequest(ctx context.Context, tokenURL string, body []byte) (*Token, error) {
 	req, reader, err := newFormRequest(ctx, tokenURL, body)
 	if err != nil {
@@ -206,13 +190,7 @@ func (f *flowHandler) sendTokenRequest(ctx context.Context, tokenURL string, bod
 	return parseTokenResponse(respBody)
 }
 
-// parseTokenResponse decodes a token endpoint response, sealing the access,
-// refresh and ID tokens straight into enclaves.
-//
-// The credentials are decoded as raw JSON and unquoted directly into locked
-// pages, so none of them is ever a Go string; the raw copies encoding/json
-// makes are wiped before this returns. On any error every enclave already
-// created is destroyed.
+// parseTokenResponse decodes a token response straight into enclaves, destroying any already created on error.
 func parseTokenResponse(respBody []byte) (*Token, error) {
 	var tokenResp struct {
 		AccessToken  json.RawMessage `json:"access_token"`
@@ -272,10 +250,7 @@ func parseTokenResponse(respBody []byte) (*Token, error) {
 	return token, nil
 }
 
-// newFormRequest builds a POST carrying body as an
-// application/x-www-form-urlencoded request body that the transport can read
-// only until the returned requestBody is released. The caller must release it
-// before the bytes behind body go away.
+// newFormRequest builds a form POST whose body is readable only until the returned requestBody is released.
 func newFormRequest(ctx context.Context, target string, body []byte) (*http.Request, *requestBody, error) {
 	reader := &requestBody{buf: body}
 
@@ -298,12 +273,7 @@ func newFormRequest(ctx context.Context, target string, body []byte) (*http.Requ
 	return req, reader, nil
 }
 
-// buildAuthURL builds the authorization URL for the authorization code flow.
-// reservedAuthParams are the authorization-request parameters this package owns.
-// A caller that could set them through additionalParams could decouple the URL
-// from the state and PKCE verifier the caller was handed — the code_challenge
-// case is the sharp one: the flow would fail at the token endpoint, long after
-// the mistake, with nothing pointing back at it.
+// buildAuthURL builds the authorization URL; reservedAuthParams keeps callers from decoupling it from state and the PKCE challenge.
 var reservedAuthParams = map[string]struct{}{
 	"client_id":             {},
 	"redirect_uri":          {},
@@ -349,16 +319,7 @@ func (f *flowHandler) buildAuthURL(state string, codeChallenge string, additiona
 	return authURL + "?" + params.Encode(), nil
 }
 
-// requestBody is a form body assembled in locked memory, readable only while
-// the caller that owns the bytes is still inside the call it lent them for.
-//
-// net/http can return a response before it has finished writing the request
-// body — a server that rejects the request early leaves the write in flight —
-// so the transport may read from the body after Do has returned. For an
-// ordinary heap body that is harmless. For the locked buffer withFormBody
-// assembles, which is unmapped as soon as the request returns, a late read
-// would fault the process rather than read stale bytes. release closes that
-// window: a read after it returns an error instead of touching the memory.
+// requestBody is a locked form body that errors on reads after release, since the transport may read after Do returns.
 type requestBody struct {
 	mu  sync.Mutex
 	buf []byte

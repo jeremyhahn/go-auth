@@ -23,8 +23,7 @@ func main() {
 		log.Fatalf("Failed to generate seed: %v", err)
 	}
 
-	// Setup HOTP authenticator. It takes ownership of the seed; Close
-	// destroys it.
+	// Set up the HOTP authenticator; it owns the seed and Close destroys it.
 	auth, err := otp.NewAuthenticator(otp.Config{
 		Type:        otp.TypeHOTP,
 		Seed:        seed,

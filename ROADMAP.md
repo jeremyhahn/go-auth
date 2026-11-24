@@ -1,6 +1,6 @@
 # go-auth roadmap
 
-> **Status: REFERENCE** · Owner: Software Department · Last verified: 2026-10-08
+> **Status: REFERENCE** · Last verified: 2026-10-08
 > Changes are proposed by docs-only PR.
 
 ## Mission
@@ -16,7 +16,7 @@ Projected 2026-10-15.
 
 ## Now
 
-- [#41](../../issues/41) public release readiness confirmed — blocked: factory:escalated, awaiting owner answer
+- [#41](../../issues/41) public release readiness confirmed — blocked
 - [#64](../../issues/64) every doc carries a status banner and verified stamp — open
 
 ## Next

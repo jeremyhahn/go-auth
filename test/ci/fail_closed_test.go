@@ -132,11 +132,7 @@ func TestWorkflow_LintInstallsActionlintAndShellcheckFirst(t *testing.T) {
 	}
 }
 
-// lintToolProblems checks the lint job's steps. shellcheck must install
-// unconditionally before make lint. actionlint must either install
-// unconditionally, or install on github.com only and be backed by a Gitea-only
-// `command -v actionlint` assertion (the runner image bakes it); each before
-// make lint.
+// lintToolProblems checks that shellcheck and actionlint are installed or asserted before make lint.
 func lintToolProblems(steps []step) []string {
 	const actionlintNeedle = "rhysd/actionlint/cmd/actionlint"
 	const shellcheckNeedle = "scripts/install-shellcheck.sh"

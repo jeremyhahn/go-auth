@@ -10,8 +10,7 @@ import (
 	enclave "github.com/jeremyhahn/go-enclave"
 )
 
-// retainingConn keeps the strings it was given WITHOUT copying them, so a test
-// can look at what is left of them once Authenticate has returned.
+// retainingConn keeps the strings it is given uncopied so a test can inspect them after Authenticate returns.
 type retainingConn struct {
 	passwords []string
 }

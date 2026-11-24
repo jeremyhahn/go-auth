@@ -1,16 +1,6 @@
 //go:build ignore
 
-// Package main demonstrates OAuth 2.0 client credentials flow.
-//
-// This example shows how to:
-// - Configure OAuth for client credentials flow
-// - Authenticate machine-to-machine (M2M) applications
-// - Request access tokens with specific scopes
-// - Handle token refresh
-//
-// Usage:
-//
-//	go run client_credentials_example.go
+// Package main demonstrates the OAuth 2.0 client credentials flow; run with go run client_credentials_example.go.
 package main
 
 import (
@@ -41,12 +31,7 @@ func main() {
 func keycloakExample() {
 	fmt.Println("--- Example 1: Keycloak Client Credentials ---")
 
-	// Configure OAuth for Keycloak client credentials flow
-	// This is used for service-to-service authentication
-	// No user interaction is required
-	// The client secret lives in locked memory. NewMemoryEnclave wipes the
-	// slice it is given, and the Authenticator owns the enclave from here on:
-	// Close destroys it.
+	// Keycloak client credentials; the secret lives in an enclave the Authenticator owns and Close destroys.
 	clientSecret, err := enclave.NewMemoryEnclave([]byte("your-client-secret"))
 	if err != nil {
 		log.Fatalf("Failed to seal client secret: %v", err)

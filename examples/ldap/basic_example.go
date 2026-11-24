@@ -1,14 +1,4 @@
-// Package main demonstrates LDAP authentication.
-//
-// This example shows how to:
-// - Configure the LDAP authenticator
-// - Perform bind authentication
-// - Use TLS for secure connections
-// - Handle errors properly
-//
-// Usage:
-//
-//	go run basic_example.go
+// Package main demonstrates LDAP bind authentication over TLS; run with go run basic_example.go.
 package main
 
 import (

@@ -55,20 +55,9 @@ The integration tests use these predefined handles:
 - `0x81000003`: Sealed with PCR[7] policy + password
 - `0x81000004`: Sealed with SHA384 hash algorithm
 
-## Why Tests Failed Previously
+## Host TPM versus Docker
 
-**Root Cause**: Tests were running against the host TPM which had different handles (0x81010001, 0x81010016) instead of the expected test handles (0x81000001-0x81000004).
-
-**Details**:
-1. The Docker setup correctly creates handles 0x81000001-0x81000004 in the simulated TPM
-2. When running tests with `-tags integration` on the host, they attempted to use `/dev/tpmrm0`
-3. The host TPM didn't have the test handles, causing "invalid sealed object handle" errors
-4. The error message was misleading - the TPM opened successfully, but the handles didn't exist
-
-**Solution**:
-- Use Docker for CI/automated testing (isolated, reproducible)
-- Use `setup-host-tpm.sh` for local development testing against real hardware
-- Both approaches now create the same test handles for consistency
+The Docker setup creates handles 0x81000001-0x81000004 in the simulated TPM. A host TPM lacks them and fails with "invalid sealed object handle"; run `setup-host-tpm.sh` first to test against real hardware.
 
 ## Troubleshooting
 

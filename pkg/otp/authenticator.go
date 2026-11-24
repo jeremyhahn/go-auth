@@ -47,11 +47,7 @@ const (
 	defaultSkew   = 1
 )
 
-// defaultAlgorithm is the digest an omitted Config.Algorithm resolves to
-// outside FIPS 140-only mode: HMAC-SHA-1, RFC 6238 §1.2's TOTP default and RFC
-// 4226 §5.1's HOTP digest, and what mainstream authenticator apps enroll with.
-// Under FIPS 140-only mode an omitted algorithm is refused instead; see
-// checkFIPSAlgorithmNamed.
+// defaultAlgorithm is HMAC-SHA-1 (RFC 6238 §1.2, RFC 4226 §5.1) outside FIPS 140-only mode, where an omitted algorithm is refused.
 const defaultAlgorithm = AlgorithmSHA1
 
 // Common errors returned by the OTP authenticator.
@@ -64,13 +60,9 @@ var (
 	ErrExpiredCode = errors.New("otp: code expired")
 	// ErrNilAuthenticator indicates a nil authenticator was used.
 	ErrNilAuthenticator = errors.New("otp: authenticator is nil")
-	// ErrCounterRequired indicates Generate was called on an HOTP
-	// authenticator without a counter.
+	// ErrCounterRequired indicates Generate was called on an HOTP authenticator without a counter.
 	ErrCounterRequired = errors.New("otp: counter required for HOTP generation")
-	// ErrMissingCode indicates Authenticate or ValidateCounter was called
-	// without a live code enclave. It always comes joined with
-	// ErrInvalidCode, and a destroyed code also matches
-	// enclave.ErrEnclaveDestroyed.
+	// ErrMissingCode indicates no live code enclave; always joined with ErrInvalidCode.
 	ErrMissingCode = errors.New("otp: code must not be empty")
 )
 
@@ -78,15 +70,7 @@ var (
 type Config struct {
 	// Type specifies the OTP type (TOTP or HOTP).
 	Type Type
-	// Seed is the shared HMAC key — RFC 4226's K — held in locked memory.
-	// Build one with GenerateProtectedSecret for a new enrollment, or with
-	// DecodeSeed from a stored base32 seed.
-	//
-	// NewAuthenticator TAKES OWNERSHIP of the seed on every return path,
-	// success or failure, the same contract enclave.NewMemoryEnclave has for
-	// its input: on success the authenticator destroys it in Close, and on
-	// failure NewAuthenticator destroys it before returning. Two authenticators
-	// over the same key therefore need two enclaves.
+	// Seed is the shared HMAC key in locked memory; NewAuthenticator takes ownership of it on every return path.
 	Seed *enclave.MemoryEnclave
 	// Issuer is the name of the issuing organization (e.g., "MyApp").
 	Issuer string
@@ -95,23 +79,13 @@ type Config struct {
 	// Digits specifies the number of digits in the OTP code (6, 7, or 8).
 	// Default: 6
 	Digits uint
-	// Period specifies the time step in seconds for TOTP.
-	// Default: 30
+	// Period is the TOTP time step in seconds. Default: 30
 	Period uint
-	// Counter specifies the initial counter value for HOTP.
-	// Default: 0
+	// Counter is the initial HOTP counter. Default: 0
 	Counter uint64
-	// Algorithm specifies the hash algorithm to use.
-	// Default: SHA1 (RFC 6238 §1.2). Under FIPS 140-only mode it must be set
-	// explicitly to SHA256 or SHA512: SHA1 and an omitted algorithm are both
-	// refused with ErrFIPSUnsupported.
+	// Algorithm is the HMAC hash. Default: SHA1; under FIPS 140-only mode it must be SHA256 or SHA512.
 	Algorithm Algorithm
-	// Skew specifies the number of time periods to check before and after
-	// the current time for TOTP validation (tolerance for clock skew).
-	// It may not exceed 10: a wider window keeps every code valid for longer,
-	// and costs an HMAC per step. RFC 6238 §5.2 asks for the smallest window a
-	// deployment can tolerate.
-	// Default: 1
+	// Skew is the TOTP tolerance in periods either side of now, at most 10 (RFC 6238 §5.2). Default: 1
 	Skew uint
 }
 
@@ -185,12 +159,7 @@ type Authenticator struct {
 	seed *enclave.MemoryEnclave
 }
 
-// NewAuthenticator creates a new OTP authenticator.
-// The configuration is validated and an error is returned if invalid.
-//
-// It takes ownership of cfg.Seed on every return path: the seed is destroyed
-// here if the configuration is refused, and by Close otherwise. The caller
-// must not use or destroy it after this call.
+// NewAuthenticator validates cfg and creates an OTP authenticator; it takes ownership of cfg.Seed on every return path.
 func NewAuthenticator(cfg Config) (auth *Authenticator, err error) {
 	seed := cfg.Seed
 	defer func() {
@@ -216,14 +185,7 @@ func NewAuthenticator(cfg Config) (auth *Authenticator, err error) {
 	return &Authenticator{cfg: cfg, seed: seed}, nil
 }
 
-// Close destroys the seed the authenticator owns: the locked pages are wiped
-// and released, and every later Generate, Authenticate, ValidateCounter and
-// ProvisioningURI fails with an error matching enclave.ErrEnclaveDestroyed.
-// It waits for in-flight calls to finish with the seed, and is idempotent.
-//
-// The error is go-enclave's teardown report: nil for an ordinary release, or
-// enclave.ErrReleasedWithoutWipe when a sandbox denied the mprotect the wipe
-// needs and the pages had to be unmapped without it.
+// Close waits for in-flight calls and destroys the seed; it is idempotent and returns go-enclave's teardown report.
 func (a *Authenticator) Close() error {
 	if a == nil {
 		return ErrNilAuthenticator
@@ -231,13 +193,7 @@ func (a *Authenticator) Close() error {
 	return a.seed.Destroy()
 }
 
-// Authenticate validates an OTP code.
-// For TOTP, it validates against the current time with skew tolerance.
-// For HOTP, it validates against the configured counter value.
-//
-// The code is a credential for its validity window, so it arrives in an
-// enclave like every other credential. It is BORROWED: compared in constant
-// time from inside WithBytes, and never destroyed here.
+// Authenticate validates a borrowed OTP code in constant time against the current time (TOTP) or the counter (HOTP).
 func (a *Authenticator) Authenticate(ctx context.Context, code *enclave.MemoryEnclave) error {
 	if a == nil {
 		return ErrNilAuthenticator
@@ -261,10 +217,7 @@ func (a *Authenticator) Authenticate(ctx context.Context, code *enclave.MemoryEn
 	return a.authenticateHOTP(code, a.cfg.Counter)
 }
 
-// ValidateCounter validates an HOTP code and returns the new counter value.
-// This method is only valid for HOTP authenticators.
-// The returned counter should be stored and used for the next validation.
-// The code is BORROWED, as in Authenticate.
+// ValidateCounter validates a borrowed HOTP code and returns the new counter to store.
 func (a *Authenticator) ValidateCounter(ctx context.Context, code *enclave.MemoryEnclave, counter uint64) (uint64, error) {
 	if a == nil {
 		return 0, ErrNilAuthenticator
@@ -292,9 +245,7 @@ func (a *Authenticator) ValidateCounter(ctx context.Context, code *enclave.Memor
 	return counter + 1, nil
 }
 
-// Generate generates an OTP code.
-// For TOTP, it generates the code for the current time.
-// For HOTP, a counter value must be provided.
+// Generate generates an OTP code for the current time (TOTP) or the given counter (HOTP).
 func (a *Authenticator) Generate(counter ...uint64) (string, error) {
 	if a == nil {
 		return "", ErrNilAuthenticator
@@ -325,7 +276,6 @@ func (a *Authenticator) derive(counter uint64) (string, error) {
 }
 
 // authenticateTOTP validates a TOTP code at now against the borrowed seed.
-// Both the submitted code and the seed are read only inside their borrows.
 func (a *Authenticator) authenticateTOTP(code *enclave.MemoryEnclave, now time.Time) error {
 	var valid bool
 	err := code.WithBytes(func(submitted []byte) error {
@@ -344,8 +294,7 @@ func (a *Authenticator) authenticateTOTP(code *enclave.MemoryEnclave, now time.T
 	return nil
 }
 
-// authenticateHOTP validates an HOTP code at counter against the borrowed
-// seed, comparing in constant time.
+// authenticateHOTP validates an HOTP code at counter against the borrowed seed in constant time.
 func (a *Authenticator) authenticateHOTP(code *enclave.MemoryEnclave, counter uint64) error {
 	derived, err := a.derive(counter)
 	if err != nil {
@@ -364,17 +313,7 @@ func (a *Authenticator) authenticateHOTP(code *enclave.MemoryEnclave, counter ui
 	return nil
 }
 
-// ProvisioningURI returns the otpauth:// URI for QR code generation, in the
-// Google Authenticator Key URI Format:
-//
-//	otpauth://TYPE/ISSUER:ACCOUNT?secret=BASE32&issuer=ISSUER&algorithm=…&digits=…&period=…|counter=…
-//
-// The URI necessarily carries the seed — that is what enrollment is — so it
-// is built from EncodeSecret and inherits its residue: the returned string is
-// an unwipeable copy of the key. Render it and drop it; do not log or store it.
-//
-// It reports an error rather than a seed-less URI when the seed cannot be
-// read, because a URI without a usable seed still looks like an enrollment.
+// ProvisioningURI returns the otpauth:// Key URI for a QR code; it carries the seed, so render it and drop it.
 func (a *Authenticator) ProvisioningURI() (string, error) {
 	if a == nil {
 		return "", ErrNilAuthenticator
@@ -398,8 +337,7 @@ func (a *Authenticator) ProvisioningURI() (string, error) {
 	return "otpauth://" + string(a.cfg.Type) + "/" + label + "?" + v.Encode(), nil
 }
 
-// provisioningCounter sets the type-specific Key URI parameter: the time step
-// for TOTP, the initial counter for HOTP.
+// provisioningCounter sets the period for TOTP or the initial counter for HOTP.
 var provisioningCounter = map[Type]func(Config, url.Values){
 	TypeTOTP: func(c Config, v url.Values) { v.Set("period", strconv.FormatUint(uint64(c.Period), 10)) },
 	TypeHOTP: func(c Config, v url.Values) { v.Set("counter", strconv.FormatUint(c.Counter, 10)) },

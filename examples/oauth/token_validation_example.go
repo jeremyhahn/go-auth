@@ -1,16 +1,6 @@
 //go:build ignore
 
-// Package main demonstrates OAuth 2.0 token validation.
-//
-// This example shows how to:
-// - Configure OAuth for token validation
-// - Validate JWT tokens using JWKS
-// - Extract user claims from tokens
-// - Use token caching for performance
-//
-// Usage:
-//
-//	go run token_validation_example.go
+// Package main demonstrates OAuth 2.0 JWT validation against a JWKS; run with go run token_validation_example.go.
 package main
 
 import (
@@ -69,14 +59,7 @@ func googleExample() {
 
 	ctx := context.Background()
 
-	// Example token (this would be a real Google ID token from a client)
-	// In a real application, you receive this from:
-	//   1. Google Sign-In button on your frontend
-	//   2. Mobile app Google authentication
-	//   3. Server-to-server OAuth flow
-	//
-	// Seal it as soon as it is read from the request: ValidateToken borrows
-	// the enclave and never sees a plaintext string.
+	// A real ID token from a client; seal it as soon as it is read, since ValidateToken borrows the enclave.
 	token, err := enclave.NewMemoryEnclave([]byte("eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...")) // Truncated for example
 	if err != nil {
 		log.Fatalf("Failed to seal token: %v", err)
@@ -85,12 +68,7 @@ func googleExample() {
 
 	fmt.Println("Validating Google ID token...")
 
-	// Validate the token
-	// This will:
-	//   1. Fetch the JWKS from Google (or use cached keys)
-	//   2. Verify the token signature
-	//   3. Validate issuer, audience, and expiration
-	//   4. Extract claims
+	// Validate the signature (JWKS, cached), issuer, audience and expiry, then extract claims.
 	claims, err := auth.ValidateToken(ctx, token)
 	if err != nil {
 		log.Printf("Token validation failed: %v", err)

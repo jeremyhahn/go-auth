@@ -1,16 +1,6 @@
 //go:build ignore
 
-// Package main demonstrates RADIUS EAP-TLS authentication.
-//
-// This example shows how to:
-// - Configure RADIUS for EAP-TLS authentication
-// - Use client certificates for authentication
-// - Handle TLS configuration
-// - Handle errors properly
-//
-// Usage:
-//
-//	go run eap_tls_example.go
+// Package main demonstrates RADIUS EAP-TLS authentication with client certificates; run with go run eap_tls_example.go.
 package main
 
 import (
@@ -58,10 +48,7 @@ func main() {
 		Identity: "user@example.com",
 	}
 
-	// Create RADIUS authenticator with EAP-TLS
-	// The shared secret travels in go-enclave locked memory. In production
-	// build it with enclave.NewMemoryEnclave over a []byte read from a key
-	// file or secrets manager, which wipes that slice.
+	// The shared secret is an enclave; in production build it with enclave.NewMemoryEnclave from a key file.
 	sharedSecret, err := enclave.NewMemoryEnclave([]byte("shared-secret"))
 	if err != nil {
 		log.Fatalf("Failed to seal the shared secret: %v", err)

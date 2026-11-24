@@ -6,10 +6,7 @@ REPO_ROOT := $(abspath $(MODULE_ROOT)/../..)
 .PHONY: test
 test: unit
 
-# CGO_ENABLED=0 matches the root Makefile's export and every other module: the
-# tree has to test on a machine without libpam0g-dev. The race detector needs
-# cgo, so it cannot run here — the root `test-race` target owns race coverage
-# for the whole module and is the one place that turns cgo on.
+# CGO_ENABLED=0 so tests run without libpam0g-dev; race coverage is the root test-race target.
 .PHONY: unit
 unit:
 	@echo "==> Running OTP unit tests..."

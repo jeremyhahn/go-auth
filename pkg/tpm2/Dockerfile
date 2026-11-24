@@ -13,11 +13,7 @@ WORKDIR /workspace
 
 # Copy dependency files first for better caching
 COPY go.mod go.sum ./
-# go.mod requires the private github.com/jeremyhahn/go-enclave. Its credentials
-# arrive as the optional BuildKit secret `gomodauth`, staged by
-# scripts/docker-build-integration.sh (go-auth#42): mounted on tmpfs for this
-# RUN only and sourced, never exported into a layer, ARG or ENV. Absent, the
-# modules resolve from the public proxy.
+# Private module credentials arrive as the optional BuildKit secret gomodauth, mounted on tmpfs for this RUN only.
 RUN --mount=type=secret,id=gomodauth,required=false \
     set -eu; \
     if [ -s /run/secrets/gomodauth ]; then . /run/secrets/gomodauth; fi; \
@@ -197,12 +193,7 @@ RUN /tmp/tpm-scripts/setup-tpm.sh
 # This script is called by Go tests to reset lockout between tests
 RUN cat > /usr/local/bin/tpm-reset-lockout <<'EOF'
 #!/bin/bash
-# Reset TPM dictionary attack lockout counter
-# This is called by tests that intentionally cause auth failures
-#
-# IMPORTANT: Use swtpm TCTI to connect to the swtpm socket directly.
-# The /dev/tpmrm0 is just a socat relay, and tpm2-tools work better
-# when connecting directly to the actual swtpm socket.
+# Reset the TPM dictionary-attack lockout through the swtpm socket TCTI; tests cause auth failures on purpose.
 export TPM2TOOLS_TCTI="swtpm:path=/tmp/swtpm-sock"
 tpm2_dictionarylockout -c -p "" 2>/dev/null || \
     tpm2_dictionarylockout -c 2>/dev/null || \
@@ -221,10 +212,7 @@ echo "==> Starting swtpm with device emulation..."
 # Create /dev directory if it doesn't exist
 mkdir -p /dev
 
-# Start swtpm in socket mode (we'll create a device proxy)
-# IMPORTANT: Removed 'startup-clear' flag to preserve persistent handles!
-# The 'startup-clear' flag causes TPM2_Startup(CLEAR) which erases persistent handles.
-# We only use 'not-need-init' to indicate the TPM state is already initialized.
+# Start swtpm in socket mode without startup-clear, which would erase persistent handles.
 swtpm socket --tpmstate dir=/tpm-state \
     --tpm2 \
     --server type=unixio,path=/tmp/swtpm-sock \
@@ -267,9 +255,7 @@ if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
     exit 1
 fi
 
-# Initialize TPM with non-destructive startup
-# Use -c (TPM2_Startup CLEAR) which initializes volatile state
-# but preserves NV storage and persistent handles
+# TPM2_Startup CLEAR resets volatile state but keeps NV storage and persistent handles.
 echo "==> Initializing TPM with TPM2_Startup(CLEAR)..."
 if ! tpm2_startup -c; then
     echo "ERROR: TPM2_Startup failed"
@@ -286,15 +272,7 @@ if ! tpm2_getcap handles-persistent; then
     exit 1
 fi
 
-# CRITICAL FIX: Clear dictionary attack lockout counter before tests
-# The TPM has dictionary attack protection that tracks failed auth attempts.
-# After 3 failed attempts, the TPM enters lockout mode and rejects ALL auths
-# (even correct ones) for 1000 seconds. The lockout state persists in NV storage.
-#
-# Our test suite intentionally causes auth failures to test error handling.
-# These failures can trigger lockout, causing subsequent tests to fail.
-#
-# Solution: Reset the lockout counter to 0 before running tests.
+# Reset the dictionary-attack lockout before tests: deliberate auth failures can otherwise lock the TPM for 1000 seconds.
 echo "==> Resetting TPM dictionary attack lockout counter..."
 tpm2_dictionarylockout -c -p "" 2>/dev/null || \
     tpm2_dictionarylockout -c || \

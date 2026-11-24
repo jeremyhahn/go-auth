@@ -1,10 +1,6 @@
 package ci_test
 
-// Regression tests for the changelog.d/ assembly step of go-auth#22
-// (release-versioning.md §5): `make release-alpha` runs `release-changelog`
-// first, which folds every fragment into the version's CHANGELOG.md section,
-// deletes the fragments, and commits that BEFORE the tag is cut — so the
-// tagged commit carries the assembled entries and no fragment is stranded.
+// These tests pin release-changelog: fragments are folded into the version's section, deleted and committed before the tag.
 
 import (
 	"os"

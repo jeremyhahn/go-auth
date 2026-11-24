@@ -17,11 +17,7 @@ import (
 	"github.com/jeremyhahn/go-enclave"
 )
 
-// asymmetricJWTAlgorithms is the JWS algorithm allowlist for every JWT this
-// package verifies — access tokens and ID tokens alike. Only asymmetric
-// algorithms verified against the provider's JWKS are admitted: "none" and the
-// HMAC family are refused, so a token cannot choose an algorithm that turns a
-// public key into a shared secret (alg confusion).
+// asymmetricJWTAlgorithms is the JWS allowlist: asymmetric algorithms only, refusing none and HMAC (alg confusion).
 var asymmetricJWTAlgorithms = []string{
 	"RS256", "RS384", "RS512",
 	"ES256", "ES384", "ES512",

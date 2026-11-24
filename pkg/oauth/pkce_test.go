@@ -21,10 +21,7 @@ import (
 	"github.com/jeremyhahn/go-enclave"
 )
 
-// constantVerifier is the code verifier this package used to emit: the byte
-// sequence 0x00..0x1f, identical in every process and every deployment, which
-// gave the authorization-code flow exactly the security of no PKCE at all
-// (issue #9).
+// constantVerifier is the fixed 0x00..0x1f verifier a regression must never emit again.
 const constantVerifier = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
 
 // newRecordingTokenEndpoint returns a token endpoint that counts the requests it
@@ -126,8 +123,7 @@ func TestBuildAuthURLPKCEVerifierIsRandom(t *testing.T) {
 	}
 }
 
-// TestBuildAuthURLWithoutPKCECarriesNoChallenge pins the flow without PKCE: it
-// involves no secret and no challenge.
+// TestBuildAuthURLWithoutPKCECarriesNoChallenge pins the flow without PKCE: no secret and no challenge.
 func TestBuildAuthURLWithoutPKCECarriesNoChallenge(t *testing.T) {
 	auth, err := NewAuthenticator(pkceTestConfig(t, "https://example.test/token"))
 	if err != nil {
@@ -194,8 +190,7 @@ func TestExchangeAuthorizationCodePKCESendsTheVerifier(t *testing.T) {
 		t.Errorf("AccessToken = %q, want %q", openedForTest(t, token.AccessToken()), "test-access-token")
 	}
 
-	// The received verifier is the relying party's copy, not one taken out of
-	// the enclave: hashing it is how the token endpoint itself checks PKCE.
+	// Hash the relying party's copy of the verifier, as the token endpoint does.
 	received := form.Get("code_verifier")
 	if received == "" {
 		t.Fatal("token endpoint received no code_verifier")
@@ -310,13 +305,7 @@ func unvalidatedVerifier(value string) func(t *testing.T) *Verifier {
 	}
 }
 
-// TestValidatePKCEVerifier pins RFC 7636 §4.1 exactly, because the exchange
-// relies on it instead of escaping: a character this admits and form encoding
-// would escape is a corrupted request body, not a cosmetic bug.
-//
-// The lengths here are the RFC's literals, not the package's constants. A test
-// written against the constants moves whenever they do and cannot catch a bound
-// that drifts away from the spec.
+// TestValidatePKCEVerifier pins RFC 7636 §4.1 using the RFC's literal lengths, not the package constants.
 func TestValidatePKCEVerifier(t *testing.T) {
 	if pkceMinVerifierLen != 43 || pkceMaxVerifierLen != 128 {
 		t.Fatalf("verifier bounds are %d..%d, RFC 7636 §4.1 says 43..128",

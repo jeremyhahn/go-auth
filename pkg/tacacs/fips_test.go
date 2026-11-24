@@ -26,10 +26,7 @@ func skipUnderFIPSActivation(t *testing.T) {
 	}
 }
 
-// TestMD5IsAvailableInAnOrdinaryProcess is the false-positive guard. The probe
-// decides whether the whole backend is usable, so a probe that reported
-// "unavailable" here would disable TACACS+ in every non-FIPS deployment and no
-// other test would notice — every one of them would just see a refusal.
+// TestMD5IsAvailableInAnOrdinaryProcess guards against the probe disabling TACACS+ outside FIPS mode.
 func TestMD5IsAvailableInAnOrdinaryProcess(t *testing.T) {
 	if os.Getenv("GODEBUG") != "" {
 		t.Skipf("GODEBUG is set to %q; this test needs an unrestricted runtime", os.Getenv("GODEBUG"))
@@ -108,10 +105,7 @@ func TestAuthenticateRefusesWhenFIPSIsActive(t *testing.T) {
 	}
 }
 
-// TestFIPSActivationRefusesTACACS is the end-to-end proof: it re-executes this
-// test binary with GODEBUG=fips140=only, which is exactly how a deployment
-// activates FIPS under boundary ruling 1, and asserts the real probe reports
-// the runtime's refusal and the constructors fail closed without panicking.
+// TestFIPSActivationRefusesTACACS re-executes the test binary under GODEBUG=fips140=only and asserts the constructors fail closed.
 func TestFIPSActivationRefusesTACACS(t *testing.T) {
 	if os.Getenv(subprocessEnvKey) == "1" {
 		fipsActivatedChild(t)
@@ -161,9 +155,7 @@ func fipsActivatedChild(t *testing.T) {
 	}
 }
 
-// envWithout returns env with every assignment of the named keys removed, so
-// the child inherits the parent's environment except for what the test sets
-// itself. A duplicate GODEBUG would leave which value wins up to the runtime.
+// envWithout returns env without any assignment of the named keys.
 func envWithout(env []string, keys ...string) []string {
 	out := make([]string, 0, len(env))
 	for _, kv := range env {

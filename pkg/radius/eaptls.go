@@ -17,11 +17,7 @@ const (
 	defaultEAPTLSFragmentSize = 1010
 	maxEAPTLSFragmentSize     = 4096
 
-	// maxEAPTLSRoundTrips bounds one EAP-TLS conversation. EAP is lock-step,
-	// so a peer that keeps answering with content-free challenges can
-	// otherwise spin the client forever without the handshake ever
-	// progressing. A certificate chain fragmented at defaultEAPTLSFragmentSize
-	// stays far inside this bound; FreeRADIUS caps a conversation at 50.
+	// maxEAPTLSRoundTrips bounds one EAP-TLS conversation against a peer sending content-free challenges.
 	maxEAPTLSRoundTrips = 100
 )
 
@@ -102,15 +98,7 @@ func (a *Authenticator) authenticateEAPTLS(ctx context.Context, username string)
 	}
 	session.tlsConn = tls.Client(session.transport, tlsCfg)
 
-	// The shared secret authenticates every request and verifies every reply
-	// of the conversation (RFC 3579 §3.2), so it has to be readable for as
-	// long as the conversation runs — but no longer. run is synchronous and
-	// the only reader of session.secret; the handshake goroutine it starts
-	// works on the TLS transport and never touches the key. Clearing the field
-	// on the way out keeps a reference to the locked pages from outliving the
-	// borrow, after which Close may unmap them.
-	//
-	// Residue R2: HMAC-MD5 pads derived from the shared secret live on the heap.
+	// The secret is readable only while run executes and the field is cleared on return. Residue R2: HMAC-MD5 pads live on the heap.
 	return a.secret.WithBytes(func(sharedSecret []byte) error {
 		session.secret = sharedSecret
 		defer func() { session.secret = nil }()
@@ -132,13 +120,7 @@ type eapTLSSession struct {
 	handshakeDone bool
 	handshakeErr  error
 
-	// handshakeDoneCh is closed when the handshake goroutine returns, and
-	// handshakeResult is written before that close so a reader that observes
-	// the close also observes the result. It is a signal rather than a value
-	// channel because several places need to *wait* on completion without
-	// consuming it — in particular the wait for outbound records, which would
-	// otherwise sit until the caller's deadline whenever the handshake ends
-	// without producing anything further.
+	// handshakeDoneCh closes when the handshake goroutine returns, after handshakeResult is written.
 	handshakeDoneCh chan struct{}
 	handshakeResult error
 
@@ -186,10 +168,7 @@ func (s *eapTLSSession) run(ctx context.Context) error {
 
 		next, err := s.handleResponse(ctx, packet, resp)
 		if err != nil {
-			// A discarded packet leaves the session exactly as it was, so the
-			// outstanding request is retransmitted on the next iteration
-			// rather than the conversation being abandoned. s.nextMsg is
-			// deliberately not touched.
+			// A discarded packet leaves the session unchanged, so the request is retransmitted.
 			if errors.Is(err, errEAPTLSDiscardPacket) {
 				continue
 			}
@@ -236,19 +215,7 @@ func (s *eapTLSSession) handleResponse(ctx context.Context, req, resp *radiuslib
 		return nil, errors.New("radius: nil request packet")
 	}
 
-	// RFC 3579 §3.2: a client receiving an Access-Challenge, Access-Accept or
-	// Access-Reject belonging to an EAP conversation MUST verify the
-	// Message-Authenticator and silently discard the packet when it does not
-	// match. All three are checked here, before a single field is read out of
-	// the packet — in particular before cacheState, so a packet nobody could
-	// authenticate cannot plant the State attribute that every subsequent
-	// request echoes.
-	//
-	// Discarding rather than failing is what the RFC asks for, and it is also
-	// the safer behavior: an injected packet does not end a conversation the
-	// legitimate server may still be answering. Nothing in the session
-	// advances, so run retransmits; a peer that only ever sends packets we
-	// must discard is stopped by maxEAPTLSRoundTrips.
+	// RFC 3579 §3.2: verify the Message-Authenticator before reading any field and silently discard a mismatch; maxEAPTLSRoundTrips stops a peer that only sends bad packets.
 	if err := verifyResponseMessageAuthenticator(resp, req.Authenticator, s.secret); err != nil {
 		return nil, fmt.Errorf("%w: %s: %w", errEAPTLSDiscardPacket, resp.Code, err)
 	}
@@ -370,12 +337,7 @@ func (s *eapTLSSession) handleTLSRequest(ctx context.Context, msg *eapMessage) (
 		return next, nil
 	}
 
-	// A completed handshake with nothing left to send is NOT the end of the
-	// conversation. RFC 5216 §2.1.1 has the peer answer with an empty EAP-TLS
-	// response and wait for the server's decision; the authorization is the
-	// server's to make, and this client does not get to infer it from its own
-	// TLS state. Falling through to the acknowledgement below is what keeps
-	// the only exit a verified Access-Accept or Access-Reject.
+	// A finished handshake is not the end: RFC 5216 §2.1.1 sends an empty response and waits for the server's verified decision.
 	if s.handshakeDoneCh != nil && !s.handshakeDone {
 		if data, err := s.awaitOutbound(ctx); err == nil {
 			s.pendingTLS = append(s.pendingTLS, data)
@@ -404,12 +366,7 @@ func (s *eapTLSSession) emptyTLSAck(identifier uint8) *eapMessage {
 	}
 }
 
-// awaitOutbound blocks until the TLS stack produces a record, the handshake
-// goroutine returns, or the deadline expires — whichever comes first. Waiting
-// on records alone is what stalled the last round of a real conversation: a
-// handshake that completes without writing anything further never wakes a
-// NextOutbound, so the session sat until the caller's deadline expired.
-// It returns the record, or nil when the wake-up was the handshake finishing.
+// awaitOutbound returns the next TLS record, or nil when the handshake goroutine finished, or an error at the deadline.
 func (s *eapTLSSession) awaitOutbound(ctx context.Context) ([]byte, error) {
 	waitCtx := ctx
 	if waitCtx == nil {
@@ -446,19 +403,12 @@ func (s *eapTLSSession) awaitOutbound(ctx context.Context) ([]byte, error) {
 func (s *eapTLSSession) collectTLSOutbound(ctx context.Context) {
 	buffers := s.transport.DrainOutbound()
 	if len(buffers) == 0 {
-		// A record already being fragmented out is the reply to this
-		// challenge; waiting for the TLS stack to produce a further one
-		// would block until the caller's deadline while the next fragment
-		// sits ready in the queue. That is what an Access-Challenge with no
-		// payload asks for after a fragment carrying More-Fragments.
+		// A record already being fragmented is the reply to this challenge.
 		if len(s.currentTLS) > 0 || len(s.pendingTLS) > 0 {
 			return
 		}
 
-		// Once the handshake goroutine has returned, the TLS stack writes
-		// again only when this session asks it to, so there is nothing to
-		// wait for. Blocking anyway consumes the caller's whole remaining
-		// deadline on the last round of every successful conversation.
+		// After the handshake goroutine returns there is nothing more to wait for.
 		s.checkHandshakeResult()
 		if s.handshakeDone {
 			return

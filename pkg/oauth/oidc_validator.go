@@ -223,10 +223,7 @@ func (v *oidcValidator) validateTimeClaims(claims *IDTokenClaims) error {
 	return nil
 }
 
-// validateAtHash validates the at_hash claim against the access token.
-// This prevents token substitution attacks. The access token is hashed inside
-// its enclave. It fails closed: no hash function (an algorithm at_hash is not
-// defined for) and an access token that cannot be opened both reject.
+// validateAtHash checks at_hash against the access token inside its enclave and fails closed.
 func (v *oidcValidator) validateAtHash(atHash string, accessToken *enclave.MemoryEnclave, hashFunc func() hash.Hash) error {
 	if hashFunc == nil {
 		return errors.Join(ErrOIDCInvalidAtHash, ErrOIDCUnsupportedAtHashAlgorithm)
@@ -256,10 +253,7 @@ func (v *oidcValidator) validateAtHash(atHash string, accessToken *enclave.Memor
 	return nil
 }
 
-// atHashAlgorithms maps an ID token's JWS algorithm to the hash at_hash is
-// computed with: the hash of the signing algorithm (OIDC Core §3.1.3.6), and
-// SHA-512 for EdDSA, the convention for Ed25519. An algorithm absent here has
-// no at_hash and is rejected — never defaulted.
+// atHashAlgorithms maps a JWS algorithm to its at_hash hash (SHA-512 for EdDSA); absent algorithms are rejected.
 var atHashAlgorithms = map[string]func() hash.Hash{
 	"RS256": sha256.New, "ES256": sha256.New, "PS256": sha256.New,
 	"RS384": sha512.New384, "ES384": sha512.New384, "PS384": sha512.New384,

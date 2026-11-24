@@ -14,20 +14,7 @@ import (
 	"github.com/jeremyhahn/go-auth/pkg/internal/credential"
 )
 
-// This file holds the plumbing that keeps OAuth credentials — the client
-// secret, access, refresh and ID tokens, passwords and PKCE verifiers — in
-// go-enclave locked memory between the caller and the wire.
-//
-// A credential is opened with WithBytes only where a dependency forces it, and
-// every such site carries a one-line comment naming its residue:
-//
-//   - R5 (go-auth#3): net/http and crypto/tls keep their own copies of request
-//     bodies and headers, and of response bodies, in ordinary heap that this
-//     package cannot wipe. Form bodies are assembled in locked pages and token
-//     responses are decoded straight into enclaves, so R5 is the transport's
-//     own buffers and nothing more.
-//   - JWT parse boundary: golang-jwt parses a token only from a Go string, so
-//     a bearer or ID token being validated is copied into one for the parse.
+// Credentials stay in enclaves between caller and wire; the only plaintext copies are the transport's buffers (residue R5) and the JWT parse string.
 
 // sealedFormField is one application/x-www-form-urlencoded parameter whose
 // value is a credential held in an enclave. The enclave is borrowed: building
@@ -37,18 +24,7 @@ type sealedFormField struct {
 	value *enclave.MemoryEnclave
 }
 
-// withFormBody assembles public and sealed into a form body inside a locked
-// scratch enclave and calls fn with it.
-//
-// The public parameters are encoded first, then every sealed value is
-// form-escaped out of its enclave directly into the scratch pages, so no step
-// produces a heap string holding a credential — which the url.Values path would
-// do twice, once in the map and once in Encode's output. The scratch enclave is
-// destroyed when fn returns; fn must not retain body.
-//
-// A nil or destroyed sealed value fails with ErrCredentialUnavailable before
-// anything is sent. Failing to lock the scratch pages propagates
-// enclave.ErrLockedMemoryUnavailable: there is no fallback to ordinary memory.
+// withFormBody encodes public and sealed values into a locked scratch enclave and calls fn with it; fn must not retain body.
 func withFormBody(public url.Values, sealed []sealedFormField, fn func(body []byte) error) error {
 	prefix := public.Encode()
 
@@ -124,10 +100,7 @@ func formEscapedLen(src []byte) int {
 	return n
 }
 
-// formEscapeInto form-escapes src into dst, which must hold formEscapedLen(src)
-// bytes, and returns the number written. It is url.QueryEscape without the
-// heap string, so a credential can be escaped from one locked buffer into
-// another.
+// formEscapeInto form-escapes src into dst (formEscapedLen(src) bytes) without a heap string.
 func formEscapeInto(dst, src []byte) int {
 	const hex = "0123456789ABCDEF"
 	n := 0
@@ -155,13 +128,7 @@ var jsonSimpleEscapes = map[byte]byte{
 	'"': '"', '\\': '\\', '/': '/', 'b': '\b', 'f': '\f', 'n': '\n', 'r': '\r', 't': '\t',
 }
 
-// unquoteJSONString decodes the JSON string literal raw, quotes included.
-//
-// With a nil dst it only counts, returning the decoded length; with a dst of
-// that length it writes the decoded bytes. Two passes let a token response be
-// decoded straight into an enclave sized for it, so the token never exists as
-// a Go string — encoding/json would have to build one to decode it. Lone
-// surrogates decode to U+FFFD, as encoding/json does.
+// unquoteJSONString decodes the JSON string literal raw; a nil dst only counts, so a token can be decoded straight into an enclave.
 func unquoteJSONString(raw, dst []byte) (int, error) {
 	if len(raw) < 2 || raw[0] != '"' || raw[len(raw)-1] != '"' {
 		return 0, ErrMalformedTokenResponse
@@ -277,10 +244,7 @@ func sealJSONString(raw json.RawMessage) (*enclave.MemoryEnclave, error) {
 	return sealed, nil
 }
 
-// tokenFingerprint returns the cache key for a token: the unpadded base64url
-// SHA-256 of its bytes, taken inside the enclave. A fingerprint is not a
-// credential — it cannot be presented in place of the token — so it can key an
-// ordinary map.
+// tokenFingerprint returns the unpadded base64url SHA-256 of a token, usable as an ordinary map key.
 func tokenFingerprint(token *enclave.MemoryEnclave) (string, error) {
 	var sum [sha256.Size]byte
 	if err := token.WithBytes(func(b []byte) error {

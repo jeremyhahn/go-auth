@@ -7,13 +7,7 @@ import (
 	"time"
 )
 
-// TestDeriveCodeRFC4226Vectors checks the HOTP core against the reference
-// values in RFC 4226 Appendix D. This is what says the in-repo derivation is
-// the standard one and not merely self-consistent.
-//
-// The vectors are defined over HMAC-SHA-1 only. Under fips140=only the same
-// call must come back as a typed refusal instead — reaching crypto/hmac there
-// would panic.
+// TestDeriveCodeRFC4226Vectors checks HOTP against RFC 4226 Appendix D; under fips140=only it expects a typed refusal.
 func TestDeriveCodeRFC4226Vectors(t *testing.T) {
 	want := []string{
 		"755224", "287082", "359152", "969429", "338314",
@@ -37,9 +31,7 @@ func TestDeriveCodeRFC4226Vectors(t *testing.T) {
 	}
 }
 
-// TestDeriveCodeRFC6238Vectors checks the TOTP core against RFC 6238
-// Appendix B, which covers all three digests at 8 digits. SHA-256 and SHA-512
-// run in every mode; SHA-1 is refused, typed, under fips140=only.
+// TestDeriveCodeRFC6238Vectors checks TOTP against RFC 6238 Appendix B; SHA-1 is refused under fips140=only.
 func TestDeriveCodeRFC6238Vectors(t *testing.T) {
 	cases := []struct {
 		unix int64

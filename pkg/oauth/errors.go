@@ -37,10 +37,7 @@ var (
 	// was nil or had already been destroyed.
 	ErrCredentialUnavailable = errors.New("oauth: credential is missing or destroyed")
 
-	// ErrCredentialChanged indicates a credential enclave reported a different
-	// size while a request body was being assembled from it than when the body
-	// was measured. Enclaves are immutable, so this is a defect, never a race a
-	// caller can win.
+	// ErrCredentialChanged indicates an enclave changed size during body assembly, which is a defect.
 	ErrCredentialChanged = errors.New("oauth: credential changed size while a request was assembled")
 
 	// ErrMalformedTokenResponse indicates a token endpoint returned a credential
@@ -84,10 +81,7 @@ var (
 	// ErrOIDCInvalidAtHash indicates at_hash validation failed.
 	ErrOIDCInvalidAtHash = errors.New("oauth: invalid at_hash")
 
-	// ErrOIDCUnsupportedAtHashAlgorithm indicates the ID token's signing
-	// algorithm has no at_hash hash function, so at_hash cannot be checked. It
-	// is always returned joined with ErrOIDCInvalidAtHash: a check that cannot
-	// run rejects the token.
+	// ErrOIDCUnsupportedAtHashAlgorithm indicates no at_hash function for the signing algorithm; always joined with ErrOIDCInvalidAtHash.
 	ErrOIDCUnsupportedAtHashAlgorithm = errors.New("oauth: id token algorithm has no at_hash hash")
 
 	// ErrOIDCAuthTimeTooOld indicates the auth_time is older than max_age.

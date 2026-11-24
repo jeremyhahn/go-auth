@@ -1,16 +1,4 @@
-// Package main demonstrates TPM 2.0 authentication.
-//
-// This example shows how to:
-// - Configure the TPM 2.0 authenticator
-// - Unseal data with password validation
-// - Verify platform integrity with PCR validation
-// - Handle errors properly
-//
-// Usage:
-//
-//	go run basic_example.go
-//
-// Note: This example requires a TPM 2.0 device (physical or software emulator).
+// Package main demonstrates TPM 2.0 unseal with password and PCR validation; requires a TPM 2.0 device or simulator.
 package main
 
 import (
@@ -28,14 +16,9 @@ func main() {
 	fmt.Println("==> TPM 2.0 Authentication Example")
 	fmt.Println()
 
-	// Configure TPM 2.0 authenticator
-	// This example demonstrates unsealing data that was previously sealed
-	// with specific PCR values and a password.
+	// Configure the TPM 2.0 authenticator to unseal data sealed to PCR values and a password.
 	cfg := tpm2.Config{
-		// Path to the TPM device
-		// Common paths:
-		//   - /dev/tpm0 (direct TPM access, requires root)
-		//   - /dev/tpmrm0 (TPM resource manager, recommended)
+		// TPM device; /dev/tpmrm0 (resource manager) is recommended over /dev/tpm0.
 		DevicePath: "/dev/tpmrm0",
 
 		// Handle where the sealed data is stored
@@ -43,12 +26,7 @@ func main() {
 		// Persistent handles use range 0x81000000 - 0x81FFFFFF
 		SealedHandle: 0x81000001,
 
-		// PCR registers that must match for unsealing to succeed
-		// PCR values provide platform integrity verification:
-		//   0-7:   BIOS/Firmware measurements
-		//   8-15:  Operating system and boot loader
-		//   16-23: Application and runtime measurements
-		// This example uses PCR 7 (secure boot state) and PCR 14 (boot authority)
+		// PCRs that must match to unseal: 7 (secure boot state) and 14 (boot authority).
 		PCRSelection: []int{7, 14},
 
 		// Hash algorithm for PCR bank
@@ -84,13 +62,7 @@ func main() {
 	fmt.Printf("Hash Algorithm: %s\n", cfg.HashAlgorithm)
 	fmt.Println()
 
-	// Perform authentication
-	// This attempts to unseal data from the TPM
-	// The TPM will automatically verify:
-	//   1. The password is correct
-	//   2. The current PCR values match the sealed policy
-	//
-	// If PCR values have changed (e.g., different boot state), unsealing fails
+	// Unseal: fails if the password is wrong or the PCR values differ from the sealed policy.
 	err = auth.Authenticate(ctx, password)
 	if err != nil {
 		switch err {

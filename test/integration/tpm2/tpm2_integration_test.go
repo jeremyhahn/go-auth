@@ -362,13 +362,7 @@ func skipIfTPMUnavailable(t *testing.T) {
 	}
 }
 
-// resetTPMLockout resets the TPM dictionary attack lockout counter.
-// This is called after tests that intentionally cause authentication failures
-// to prevent lockout from affecting subsequent tests.
-//
-// TPM dictionary attack protection triggers after 3 failed auth attempts and
-// locks out ALL authentications (even correct ones) for 1000 seconds.
-// The lockout state persists in NV storage across TPM restarts.
+// resetTPMLockout resets the dictionary-attack lockout after tests that fail authentication on purpose.
 func resetTPMLockout(t *testing.T) {
 	t.Helper()
 
@@ -388,9 +382,7 @@ func resetTPMLockout(t *testing.T) {
 		return
 	}
 
-	// Fallback: Try to reset directly via tpm2-tools
-	// The TCTI must match the TPM setup. In Docker with swtpm, use swtpm TCTI.
-	// For real hardware TPMs, use device TCTI.
+	// Fallback: reset with tpm2-tools over the TCTI matching the TPM (swtpm or device).
 
 	// First, check if we're using a Unix socket (Docker/swtpm environment)
 	fileInfo, err := os.Stat(tpmDevicePath)

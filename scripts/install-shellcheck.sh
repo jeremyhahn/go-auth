@@ -1,46 +1,5 @@
 #!/bin/sh
-# Install a PINNED, checksum-verified shellcheck.
-#
-#   usage: scripts/install-shellcheck.sh <install-dir> [version]
-#
-# Copied from the handbook's software/templates/github-actions. The ONE
-# installer for shellcheck in this repo: a developer runs it and the CI lint
-# job runs the same script, so the shellcheck that backs
-# actionlint's SC* rules on a developer's machine and the one in CI are the same
-# binary and cannot drift.
-#
-# WHY shellcheck HAS TO BE INSTALLED AT ALL
-# -----------------------------------------
-# actionlint delegates every SC-prefixed rule to shellcheck. With shellcheck NOT
-# on PATH it DISABLES those rules and still EXITS 0 at default verbosity — only
-# `actionlint -verbose` prints "Rule shellcheck was disabled". So `make lint`
-# and the CI lint job were a paper gate for shell findings on a box that lacks
-# the tool; that is what let a real SC2046 reach main (fixed in #21). The lint
-# target now asserts this binary is present, but an assertion with no way to
-# satisfy it is just a red an agent cannot clear — hence this installer lands
-# with it.
-#
-# WHY NOT `apt-get install shellcheck` OR `curl ... | sh`
-# -------------------------------------------------------
-# The distro package floats to whatever the archive ships (version drift between
-# CI and a dev box is exactly what the SC gate cannot tolerate), and piping a
-# fetched script into a shell runs unread, unverified code as the build user.
-# This downloads the PINNED release artifact and checks its bytes before
-# anything is executed. Nothing from the download is ever run as a script.
-#
-# HOW THIS PINS
-# -------------
-# Upstream (koalaman/shellcheck) publishes NO checksums file next to its release
-# artifacts, so the expected SHA-256 is PINNED HERE, in the repo, under code
-# review. A hash committed to the tree is not fetched from
-# the same place as the bytes it guards, so a compromised release that rewrites
-# the artifact cannot also rewrite the expectation without a reviewed commit to
-# this file. The cost is that bumping the version REQUIRES updating the pinned
-# hash below in the same commit; a version with no embedded checksum is refused
-# rather than downloaded on trust.
-#
-# To bump shellcheck: change PINNED_VERSION, add the new artifacts' SHA-256 to
-# the checksum table, run this, and re-run `make lint`.
+# Install a pinned, checksum-verified shellcheck: scripts/install-shellcheck.sh <install-dir> [version]. To bump, change PINNED_VERSION and add the new SHA-256 values.
 
 set -eu
 
@@ -89,20 +48,7 @@ case "${OS}:${ARCH}" in
 		;;
 esac
 
-# The pinned SHA-256 for each artifact, keyed by "version:artifact". Upstream
-# publishes none, so these are recorded here from the release and verified in
-# the same reviewed commit that sets PINNED_VERSION. A version/artifact with no
-# entry is refused, never downloaded on trust.
-#
-# TWO hashes per artifact, because they guard two different bytes:
-#   EXPECTED_SHA256      — the TARBALL (.tar.xz). Checked before anything is
-#                          extracted, so a tampered archive is never even opened.
-#   EXPECTED_BIN_SHA256  — the EXTRACTED shellcheck binary. This is the anchor
-#                          the idempotency fast path needs: an on-disk binary is
-#                          trusted only if ITS OWN bytes hash to this, never
-#                          because it self-reports the pinned --version (a
-#                          corrupted or malicious binary can print any version).
-#                          It also re-verifies what we just extracted and install.
+# Pinned SHA-256 per version:artifact, for the tarball and the extracted binary; an unlisted artifact is refused.
 EXPECTED_SHA256=
 EXPECTED_BIN_SHA256=
 case "${VERSION}:${ARTIFACT}" in
@@ -119,14 +65,7 @@ case "${VERSION}:${ARTIFACT}" in
 		;;
 esac
 
-# Already the pinned binary? Skip — but decide that by HASHING the on-disk file,
-# never by its self-reported --version. A `--version` string is output the
-# binary chooses to print: a corrupted or planted `shellcheck` can claim 0.10.0
-# and this fast path would then bless it and exit 0, having verified nothing.
-# The trust anchor is EXPECTED_BIN_SHA256 (the reviewed artifact's extracted
-# bytes). If the file on disk hashes to it, it IS the pinned binary and there is
-# nothing to do; anything else — wrong version, corruption, tampering — falls
-# through to the verified download+install below.
+# Skip only if the on-disk binary hashes to EXPECTED_BIN_SHA256, never by its --version.
 if [ -x "${INSTALL_DIR}/shellcheck" ]; then
 	ON_DISK_SHA=$(sha256sum "${INSTALL_DIR}/shellcheck" 2>/dev/null | cut -d' ' -f1)
 	if [ "${ON_DISK_SHA}" = "${EXPECTED_BIN_SHA256}" ]; then
@@ -159,10 +98,7 @@ mkdir -p "${INSTALL_DIR}"
 # versioned top-level directory) — extract exactly that one entry.
 tar -xJf "${TMP}/${ARTIFACT}" -C "${TMP}" "shellcheck-v${VERSION}/shellcheck"
 
-# Verify the EXTRACTED binary against its own pin before installing it. The
-# tarball hash already cleared the archive, so this is defence in depth — but it
-# is also what proves EXPECTED_BIN_SHA256 (the value the fast path trusts) really
-# is this artifact's binary, so the two pins can never silently disagree.
+# Verify the extracted binary against EXPECTED_BIN_SHA256 before installing it.
 echo "→ verifying extracted binary SHA-256 (pinned in-repo)"
 printf '%s  %s\n' "${EXPECTED_BIN_SHA256}" "shellcheck-v${VERSION}/shellcheck" > "${TMP}/expected-bin.sha256"
 if ! (cd "${TMP}" && sha256sum -c expected-bin.sha256); then

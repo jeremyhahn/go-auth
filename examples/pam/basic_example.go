@@ -1,16 +1,4 @@
-// Package main demonstrates PAM authentication.
-//
-// This example shows how to:
-// - Configure the PAM authenticator
-// - Perform username/password authentication
-// - Handle errors properly
-//
-// Usage:
-//
-//	go run basic_example.go
-//
-// Note: This example requires PAM libraries to be installed and the binary
-// must be built with CGO enabled (CGO_ENABLED=1).
+// Package main demonstrates PAM authentication; build with CGO_ENABLED=1 and PAM libraries installed.
 package main
 
 import (
@@ -28,10 +16,7 @@ func main() {
 	fmt.Println("==> PAM Authentication Example")
 	fmt.Println()
 
-	// Create PAM authenticator for the "login" service
-	// Common PAM service names: "login", "passwd", "sshd", "sudo"
-	// The service name determines which PAM configuration file is used
-	// (typically in /etc/pam.d/)
+	// PAM authenticator for the "login" service; the name selects the /etc/pam.d/ file.
 	auth, err := pam.NewAuthenticator("login", nil)
 	if err != nil {
 		log.Fatalf("Failed to create PAM authenticator: %v", err)

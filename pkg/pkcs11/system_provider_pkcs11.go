@@ -85,10 +85,7 @@ func (s *nativeSession) Login(ctx context.Context, pin *enclave.MemoryEnclave) e
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	// Residue R6: miekg/pkcs11's Login takes the PIN as a string and copies it
-	// with C.CString, which it frees without wiping. The string is wiped here
-	// when Login returns; the C copy and anything the vendor module keeps are
-	// beyond reach.
+	// Residue R6: miekg/pkcs11 copies the PIN with C.CString and frees it unwiped; the Go string is wiped here.
 	return credential.WithTransientString(pin, func(value string) error {
 		return s.module.Login(s.session, pkcs.CKU_USER, value)
 	})

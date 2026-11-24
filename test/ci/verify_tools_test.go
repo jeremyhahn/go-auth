@@ -1,13 +1,4 @@
-// Package ci_test holds regression tests for the CI tool guards added for
-// go-auth#26: CI must use the golangci-lint, gosec and govulncheck baked into
-// the ci-runner image, fail closed when one is absent or golangci-lint is not
-// the pinned version, and never fall back to installing over the network.
-//
-// These tests run the real `make verify-lint-tool` and
-// `make verify-security-tools` targets, which are what ci.yml runs, against
-// fake tools on a PATH that contains nothing else. Every network-install route
-// (go, curl, wget, apt-get, sudo) is on that PATH as a tripwire that records
-// its invocation, so a guard that "recovers" by installing is caught.
+// Package ci_test runs the real verify-lint-tool and verify-security-tools targets against fake tools, with network installers as tripwires.
 package ci_test
 
 import (

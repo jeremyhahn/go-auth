@@ -1,13 +1,4 @@
-// RADIUS is in every build and refuses to run when FIPS is activated.
-//
-// Every RADIUS exchange is authenticated with MD5: RFC 2865 §3 defines the
-// Request/Response Authenticator as MD5(Code || ID || Length || RequestAuth ||
-// Attributes || Secret), and RFC 2869 §5.14 defines the Message-Authenticator
-// as HMAC-MD5. There is no conforming RADIUS without MD5, and RadSec (RFC 6614)
-// does not help — it wraps the same packet in TLS, and the inner authenticator
-// is still MD5. So this backend cannot be made FIPS-140-only compliant; under
-// GODEBUG=fips140=only the constructors return ErrFIPSUnsupported (fips.go)
-// rather than shipping a backend that panics on first use. See docs/fips.md.
+// RADIUS requires MD5 (RFC 2865 §3, RFC 2869 §5.14), so under GODEBUG=fips140=only the constructors return ErrFIPSUnsupported. See docs/fips.md.
 
 package radius
 
@@ -71,15 +62,7 @@ type dialContext interface {
 // Option configures an Authenticator.
 type Option func(*authConfig)
 
-// WithPacketExchanger overrides the packet exchanger implementation; primarily used for testing.
-//
-// The packet an exchanger is given aliases the shared secret's locked pages,
-// borrowed for the length of the exchange and unmapped by Close. An
-// implementation must not retain the packet, its Secret field, or anything
-// derived from them beyond the call — a read after Close is of unmapped memory
-// and faults the process.
-// The exchangers in this package, and layeh.com/radius itself, use the secret
-// only on the synchronous encode and verify paths.
+// WithPacketExchanger overrides the packet exchanger, mainly for tests; it must not retain the packet, which aliases the secret's locked pages.
 func WithPacketExchanger(pe packetExchanger) Option {
 	return func(c *authConfig) {
 		c.exchanger = pe
@@ -93,8 +76,7 @@ func WithNetwork(network string) Option {
 	}
 }
 
-// WithTLSConfig enables RadSec (RADIUS-over-TLS) using the provided TLS configuration.
-// The configuration is cloned before use to avoid external mutation.
+// WithTLSConfig enables RadSec (RADIUS-over-TLS) with a clone of cfg.
 func WithTLSConfig(cfg *tls.Config) Option {
 	return func(c *authConfig) {
 		c.useTLS = true
@@ -162,9 +144,7 @@ func (c radiusClient) exchange(ctx context.Context, packet *radiuslib.Packet, ad
 // Authenticator performs PAP-based authentication against an upstream RADIUS server.
 type Authenticator struct {
 	address string
-	// secret is the RADIUS shared secret in locked memory. The authenticator
-	// owns it, borrows it for the length of a single packet exchange, and
-	// destroys it in Close.
+	// secret is the shared secret in locked memory, owned by the authenticator and destroyed in Close.
 	secret *enclave.MemoryEnclave
 	client packetExchanger
 	eapTLS *EAPTLSConfig
@@ -175,23 +155,7 @@ type Authenticator struct {
 	closed    bool // guarded by lifecycle
 }
 
-// NewAuthenticator constructs a RADIUS authenticator.
-//
-// The address must include host and port (for example, "127.0.0.1:1812").
-// sharedSecret is the shared secret that protects Access-Request packets, in
-// locked memory; build it with enclave.NewMemoryEnclave (which wipes the
-// caller's slice) or, from a configuration string, with
-// enclave.NewMemoryEnclave([]byte(s)). Options adjust transport behavior,
-// enable TLS, or supply custom packet exchangers.
-//
-// It TAKES OWNERSHIP of sharedSecret on every return path: when it returns an
-// error — the FIPS refusal included — the enclave has already been destroyed,
-// and otherwise Close destroys it. Do not use or destroy it afterwards, and
-// give each authenticator its own enclave.
-//
-// Under FIPS activation this returns ErrFIPSUnsupported ahead of every argument
-// check, whatever the arguments are, so startup code can branch on
-// errors.Is(err, ErrFIPSUnsupported) to learn the backend is unavailable.
+// NewAuthenticator constructs a RADIUS authenticator for host:port; it takes ownership of sharedSecret and returns ErrFIPSUnsupported first under FIPS activation.
 func NewAuthenticator(address string, sharedSecret *enclave.MemoryEnclave, opts ...Option) (*Authenticator, error) {
 	auth, err := newAuthenticator(address, sharedSecret, opts)
 	if err != nil {
@@ -201,10 +165,7 @@ func NewAuthenticator(address string, sharedSecret *enclave.MemoryEnclave, opts 
 }
 
 func newAuthenticator(address string, sharedSecret *enclave.MemoryEnclave, opts []Option) (*Authenticator, error) {
-	// Refuse to start under FIPS activation rather than panic on the first
-	// Access-Request, ahead of the argument checks: a FIPS-activated
-	// deployment must be told the backend is categorically unavailable, not
-	// that its arguments are wrong. See fips.go.
+	// Refuse under FIPS activation before the argument checks; see fips.go.
 	if fips140OnlyActive() {
 		return nil, ErrFIPSUnsupported
 	}
@@ -269,11 +230,7 @@ func (a *Authenticator) Close() error {
 	return a.secret.Destroy()
 }
 
-// Authenticate validates the provided username/password pair.
-//
-// The password is BORROWED and never destroyed here. With EAP-TLS configured
-// the client certificate is the credential, the password is ignored, and it
-// may be nil.
+// Authenticate validates a username and borrowed password; with EAP-TLS the certificate is the credential and password may be nil.
 func (a *Authenticator) Authenticate(ctx context.Context, username string, password *enclave.MemoryEnclave) error {
 	a.lifecycle.RLock()
 	defer a.lifecycle.RUnlock()
@@ -296,13 +253,7 @@ func (a *Authenticator) Authenticate(ctx context.Context, username string, passw
 		return err
 	}
 
-	// The packet keeps a reference to the shared secret rather than a copy of
-	// it: layeh.com/radius reads it back when the request is encoded and again
-	// when the response authenticator is checked. So the whole exchange runs
-	// inside the borrow, and only the response code — which carries nothing
-	// secret — is carried back out. Nothing that aliases the key may escape
-	// this callback: Close unmaps the pages, so a retained reference faults
-	// rather than reads stale bytes.
+	// The packet references the secret, so the whole exchange runs inside the borrow and only the response code leaves it.
 	var code radiuslib.Code
 	// Residue R2: layeh's MD5 state absorbs the shared secret on the heap.
 	err := a.secret.WithBytes(func(sharedSecret []byte) error {
@@ -396,12 +347,7 @@ func (t *tlsPacketExchanger) exchange(ctx context.Context, packet *radiuslib.Pac
 		return nil, err
 	}
 
-	// The retransmit goroutine stops on stopCtx; failures are judged against
-	// the caller's ctx. context closes a parent's Done channel before it
-	// cancels the children, so a peer reacting to the caller's cancellation can
-	// fail the Read while stopCtx still reads as live (go-auth#53). The
-	// caller's Err is set before its Done closes, so checking it is never
-	// behind the peer.
+	// Judge failures against the caller's ctx, which is cancelled before the derived stopCtx.
 	stopCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 

@@ -178,16 +178,7 @@ func TestOAuthIntegration_ClientCredentialsFlow_InvalidCredentials(t *testing.T)
 	t.Logf("Invalid credentials properly rejected: %v", err)
 }
 
-// TestOAuthIntegration_PasswordFlow tests the resource owner password credentials flow
-// against a real Hydra server.
-//
-// NOTE: This test is expected to fail or be skipped because ORY Hydra does not
-// support the password grant type in production mode. Hydra requires proper user
-// authentication through login flows and does not accept arbitrary username/password
-// combinations via the OAuth token endpoint, even in dev mode.
-//
-// The password grant type is considered insecure and is not recommended by OAuth 2.0
-// best practices. Most modern OAuth servers (including Hydra) do not support it.
+// TestOAuthIntegration_PasswordFlow tests the password grant against Hydra, which does not support it, so it is expected to fail or skip.
 func TestOAuthIntegration_PasswordFlow(t *testing.T) {
 	t.Skip("Skipping password flow test - ORY Hydra does not support password grant type. " +
 		"Hydra requires proper authentication flows and does not accept username/password " +

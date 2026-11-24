@@ -11,9 +11,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
-// These tests pin at_hash validation (OIDC Core §3.1.3.6) and the ID-token
-// algorithm allowlist (Local Codex review, round 3, of #47). Every path that
-// cannot check at_hash has to reject the token, never skip the check.
+// These tests pin at_hash validation (OIDC Core §3.1.3.6) and the ID-token algorithm allowlist: a check that cannot run rejects.
 
 // atHashOf computes the at_hash for accessToken with h: the left half of the
 // digest, base64url-encoded without padding.

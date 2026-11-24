@@ -173,10 +173,7 @@ func TestInjectedValidatorStillWorksUnderFIPS(t *testing.T) {
 	}
 }
 
-// TestFIPSActivationRefusesYubiCloud is the end-to-end proof: it re-executes
-// this test binary with GODEBUG=fips140=only, exactly how a deployment
-// activates FIPS under boundary ruling 1, and asserts the real probe detects
-// the runtime's refusal and the default path fails closed without panicking.
+// TestFIPSActivationRefusesYubiCloud re-executes the test binary under GODEBUG=fips140=only and asserts the default path fails closed.
 func TestFIPSActivationRefusesYubiCloud(t *testing.T) {
 	if os.Getenv(subprocessEnvKey) == "1" {
 		fipsActivatedChild(t)
@@ -221,9 +218,7 @@ func fipsActivatedChild(t *testing.T) {
 	}
 }
 
-// envWithout returns env with every assignment of the named keys removed, so
-// the child inherits the parent's environment except for what the test sets
-// itself. A duplicate GODEBUG would leave which value wins up to the runtime.
+// envWithout returns env without any assignment of the named keys.
 func envWithout(env []string, keys ...string) []string {
 	out := make([]string, 0, len(env))
 	for _, kv := range env {

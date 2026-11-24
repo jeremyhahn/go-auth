@@ -10,10 +10,7 @@ import (
 	enclave "github.com/jeremyhahn/go-enclave"
 )
 
-// TestAuthenticateWithEnclaveCredentials drives a real TACACS+ exchange: the
-// server only replies when the packet obfuscation keyed by the shared secret
-// matches, so a successful login proves the borrowed key reached tacplus
-// intact, and the pass/fail split proves the password did.
+// TestAuthenticateWithEnclaveCredentials drives a real exchange, proving the borrowed key and password reach tacplus intact.
 func TestAuthenticateWithEnclaveCredentials(t *testing.T) {
 	skipUnderFIPSActivation(t)
 	addr, cleanup := startTestServer(t, simpleHandler{creds: map[string]string{"user": "pass"}})

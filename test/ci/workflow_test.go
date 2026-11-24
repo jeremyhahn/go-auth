@@ -80,8 +80,7 @@ func mentionsAnalyser(s string) bool {
 	return false
 }
 
-// No step may install an analyser on a Gitea runner: that is the install that
-// overwrote the baked golangci-lint v2.14.0 with v2.12.2.
+// No step may install an analyser over the one baked into the runner image.
 func TestWorkflow_AnalyserInstallsAreGithubOnly(t *testing.T) {
 	wf := loadCI(t)
 	for jobName, job := range wf.Jobs {
@@ -174,13 +173,7 @@ func goModVersion(t *testing.T) string {
 	return string(m[1])
 }
 
-// checkPinCoversDirective reports whether a CI GO_VERSION pin may build a
-// module whose go directive is directive. The workflows and go.mod still move
-// together, never piecemeal, but by the Company Agent convention (m2289 (4))
-// each module's go directive stays on the lowest patch importers need while
-// every CI pin carries the security patch (1.27.2 directive, 1.27.3 pin for
-// GO-2026-6809). So the pin must share the directive's major.minor and its
-// patch must be at or above the directive's.
+// checkPinCoversDirective reports whether a CI GO_VERSION pin shares the directive's major.minor with a patch at or above it.
 func checkPinCoversDirective(file, pin, directive string) error {
 	p, d := strings.Split(pin, "."), strings.Split(directive, ".")
 	if len(p) != 3 || len(d) != 3 {

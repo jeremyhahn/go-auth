@@ -7,13 +7,12 @@ Every credential go-auth handles — passwords, PINs, one-time passwords, shared
 secrets, service-account passwords, API keys, OTP seeds, OAuth client secrets
 and tokens — is a [go-enclave](https://github.com/jeremyhahn/go-enclave)
 `*enclave.MemoryEnclave`, and nothing else
-([#48](https://github.com/jeremyhahn/go-auth/issues/48), owner ruling on
-[#3](https://github.com/jeremyhahn/go-auth/issues/3)). There is no
+([#48](https://github.com/jeremyhahn/go-auth/issues/48)). There is no
 plaintext-string credential path anywhere in the library: no `string`
 password parameter, no `string` secret field, no deprecated shim.
 
 Identifiers are not credentials and stay `string`: usernames, bind DNs, OAuth
-client IDs, Yubico client IDs, token labels (ruling §10.8).
+client IDs, Yubico client IDs, token labels.
 
 ## What a MemoryEnclave is
 
@@ -30,7 +29,7 @@ primitive a backend keys with the borrowed credential; see [fips.md](fips.md).
 
 When the kernel refuses to lock memory, every constructor fails **closed**
 with an error matching `enclave.ErrLockedMemoryUnavailable`. go-auth surfaces
-that error and never falls back to ordinary memory (ruling §10.4).
+that error and never falls back to ordinary memory.
 
 ## Building one
 

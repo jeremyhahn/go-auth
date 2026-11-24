@@ -14,10 +14,7 @@ import (
 	"github.com/jeremyhahn/go-auth/pkg/internal/credential"
 )
 
-// PKCE code verifier shape (RFC 7636 §4.1). The generated verifier is 32 random
-// bytes rendered as unpadded base64url — 43 characters, the shortest the RFC
-// admits, carrying the full 256 bits of entropy §7.1 asks for. The bounds apply
-// to any verifier this package accepts, including one a caller built itself.
+// PKCE verifier bounds (RFC 7636 §4.1); generated verifiers are 32 random bytes as 43 base64url characters.
 const (
 	pkceVerifierBytes  = 32
 	pkceVerifierLen    = 43 // base64.RawURLEncoding.EncodedLen(pkceVerifierBytes)
@@ -25,46 +22,16 @@ const (
 	pkceMaxVerifierLen = 128
 )
 
-// ErrVerifierConsumed indicates a PKCE code verifier was used a second time, or
-// after it was destroyed. RFC 7636 gives a verifier exactly one authorization
-// code to redeem, so a second use is a defect in the caller, a replay, or two
-// callbacks racing for one login.
+// ErrVerifierConsumed indicates a PKCE verifier used twice or after Destroy.
 var ErrVerifierConsumed = errors.New("oauth: pkce code verifier already consumed")
 
-// Verifier is a PKCE code verifier: a bearer credential for the length of an
-// authorization-code flow, held in protected memory and redeemable exactly once.
-//
-// Whoever holds a verifier can redeem an intercepted authorization code, which
-// is the attack PKCE exists to stop, so a Verifier never yields its value by
-// return. The bytes live in a locked enclave and are read only inside a call
-// that this type controls the lifetime of.
-//
-// Single use is enforced, not documented: ExchangeAuthorizationCodePKCE takes
-// the sealed value out of the Verifier under a lock before it opens or sends
-// anything, so two goroutines racing to redeem one verifier cannot both reach
-// the token endpoint. The loser gets ErrVerifierConsumed.
-//
-// The zero value is not usable. A *Verifier is safe for concurrent use, and
-// every method is safe to call on a nil *Verifier.
+// Verifier is a single-use PKCE code verifier held in a locked enclave; it never returns its value and is safe for concurrent use.
 type Verifier struct {
 	mu     sync.Mutex
 	sealed *enclave.MemoryEnclave
 }
 
-// NewVerifier wraps a code verifier the caller already holds in an enclave and
-// checks it against RFC 7636 §4.1.
-//
-// It is for an application that keeps its own sealed copy of a verifier — for
-// example one restored from an encrypted session store into locked memory — and
-// needs to redeem it with ExchangeAuthorizationCodePKCE. NewVerifier TAKES
-// OWNERSHIP of codeVerifier on every return path: on success the Verifier owns
-// it, and on error it is destroyed before NewVerifier returns.
-//
-// Nothing gives the value back out: there is no exported way to read a
-// Verifier, because the only thing a verifier is for is the one exchange.
-//
-// Prefer BuildAuthURLPKCE, which generates the verifier straight into protected
-// memory and never has any other form of it at all.
+// NewVerifier wraps a caller-held verifier enclave after checking RFC 7636 §4.1 and takes ownership of it on every path.
 func NewVerifier(codeVerifier *enclave.MemoryEnclave) (*Verifier, error) {
 	if err := codeVerifier.WithBytes(validatePKCEVerifier); err != nil {
 		return nil, errors.Join(ErrInvalidConfiguration, credential.DestroyAll(err, codeVerifier))
@@ -93,10 +60,7 @@ func (v *Verifier) consume() (*enclave.MemoryEnclave, error) {
 	return sealed, nil
 }
 
-// open calls fn with the verifier inside an enclave session, without consuming
-// it. It is unexported on purpose: deriving the challenge and asserting on the
-// verifier in this package's own tests are the only things that should be able
-// to see the bytes at all. There is no exported counterpart, deliberately.
+// open calls fn with the verifier bytes without consuming it; unexported on purpose.
 func (v *Verifier) open(fn func(codeVerifier []byte) error) error {
 	if v == nil {
 		return ErrVerifierConsumed
@@ -124,11 +88,7 @@ func (v *Verifier) Size() int {
 	return v.sealed.Size()
 }
 
-// Destroy releases the verifier. It is idempotent, safe on a nil *Verifier, and
-// safe to defer next to BuildAuthURLPKCE: the exchange consumes the verifier, so
-// a deferred Destroy after a successful exchange is a no-op, and on every path
-// that never reaches the exchange it is what ends the credential's life. The
-// error is go-enclave's Destroy report: nil for an ordinary release.
+// Destroy releases the verifier; idempotent and safe to defer next to BuildAuthURLPKCE.
 func (v *Verifier) Destroy() error {
 	sealed, err := v.consume()
 	if err != nil {
@@ -148,37 +108,7 @@ func (v *Verifier) GoString() string {
 	return "oauth.Verifier(redacted)"
 }
 
-// BuildAuthURLPKCE builds the authorization URL for the authorization code flow
-// and returns the PKCE code verifier in protected memory.
-//
-// A code verifier is a bearer credential for the length of the flow: whoever holds it can redeem
-// an intercepted authorization code, which is the entire attack PKCE exists to
-// stop. This constructor generates it inside a locked enclave and derives the
-// S256 challenge from the enclave, so the verifier has no plaintext form on the
-// Go heap at any point.
-//
-// state should be a random value the caller keeps to defeat CSRF; it is not a
-// secret and is carried in the URL.
-//
-// additionalParams may not set a parameter the library owns — including
-// code_challenge and code_challenge_method, which would silently decouple the
-// URL from the returned verifier and make the exchange fail later, at the token
-// endpoint, for no visible reason. Those keys are rejected rather than applied.
-//
-// The returned verifier belongs to the caller. Pass it to
-// ExchangeAuthorizationCodePKCE, which consumes it, and destroy it yourself on
-// any path that never reaches the exchange — an abandoned login, a callback that
-// fails its state check, a session that expires:
-//
-//	authURL, verifier, err := auth.BuildAuthURLPKCE(state, nil)
-//	if err != nil {
-//	    return err
-//	}
-//	defer verifier.Destroy() // no-op once the exchange has consumed it
-//
-// A Verifier cannot be written to an out-of-process session store: an enclave is
-// process memory, not a serializable value, and nothing exported reads a
-// Verifier's value back out. Hold it in an in-process map keyed by state.
+// BuildAuthURLPKCE builds the authorization URL and returns a verifier generated in locked memory; the caller destroys it if the exchange never happens.
 func (a *Authenticator) BuildAuthURLPKCE(state string, additionalParams map[string]string) (authURL string, verifier *Verifier, err error) {
 	if a.config.Flow != FlowAuthorizationCode {
 		return "", nil, fmt.Errorf("%w: authorization code flow not configured", ErrFlowNotSupported)
@@ -204,20 +134,7 @@ func (a *Authenticator) BuildAuthURLPKCE(state string, additionalParams map[stri
 	return authURL, verifier, nil
 }
 
-// ExchangeAuthorizationCodePKCE exchanges an authorization code for tokens,
-// taking the PKCE code verifier from protected memory.
-//
-// It is the counterpart of BuildAuthURLPKCE. The verifier is copied out of its
-// enclave into a locked request body and never into an ordinary string.
-//
-// The verifier is consumed: this call takes it out of the Verifier under a lock
-// before it opens or sends anything, and destroys it before returning — on
-// success and on failure alike. RFC 7636 gives a verifier exactly one
-// authorization code to redeem, so there is nothing a second call could
-// legitimately do with it; taking it up front is also what stops two goroutines
-// racing on one login from both reaching the token endpoint. The loser, and any
-// later call, gets ErrVerifierConsumed wrapped in ErrTokenExchangeFailed.
-// Verifier.Destroy is idempotent, so a caller's own defer remains correct.
+// ExchangeAuthorizationCodePKCE exchanges a code using the verifier, consuming and destroying it; a second use gets ErrVerifierConsumed.
 func (a *Authenticator) ExchangeAuthorizationCodePKCE(ctx context.Context, code string, verifier *Verifier) (token *Token, err error) {
 	sealed, err := verifier.consume()
 	if err != nil {
@@ -267,13 +184,7 @@ func newVerifier() (*Verifier, string, error) {
 	return &Verifier{sealed: sealed}, challenge, nil
 }
 
-// newPKCEVerifier generates a code verifier in protected memory and derives its
-// S256 code challenge.
-//
-// The random bytes are read into a locked scratch enclave and base64url-encoded
-// straight into the locked pages of the verifier's own enclave, which is then
-// frozen, so neither the raw bytes nor their encoded form is ever written to
-// ordinary heap.
+// newPKCEVerifier generates a verifier in locked memory and derives its S256 challenge.
 func newPKCEVerifier() (*enclave.MemoryEnclave, string, error) {
 	raw, err := enclave.NewMemoryEnclaveSized(pkceVerifierBytes)
 	if err != nil {
@@ -315,12 +226,7 @@ func newPKCEVerifier() (*enclave.MemoryEnclave, string, error) {
 	return verifier, challenge, nil
 }
 
-// pkceChallenge derives the S256 code challenge (RFC 7636 §4.2) from a verifier
-// held in protected memory.
-//
-// The digest is taken over the locked pages of the enclave; only the challenge
-// leaves as a string, and a challenge is a public value that travels in the
-// authorization URL by design.
+// pkceChallenge derives the S256 challenge (RFC 7636 §4.2) inside the verifier's enclave.
 func pkceChallenge(verifier *enclave.MemoryEnclave) (string, error) {
 	var challenge string
 	err := verifier.WithBytes(func(v []byte) error {
@@ -337,17 +243,7 @@ func pkceChallenge(verifier *enclave.MemoryEnclave) (string, error) {
 	return challenge, nil
 }
 
-// validatePKCEVerifier checks a verifier against RFC 7636 §4.1: 43 to 128
-// characters drawn from the unreserved set ALPHA / DIGIT / "-" / "." / "_" / "~".
-//
-// The exchange depends on this check rather than on escaping. Every character
-// admitted here is left untouched by application/x-www-form-urlencoded encoding,
-// which is what lets the verifier be copied from its enclave straight into the
-// request body: escaping it would mean allocating an escaped copy on the heap,
-// and that copy is exactly what protecting the verifier is meant to prevent.
-// Anything outside the set is rejected, never escaped.
-//
-// The verifier is not named in the error — it is the secret being checked.
+// validatePKCEVerifier checks RFC 7636 §4.1 length and unreserved characters, so the verifier needs no escaping; the error never names it.
 func validatePKCEVerifier(v []byte) error {
 	if len(v) < pkceMinVerifierLen || len(v) > pkceMaxVerifierLen {
 		return fmt.Errorf("code verifier must be %d to %d characters, got %d",

@@ -19,13 +19,7 @@ type sealedUserInfo struct {
 	Custom   map[string]interface{} `json:"custom,omitempty"`
 }
 
-// userInfoClient handles UserInfo endpoint requests and caching.
-//
-// Responses are cached in a sealedLRU keyed by the access token's fingerprint,
-// so the cache is bounded by UserInfoConfig.CacheMaxSize and by the
-// locked-memory allowance exactly as the claims cache is: an unbounded cache of
-// locked pages would be a memory-exhaustion path for anyone able to present
-// distinct access tokens.
+// userInfoClient handles UserInfo requests, cached in a bounded sealedLRU keyed by token fingerprint.
 type userInfoClient struct {
 	httpClient      *http.Client
 	config          *Config
@@ -188,10 +182,7 @@ func (c *userInfoClient) getFromCache(key string) *UserInfo {
 	return cached.UserInfo
 }
 
-// cacheUserInfo seals UserInfo into an enclave and stores it under key, a
-// token fingerprint. It fails, and caches nothing, when the response cannot be
-// sealed into locked memory, and with ErrCacheClosed once Close has run; see
-// sealedLRU.set for the order in which locked memory is reclaimed.
+// cacheUserInfo seals UserInfo into an enclave under key; it fails without caching if sealing fails or the cache is closed.
 func (c *userInfoClient) cacheUserInfo(key string, userInfo *UserInfo) error {
 	ttl := 5 * time.Minute // Default
 	if c.config.OIDC != nil && c.config.OIDC.UserInfo.CacheTTL > 0 {
@@ -207,10 +198,7 @@ func (c *userInfoClient) ClearCache() {
 	c.cache.clear()
 }
 
-// Close destroys every cached entry and closes the cache for good: a later
-// insert — including one from a request that was in flight during Close —
-// fails with ErrCacheClosed instead of leaving an enclave nothing will destroy.
-// It is idempotent. The error is the first failed Destroy of a cached entry.
+// Close destroys every cached entry and rejects later inserts with ErrCacheClosed; it is idempotent.
 func (c *userInfoClient) Close() error {
 	return c.cache.close()
 }

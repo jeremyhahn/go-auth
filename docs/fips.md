@@ -14,7 +14,7 @@ which is what a FedRAMP / PCI DSS / HIPAA gate has to do.
 
 ## One artifact, activated at deployment
 
-Company FIPS boundary ruling 1 is one artifact for both markets. go-auth has a
+One artifact serves both markets. go-auth has a
 single build shape: every package is in every build, there is no FIPS build
 tag, and FIPS is a property of how the binary is *run*, not how it was built.
 
@@ -33,8 +33,7 @@ Code whose protocol mandates a non-approved primitive cannot run under
 `fips140=only`, and the runtime's answer to such code is a panic. This library
 never lets that panic reach a caller and never falls back to the primitive
 silently: under FIPS activation those components **refuse at runtime with a
-typed error**, `ErrFIPSUnsupported`, from their constructors — the company
-FIPS product ruling 7 case, "disabled with a clear typed error". Configuring
+typed error**, `ErrFIPSUnsupported`, from their constructors. Configuring
 one of them in a FIPS deployment fails at startup rather than on the first
 login. Startup code tells the two cases apart with `errors.Is`:
 
@@ -66,8 +65,8 @@ measured on go1.27.2:
 | `GOFIPS140=latest` | `fips140=on` | true | ok |
 | `GOFIPS140=latest` | `fips140=only` | true | panics |
 
-`Enabled()` reports that the FIPS module is linked in, which under ruling 1 is
-true of every binary the company ships. Gating on it would disable these
+`Enabled()` reports that the FIPS module is linked in, which is
+true of every FIPS-capable binary. Gating on it would disable these
 backends in every deployment, including the ones entitled to use them. Reading
 `GODEBUG` from the environment would miss a `//go:debug fips140=only` directive
 compiled into the main package. Go 1.26's `fips140.Enforced()` does distinguish
