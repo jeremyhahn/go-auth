@@ -14,10 +14,7 @@ import (
 	"github.com/jeremyhahn/go-auth/pkg/internal/credential"
 )
 
-// PKCE code verifier shape (RFC 7636 §4.1). The generated verifier is 32 random
-// bytes rendered as unpadded base64url — 43 characters, the shortest the RFC
-// admits, carrying the full 256 bits of entropy §7.1 asks for. The bounds apply
-// to any verifier this package accepts, including one a caller built itself.
+// PKCE verifier bounds (RFC 7636 §4.1); generated verifiers are 32 random bytes as 43 base64url characters.
 const (
 	pkceVerifierBytes  = 32
 	pkceVerifierLen    = 43 // base64.RawURLEncoding.EncodedLen(pkceVerifierBytes)
@@ -93,10 +90,7 @@ func (v *Verifier) consume() (*enclave.MemoryEnclave, error) {
 	return sealed, nil
 }
 
-// open calls fn with the verifier inside an enclave session, without consuming
-// it. It is unexported on purpose: deriving the challenge and asserting on the
-// verifier in this package's own tests are the only things that should be able
-// to see the bytes at all. There is no exported counterpart, deliberately.
+// open calls fn with the verifier bytes without consuming it; unexported on purpose.
 func (v *Verifier) open(fn func(codeVerifier []byte) error) error {
 	if v == nil {
 		return ErrVerifierConsumed
@@ -267,13 +261,7 @@ func newVerifier() (*Verifier, string, error) {
 	return &Verifier{sealed: sealed}, challenge, nil
 }
 
-// newPKCEVerifier generates a code verifier in protected memory and derives its
-// S256 code challenge.
-//
-// The random bytes are read into a locked scratch enclave and base64url-encoded
-// straight into the locked pages of the verifier's own enclave, which is then
-// frozen, so neither the raw bytes nor their encoded form is ever written to
-// ordinary heap.
+// newPKCEVerifier generates a verifier in locked memory and derives its S256 challenge.
 func newPKCEVerifier() (*enclave.MemoryEnclave, string, error) {
 	raw, err := enclave.NewMemoryEnclaveSized(pkceVerifierBytes)
 	if err != nil {
@@ -315,12 +303,7 @@ func newPKCEVerifier() (*enclave.MemoryEnclave, string, error) {
 	return verifier, challenge, nil
 }
 
-// pkceChallenge derives the S256 code challenge (RFC 7636 §4.2) from a verifier
-// held in protected memory.
-//
-// The digest is taken over the locked pages of the enclave; only the challenge
-// leaves as a string, and a challenge is a public value that travels in the
-// authorization URL by design.
+// pkceChallenge derives the S256 challenge (RFC 7636 §4.2) inside the verifier's enclave.
 func pkceChallenge(verifier *enclave.MemoryEnclave) (string, error) {
 	var challenge string
 	err := verifier.WithBytes(func(v []byte) error {
@@ -337,17 +320,7 @@ func pkceChallenge(verifier *enclave.MemoryEnclave) (string, error) {
 	return challenge, nil
 }
 
-// validatePKCEVerifier checks a verifier against RFC 7636 §4.1: 43 to 128
-// characters drawn from the unreserved set ALPHA / DIGIT / "-" / "." / "_" / "~".
-//
-// The exchange depends on this check rather than on escaping. Every character
-// admitted here is left untouched by application/x-www-form-urlencoded encoding,
-// which is what lets the verifier be copied from its enclave straight into the
-// request body: escaping it would mean allocating an escaped copy on the heap,
-// and that copy is exactly what protecting the verifier is meant to prevent.
-// Anything outside the set is rejected, never escaped.
-//
-// The verifier is not named in the error — it is the secret being checked.
+// validatePKCEVerifier checks RFC 7636 §4.1 length and unreserved characters, so the verifier needs no escaping; the error never names it.
 func validatePKCEVerifier(v []byte) error {
 	if len(v) < pkceMinVerifierLen || len(v) > pkceMaxVerifierLen {
 		return fmt.Errorf("code verifier must be %d to %d characters, got %d",

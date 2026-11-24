@@ -47,11 +47,7 @@ const (
 	defaultSkew   = 1
 )
 
-// defaultAlgorithm is the digest an omitted Config.Algorithm resolves to
-// outside FIPS 140-only mode: HMAC-SHA-1, RFC 6238 §1.2's TOTP default and RFC
-// 4226 §5.1's HOTP digest, and what mainstream authenticator apps enroll with.
-// Under FIPS 140-only mode an omitted algorithm is refused instead; see
-// checkFIPSAlgorithmNamed.
+// defaultAlgorithm is HMAC-SHA-1 (RFC 6238 §1.2, RFC 4226 §5.1) outside FIPS 140-only mode, where an omitted algorithm is refused.
 const defaultAlgorithm = AlgorithmSHA1
 
 // Common errors returned by the OTP authenticator.
@@ -325,7 +321,6 @@ func (a *Authenticator) derive(counter uint64) (string, error) {
 }
 
 // authenticateTOTP validates a TOTP code at now against the borrowed seed.
-// Both the submitted code and the seed are read only inside their borrows.
 func (a *Authenticator) authenticateTOTP(code *enclave.MemoryEnclave, now time.Time) error {
 	var valid bool
 	err := code.WithBytes(func(submitted []byte) error {
@@ -344,8 +339,7 @@ func (a *Authenticator) authenticateTOTP(code *enclave.MemoryEnclave, now time.T
 	return nil
 }
 
-// authenticateHOTP validates an HOTP code at counter against the borrowed
-// seed, comparing in constant time.
+// authenticateHOTP validates an HOTP code at counter against the borrowed seed in constant time.
 func (a *Authenticator) authenticateHOTP(code *enclave.MemoryEnclave, counter uint64) error {
 	derived, err := a.derive(counter)
 	if err != nil {
@@ -398,8 +392,7 @@ func (a *Authenticator) ProvisioningURI() (string, error) {
 	return "otpauth://" + string(a.cfg.Type) + "/" + label + "?" + v.Encode(), nil
 }
 
-// provisioningCounter sets the type-specific Key URI parameter: the time step
-// for TOTP, the initial counter for HOTP.
+// provisioningCounter sets the period for TOTP or the initial counter for HOTP.
 var provisioningCounter = map[Type]func(Config, url.Values){
 	TypeTOTP: func(c Config, v url.Values) { v.Set("period", strconv.FormatUint(uint64(c.Period), 10)) },
 	TypeHOTP: func(c Config, v url.Values) { v.Set("counter", strconv.FormatUint(c.Counter, 10)) },

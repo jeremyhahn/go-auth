@@ -190,8 +190,7 @@ func targetedBackendExample(ctx context.Context) {
 	}
 	defer totpAuth.Close()
 
-	// Create service with both HOTP and TOTP as separate OTP backends
-	// Note: In practice, you'd use different backend names or custom naming
+	// Create a service with HOTP and TOTP as separate OTP backends.
 	service, err := api.NewService(api.Config{
 		Backends: []api.Backend{
 			{Name: "hotp", Handler: api.OTP(hotpAuth)},
@@ -261,13 +260,7 @@ func mustDecodeSeed(encoded string) *enclave.MemoryEnclave {
 	return seed
 }
 
-// sealCredential puts a credential into locked memory for a LoginRequest.
-// Service.Login takes ownership of the request's enclaves and destroys them
-// when the attempt completes, so each request gets fresh ones and nothing
-// here destroys them. A real application builds them with
-// enclave.NewMemoryEnclave over the bytes it read, which wipes that slice; the
-// generated codes in this example are strings only because Generate returns
-// one.
+// sealCredential puts a credential into locked memory for a LoginRequest; Service.Login destroys the request's enclaves.
 func sealCredential(value string) *enclave.MemoryEnclave {
 	e, err := enclave.NewMemoryEnclave([]byte(value))
 	if err != nil {

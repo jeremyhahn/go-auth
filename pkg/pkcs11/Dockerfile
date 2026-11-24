@@ -9,11 +9,7 @@ RUN apt-get update \
 WORKDIR /workspace
 
 COPY go.mod go.sum ./
-# go.mod requires the private github.com/jeremyhahn/go-enclave. Its credentials
-# arrive as the optional BuildKit secret `gomodauth`, staged by
-# scripts/docker-build-integration.sh (go-auth#42): mounted on tmpfs for this
-# RUN only and sourced, never exported into a layer, ARG or ENV. Absent, the
-# modules resolve from the public proxy.
+# Private module credentials arrive as the optional BuildKit secret gomodauth, mounted on tmpfs for this RUN only.
 RUN --mount=type=secret,id=gomodauth,required=false \
     set -eu; \
     if [ -s /run/secrets/gomodauth ]; then . /run/secrets/gomodauth; fi; \

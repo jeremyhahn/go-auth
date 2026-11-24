@@ -162,9 +162,7 @@ func (c radiusClient) exchange(ctx context.Context, packet *radiuslib.Packet, ad
 // Authenticator performs PAP-based authentication against an upstream RADIUS server.
 type Authenticator struct {
 	address string
-	// secret is the RADIUS shared secret in locked memory. The authenticator
-	// owns it, borrows it for the length of a single packet exchange, and
-	// destroys it in Close.
+	// secret is the shared secret in locked memory, owned by the authenticator and destroyed in Close.
 	secret *enclave.MemoryEnclave
 	client packetExchanger
 	eapTLS *EAPTLSConfig
@@ -201,10 +199,7 @@ func NewAuthenticator(address string, sharedSecret *enclave.MemoryEnclave, opts 
 }
 
 func newAuthenticator(address string, sharedSecret *enclave.MemoryEnclave, opts []Option) (*Authenticator, error) {
-	// Refuse to start under FIPS activation rather than panic on the first
-	// Access-Request, ahead of the argument checks: a FIPS-activated
-	// deployment must be told the backend is categorically unavailable, not
-	// that its arguments are wrong. See fips.go.
+	// Refuse under FIPS activation before the argument checks; see fips.go.
 	if fips140OnlyActive() {
 		return nil, ErrFIPSUnsupported
 	}
@@ -296,13 +291,7 @@ func (a *Authenticator) Authenticate(ctx context.Context, username string, passw
 		return err
 	}
 
-	// The packet keeps a reference to the shared secret rather than a copy of
-	// it: layeh.com/radius reads it back when the request is encoded and again
-	// when the response authenticator is checked. So the whole exchange runs
-	// inside the borrow, and only the response code — which carries nothing
-	// secret — is carried back out. Nothing that aliases the key may escape
-	// this callback: Close unmaps the pages, so a retained reference faults
-	// rather than reads stale bytes.
+	// The packet references the secret, so the whole exchange runs inside the borrow and only the response code leaves it.
 	var code radiuslib.Code
 	// Residue R2: layeh's MD5 state absorbs the shared secret on the heap.
 	err := a.secret.WithBytes(func(sharedSecret []byte) error {
@@ -396,12 +385,7 @@ func (t *tlsPacketExchanger) exchange(ctx context.Context, packet *radiuslib.Pac
 		return nil, err
 	}
 
-	// The retransmit goroutine stops on stopCtx; failures are judged against
-	// the caller's ctx. context closes a parent's Done channel before it
-	// cancels the children, so a peer reacting to the caller's cancellation can
-	// fail the Read while stopCtx still reads as live (go-auth#53). The
-	// caller's Err is set before its Done closes, so checking it is never
-	// behind the peer.
+	// Judge failures against the caller's ctx, which is canceled before the derived stopCtx.
 	stopCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 

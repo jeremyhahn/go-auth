@@ -2,11 +2,7 @@ package otp
 
 import (
 	"crypto/hmac"
-	// SHA-1 here is protocol-mandated, not a cipher choice: RFC 4226 §5.1
-	// defines HOTP as HMAC-SHA-1 and RFC 6238 §1.2 keeps it as the TOTP
-	// default, which is what every mainstream authenticator app enrolls with.
-	// It is used only for HMAC, never as a bare hash, and SHA-1 collisions do
-	// not carry over to HMAC-SHA1.
+	// SHA-1 is protocol-mandated here (RFC 4226 §5.1, RFC 6238 §1.2) and used only in HMAC.
 	"crypto/sha1" // #nosec G505 -- RFC 4226 §5.1 defines HOTP over HMAC-SHA-1
 	"crypto/sha256"
 	"crypto/sha512"
@@ -17,23 +13,7 @@ import (
 	"time"
 )
 
-// This file is the RFC 4226 / RFC 6238 core: HOTP and TOTP derived in-repo
-// from the seed's raw bytes.
-//
-// It takes the seed as a []byte borrowed from the enclave's WithBytes, so the
-// plaintext key is never anywhere but the enclave's locked pages: the
-// authenticator opens the enclave, derives a code, and the borrow ends before
-// the call returns. A dependency that took the seed as a string — as
-// github.com/pquerna/otp did — would have put a fresh decoded copy on the heap
-// per authentication; that is why this package derives codes itself.
-//
-// The one copy that remains is crypto/hmac's: New derives its ipad/opad blocks
-// from the key and holds them in the hash state until the collector reclaims
-// it. That is inside the Go Cryptographic Module and there is no API to wipe
-// it; re-implementing HMAC to avoid it would move the construction outside the
-// FIPS boundary, which is a worse trade than one short-lived derivative. The
-// hash state here is a local of deriveCode and is unreachable the moment it
-// returns.
+// RFC 4226 / RFC 6238 core: codes are derived from the seed borrowed inside WithBytes; crypto/hmac's ipad/opad state is the one unwipeable copy.
 
 // hashes maps each supported Algorithm to its digest constructor. It is also
 // the set of algorithms the package accepts.
@@ -52,19 +32,7 @@ var digitsModulus = map[uint]uint32{
 	8: 100_000_000,
 }
 
-// deriveCode implements the HOTP construction of RFC 4226 §5.3: HMAC the
-// counter as a 8-byte big-endian value under the shared seed, take the
-// dynamic-truncation offset from the low nibble of the last byte of the MAC,
-// read a 31-bit integer from there, and render it modulo 10^digits.
-//
-// key is borrowed for the duration of the call and is neither retained nor
-// copied.
-//
-// The FIPS check runs here as well as in NewAuthenticator. Construction is
-// where a refused configuration is reported, but this is the only place HMAC
-// is keyed, so the guard sits beside it: no path that reaches crypto/hmac —
-// including one added later that forgets to validate — can reach the panic
-// fips140=only raises for SHA-1 or a short key.
+// deriveCode implements RFC 4226 §5.3 dynamic truncation over a borrowed key, re-checking FIPS before HMAC is keyed.
 func deriveCode(key []byte, counter uint64, digits uint, algo Algorithm) (string, error) {
 	if len(key) == 0 {
 		return "", fmt.Errorf("%w: seed must not be empty", ErrInvalidConfig)
@@ -103,11 +71,7 @@ func deriveCode(key []byte, counter uint64, digits uint, algo Algorithm) (string
 	return fmt.Sprintf("%0*d", digits, truncated%modulus), nil
 }
 
-// codesMatch compares a submitted code against a derived one in constant time.
-// Lengths are compared first because ConstantTimeCompare returns 0 for a
-// length mismatch without looking at the contents, which would leak nothing
-// but is worth being explicit about.
-// The submitted code is borrowed from its enclave.
+// codesMatch compares a borrowed submitted code with a derived one in constant time.
 func codesMatch(derived string, submitted []byte) bool {
 	if len(derived) != len(submitted) {
 		return false
@@ -115,8 +79,7 @@ func codesMatch(derived string, submitted []byte) bool {
 	return subtle.ConstantTimeCompare([]byte(derived), submitted) == 1
 }
 
-// totpCounter converts a time to the TOTP time-step counter of RFC 6238 §4.2,
-// with T0 = 0.
+// totpCounter converts a time to the RFC 6238 §4.2 time-step counter with T0 = 0.
 func totpCounter(t time.Time, period uint) uint64 {
 	if period == 0 {
 		period = 30
@@ -131,29 +94,10 @@ func totpCounter(t time.Time, period uint) uint64 {
 	return uint64(seconds) / uint64(period)
 }
 
-// maxSkew bounds the TOTP validation window, in time steps either side of the
-// current one.
-//
-// RFC 6238 §5.2 asks for the smallest window a deployment can tolerate, and
-// names one step as what it expects; this package defaults to one. The limit
-// exists for two reasons. A large window is a security choice made by
-// accident: at the default 30-second step, ten steps already accept a code
-// five minutes old, and a code that stays valid is a code that can be replayed
-// or phished and used. And the window is also work — every step is an HMAC
-// over the key — so an unbounded Skew turns a configuration mistake into an
-// authentication call that occupies its goroutine indefinitely.
-//
-// Clock drift measured in minutes is a clock problem: run NTP rather than
-// widen this.
+// maxSkew bounds the TOTP window in steps either side of now; a wide window extends replay and costs an HMAC per step.
 const maxSkew = 10
 
-// validateTOTP checks code against every time step within skew of t, as
-// RFC 6238 §5.2 permits for network and clock drift.
-//
-// Every candidate is evaluated: the loop does not stop at the first match, so
-// the work done is the same whether the code was right, wrong, or right at the
-// edge of the window. That keeps the response time from reporting which step
-// matched, which is a small amount of information about the client's clock.
+// validateTOTP checks every step within skew of t (RFC 6238 §5.2) without stopping early, so timing does not reveal the matching step.
 func validateTOTP(key, code []byte, t time.Time, period, skew, digits uint, algo Algorithm) (bool, error) {
 	// Config.validate rejects anything above maxSkew, so this clamp is for the
 	// callers that do not go through it — and so that no arithmetic below

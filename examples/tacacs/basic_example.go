@@ -39,9 +39,7 @@ func main() {
 func basicExample() {
 	fmt.Println("--- Example 1: Basic TACACS+ Authentication ---")
 
-	// Create TACACS+ authenticator
-	// The address must include both host and port (typically 49 for TACACS+)
-	// The shared secret is used to encrypt communication with the server
+	// Address is host:port (usually 49); the shared secret encrypts the session.
 	sharedSecret, err := enclave.NewMemoryEnclave([]byte("shared-secret"))
 	if err != nil {
 		log.Fatalf("Failed to seal the shared secret: %v", err)
@@ -98,9 +96,7 @@ func basicExample() {
 func privilegeLevelExample() {
 	fmt.Println("--- Example 2: TACACS+ with Privilege Level ---")
 
-	// Create TACACS+ authenticator with custom privilege level
-	// Privilege levels typically range from 0 (least privileged) to 15 (most privileged)
-	// Common levels: 1 (normal user), 15 (admin/enable)
+	// Privilege levels run from 0 to 15; 1 is a normal user, 15 is admin.
 	sharedSecret, err := enclave.NewMemoryEnclave([]byte("shared-secret"))
 	if err != nil {
 		log.Fatalf("Failed to seal the shared secret: %v", err)

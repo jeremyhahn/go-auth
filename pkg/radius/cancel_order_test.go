@@ -1,18 +1,6 @@
 package radius
 
-// Regression test for go-auth#53: TestTLSPacketExchangerContextCancel failed
-// on main under -race with "expected context canceled, got EOF".
-//
-// context cancels a parent by closing the parent's Done channel BEFORE it
-// propagates to the children. exchange derives its own context from the
-// caller's, so a peer that reacts to the caller's cancellation and closes the
-// connection could make Read fail while the derived context still read as
-// live, and the caller was told EOF instead of context.Canceled.
-//
-// That losing order is reproduced deterministically here rather than left to
-// the scheduler: context.WithCancel hands a parent that implements AfterFunc
-// the child's cancel function, and withheldCancelCtx simply does not call it
-// until the exchange has returned.
+// Reproduces the parent-before-child cancellation order deterministically: withheldCancelCtx delays the child's cancel until exchange returns.
 
 import (
 	"context"

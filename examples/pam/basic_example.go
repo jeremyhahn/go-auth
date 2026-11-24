@@ -28,10 +28,7 @@ func main() {
 	fmt.Println("==> PAM Authentication Example")
 	fmt.Println()
 
-	// Create PAM authenticator for the "login" service
-	// Common PAM service names: "login", "passwd", "sshd", "sudo"
-	// The service name determines which PAM configuration file is used
-	// (typically in /etc/pam.d/)
+	// PAM authenticator for the "login" service; the name selects the /etc/pam.d/ file.
 	auth, err := pam.NewAuthenticator("login", nil)
 	if err != nil {
 		log.Fatalf("Failed to create PAM authenticator: %v", err)

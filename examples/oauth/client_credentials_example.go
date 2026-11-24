@@ -41,12 +41,7 @@ func main() {
 func keycloakExample() {
 	fmt.Println("--- Example 1: Keycloak Client Credentials ---")
 
-	// Configure OAuth for Keycloak client credentials flow
-	// This is used for service-to-service authentication
-	// No user interaction is required
-	// The client secret lives in locked memory. NewMemoryEnclave wipes the
-	// slice it is given, and the Authenticator owns the enclave from here on:
-	// Close destroys it.
+	// Keycloak client credentials; the secret lives in an enclave the Authenticator owns and Close destroys.
 	clientSecret, err := enclave.NewMemoryEnclave([]byte("your-client-secret"))
 	if err != nil {
 		log.Fatalf("Failed to seal client secret: %v", err)

@@ -45,22 +45,7 @@ var (
 // Authenticator provides TACACS+ username/password authentication.
 type Authenticator struct {
 	addr string
-	// secret is the TACACS+ shared secret in locked memory. The authenticator
-	// owns it, lends it to tacplus for the length of one Authenticate, and
-	// destroys it in Close.
-	//
-	// Lending the locked pages directly, rather than a copy, is safe because
-	// of where tacplus v0.0.3 reads the key. ConnConfig.Secret is used only by
-	// crypt, which runs in session.readPacket and session.writePacket — and
-	// those run on the goroutine that called SendAuthenStart or Continue, so
-	// every read is over before Authenticate returns. The connection's own
-	// goroutines (serve, readLoop, writeLoop) move ciphertext and never call
-	// crypt. The one handler serve spawns on a client connection, for a packet
-	// that belongs to no session, fails its sequence-number checks before
-	// crypt can run: a new session expects seq 1, and a client rejects odd
-	// sequence numbers. So nothing reads the slice after the borrow ends, and
-	// Close can unmap it. A tacplus upgrade must re-check this; see residue R3
-	// in docs/security/credential-residues.md.
+	// secret is lent to tacplus only for one Authenticate, whose crypt runs on the calling goroutine; re-check on a tacplus upgrade (residue R3).
 	secret      *enclave.MemoryEnclave
 	privLevel   uint8
 	timeout     time.Duration
@@ -178,12 +163,7 @@ func (a *Authenticator) Authenticate(ctx context.Context, username string, passw
 		return err
 	}
 
-	// The secret keys the obfuscation of every packet body in the session
-	// (RFC 8907 §4.5). tacplus reads it only on this goroutine, inside
-	// SendAuthenStart and Continue (see the secret field), so the borrow
-	// covers every read and Close cannot unmap the pages under one.
-	//
-	// Residue R3: tacplus copies the key into a heap buffer for each packet.
+	// The secret keys body obfuscation (RFC 8907 §4.5); the borrow covers every read. Residue R3: tacplus copies it per packet.
 	return a.secret.WithBytes(func(sessionSecret []byte) error {
 		client := &tacplus.Client{
 			Addr: a.addr,

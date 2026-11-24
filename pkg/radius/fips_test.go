@@ -12,10 +12,7 @@ import (
 // TestFIPSActivationRefusesRADIUS.
 const subprocessEnvKey = "GO_AUTH_RADIUS_FIPS_CHILD"
 
-// skipUnderFIPSActivation skips a test that drives the MD5 or HMAC-MD5 every
-// RADIUS packet carries, which a FIPS-activated process refuses to execute.
-// Under that activation the backend's whole contract is the refusal, which the
-// tests in this file assert.
+// skipUnderFIPSActivation skips a test that needs MD5 when FIPS 140-only mode is active.
 func skipUnderFIPSActivation(t *testing.T) {
 	t.Helper()
 	if fips140OnlyActive() {
@@ -24,10 +21,7 @@ func skipUnderFIPSActivation(t *testing.T) {
 	}
 }
 
-// TestHMACMD5IsAvailableInAnOrdinaryProcess is the false-positive guard. The
-// probe decides whether the whole backend is usable, so a probe that reported
-// "unavailable" here would disable RADIUS in every non-FIPS deployment and no
-// other test would notice — every one of them would just see a refusal.
+// TestHMACMD5IsAvailableInAnOrdinaryProcess guards against the probe disabling RADIUS outside FIPS mode.
 func TestHMACMD5IsAvailableInAnOrdinaryProcess(t *testing.T) {
 	if os.Getenv("GODEBUG") != "" {
 		t.Skipf("GODEBUG is set to %q; this test needs an unrestricted runtime", os.Getenv("GODEBUG"))
@@ -91,14 +85,7 @@ func TestNewAuthenticatorRefusesWhenFIPSIsActive(t *testing.T) {
 	})
 }
 
-// TestFIPSActivationRefusesRADIUS is the end-to-end proof: it re-executes this
-// test binary with GODEBUG=fips140=only, which is exactly how a deployment
-// activates FIPS under boundary ruling 1, and asserts the real probe reports
-// the runtime's refusal and the constructor fails closed.
-//
-// The substitution test above can only show the branch is wired up. This one
-// shows the condition is detected, which is the part that depends on runtime
-// behavior no unit test can assert from inside an unrestricted process.
+// TestFIPSActivationRefusesRADIUS re-executes the test binary under GODEBUG=fips140=only and asserts the constructor fails closed.
 func TestFIPSActivationRefusesRADIUS(t *testing.T) {
 	if os.Getenv(subprocessEnvKey) == "1" {
 		fipsActivatedChild(t)
@@ -151,9 +138,7 @@ func fipsActivatedChild(t *testing.T) {
 	}
 }
 
-// envWithout returns env with every assignment of the named keys removed, so
-// the child inherits the parent's environment except for what the test sets
-// itself. A duplicate GODEBUG would leave which value wins up to the runtime.
+// envWithout returns env without any assignment of the named keys.
 func envWithout(env []string, keys ...string) []string {
 	out := make([]string, 0, len(env))
 	for _, kv := range env {

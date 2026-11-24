@@ -1,31 +1,10 @@
-# Integration suites — the external auth backends against real daemons.
-#
-# Separate from ci.yml on purpose (devops.md §5): these build nine container
-# images and stand up freeradius, an LDAP server, PAM, SoftHSM, a TPM simulator
-# and ory hydra, which is minutes of work rather than seconds, and one suite has
-# a known upstream defect (below). §5's shape for exactly this case is a
-# scheduled workflow with workflow_dispatch and a paths filter, so the per-push
-# gate stays fast and honest while the suites still run.
-#
-# Why not a job inside ci.yml: Gitea does not honour job-level
-# continue-on-error for the overall run conclusion, so an advisory job there
-# turns the whole run red and there is no way to say "ran, informational".
-# Observed on run 367, 2026-08-14.
-#
-# These suites ran dark until 2026-08-14. Their first execution caught a real
-# EAP-TLS interop defect that the unit suite could not see, because the unit
-# fake shared the client's own misreading of RFC 2869 §5.14.
-#
-# There is no expected-red leg. The LDAP suite's fixture is an in-process stub
-# server (test/integration/ldap/stub_server_test.go) that replaced the
-# unmaintained github.com/vjeantet/ldapserver and its shutdown race (#15); a red
-# run here means read the job log.
+# Integration suites for the external auth backends against real daemons; scheduled and on demand, kept out of the per-push gate because they take minutes.
 name: Integration
 
 on:
   schedule:
     - cron: '0 6 * * *'
-  # Gitea has no API to re-run a finished run (ci-template v1.3).
+  # A finished run cannot be re-run through the API.
   workflow_dispatch:
   push:
     branches: [main, develop]

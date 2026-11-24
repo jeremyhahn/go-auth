@@ -1,37 +1,6 @@
 package ci_test
 
-// The credential-residue gate (go-auth#48, owner ruling on go-auth#3 §10.6).
-//
-// Every credential in this module lives in a go-enclave *enclave.MemoryEnclave,
-// and plaintext leaves locked memory only where a call opens it. This test
-// enumerates those calls in the module's non-test code under pkg/ and compares
-// them, as a multiset of path:function sites, with the reviewed list in
-// testdata/credential-residues.allow. A new site — or a removed one — fails
-// with a diff, so the set of places plaintext can escape stays finite and
-// cannot grow without a reviewer editing the list, and the list cannot
-// silently keep a site that no longer exists.
-//
-// What counts as a site:
-//
-//   - x.WithBytes(fn) with exactly one argument. That is go-enclave's one
-//     plaintext-exposing method and its arity (Open and OpenString are gone
-//     since v0.8.0-alpha). Matching on name and arity rather than on the
-//     receiver's type keeps this test free of a type-checker (pkg/pam and
-//     pkg/pkcs11 have cgo files that cannot be type-checked without libpam
-//     and the pkcs11 tag).
-//   - credential.WithTransientString(e, fn), the internal helper that lends a
-//     credential to a string-only dependency. Its own WithBytes call is a site
-//     too; the calls to it are counted separately because each is a distinct
-//     residue.
-//
-// Every file is parsed regardless of build constraints, so the cgo-only sites
-// are gated on a host that cannot compile them.
-//
-// Each allowlist line is "path:function ID", where ID is a residue ID from
-// docs/security/credential-residues.md (R1, R2, ...) or "internal" for a
-// borrow whose plaintext stays inside locked memory or the process's own
-// crypto (an HMAC key, a constant-time compare). Every residue ID used must
-// have a row in the register.
+// The credential-residue gate: every WithBytes and WithTransientString site under pkg/ must match testdata/credential-residues.allow, with residue IDs from docs/security/credential-residues.md.
 
 import (
 	"bufio"

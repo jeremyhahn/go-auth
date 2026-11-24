@@ -30,11 +30,7 @@ func TestHMACSHA1IsAvailableInAnOrdinaryProcess(t *testing.T) {
 	}
 }
 
-// TestFIPSActivation re-executes this test binary under GODEBUG=fips140=only —
-// how a deployment activates FIPS under boundary ruling 1 — so the real probe
-// and the real runtime refusal are exercised in every ordinary test run, not
-// only in the FIPS CI job. In the FIPS job itself the parent is already
-// activated and runs the child's assertions directly.
+// TestFIPSActivation re-executes the test binary under GODEBUG=fips140=only to exercise the real probe and refusal.
 func TestFIPSActivation(t *testing.T) {
 	if os.Getenv(subprocessEnvKey) == "1" || fips140OnlyActive() {
 		fipsActivatedChecks(t)
@@ -55,9 +51,7 @@ func TestFIPSActivation(t *testing.T) {
 	}
 }
 
-// fipsActivatedChecks runs inside a process under GODEBUG=fips140=only, with
-// the real probe. Reaching the end at all is part of the proof: every call
-// below that keys HMAC with SHA-1 or a short key would otherwise panic.
+// fipsActivatedChecks runs under GODEBUG=fips140=only; reaching the end proves no call panicked.
 func fipsActivatedChecks(t *testing.T) {
 	if !hmacSHA1Unavailable() {
 		t.Fatal("hmacSHA1Unavailable() = false under GODEBUG=fips140=only; the runtime accepted HMAC-SHA-1")
@@ -80,12 +74,7 @@ func TestSHA1RefusedUnderFIPS(t *testing.T) {
 	assertSHA1Refused(t)
 }
 
-// assertSHA1Refused proves an explicit SHA-1 fails closed at construction.
-//
-// Under fips140=only, crypto/hmac panics on SHA-1 rather than returning an
-// error. If the configuration were accepted, that panic would sit behind
-// Generate, Authenticate and ValidateCounter — attacker-reachable traffic —
-// and crash the process instead of failing a login.
+// assertSHA1Refused proves explicit SHA-1 fails closed at construction instead of panicking later.
 func assertSHA1Refused(t *testing.T) {
 	t.Helper()
 	for _, otpType := range []Type{TypeTOTP, TypeHOTP} {
@@ -197,12 +186,7 @@ var fipsKeyFloorCases = []struct {
 	{"160 bits, what GenerateProtectedSecret emits", 20, true},
 }
 
-// TestShortSeedRefusedUnderFIPS proves a seed too short to key HMAC fails
-// closed at construction — the same failure shape as SHA-1: a panic, not an
-// error, from crypto/hmac. Applications holding seeds enrolled from the widely
-// copied 80-bit example are exactly the ones affected, and they need to see it
-// at startup, not at a login. 112 bits exactly must be accepted: a check that
-// refused it would be quietly over-strict.
+// TestShortSeedRefusedUnderFIPS proves a sub-112-bit seed fails at construction and exactly 112 bits is accepted.
 func TestShortSeedRefusedUnderFIPS(t *testing.T) {
 	forceFIPSActive(t)
 	assertSeedFloor(t)

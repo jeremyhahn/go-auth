@@ -1,16 +1,6 @@
 package ci_test
 
-// Regression tests for go-auth#42: every integration image build failed at
-// `RUN go mod download` because go.mod requires the private
-// github.com/jeremyhahn/go-enclave and `docker build` inherits none of the CI
-// job's private-module configuration (dependency-resolution.md §6).
-//
-// The fix hands GOPRIVATE and the GIT_CONFIG_* rewrite to the build as an
-// optional BuildKit secret, staged by scripts/docker-build-integration.sh.
-// These tests pin both halves: the Dockerfiles mount the secret, the Makefiles
-// build through the script, and the script stages the credentials outside the
-// build context, keeps them off the command line, and removes them on every
-// exit path.
+// These tests pin the private-module BuildKit secret: Dockerfiles mount it, Makefiles build through the script, and the script keeps the credentials out of the context and argv.
 
 import (
 	"errors"
@@ -100,8 +90,7 @@ func runBuildScript(t *testing.T, dockerExit int, env ...string) scriptRun {
 	return runBuildScriptIn(t, t.TempDir(), "", dockerExit, env...)
 }
 
-// runBuildScriptIn runs the script with its build context at dir/context and
-// TMPDIR at tmpdir (dir when empty).
+// runBuildScriptIn runs the script with its build context at dir/context and TMPDIR at tmpdir (dir when empty).
 func runBuildScriptIn(t *testing.T, dir, tmpdir string, dockerExit int, env ...string) scriptRun {
 	t.Helper()
 	if tmpdir == "" {
@@ -283,9 +272,7 @@ func TestDockerBuildIntegration_QuotesValuesSafely(t *testing.T) {
 	}
 }
 
-// A TMPDIR inside the build context would put the staged credentials where
-// `COPY . .` bakes them into a layer, and deleting the file afterwards cannot
-// remove it from the image. The script must refuse before writing anything.
+// A TMPDIR inside the build context must be refused before anything is written.
 func TestDockerBuildIntegration_RefusesStagingInsideContext(t *testing.T) {
 	dir := t.TempDir()
 	nested := filepath.Join(dir, "context", "tmp")

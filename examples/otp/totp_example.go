@@ -20,9 +20,7 @@ func main() {
 		log.Fatalf("Failed to generate seed: %v", err)
 	}
 
-	// Example 2: Setup TOTP authenticator. NewAuthenticator takes ownership
-	// of the seed — on success Close destroys it, on failure it is destroyed
-	// before NewAuthenticator returns — so there is no seed.Destroy here.
+	// Set up the TOTP authenticator; it owns the seed in every outcome, so there is no seed.Destroy here.
 	auth, err := otp.NewAuthenticator(otp.Config{
 		Type:        otp.TypeTOTP,
 		Seed:        seed,

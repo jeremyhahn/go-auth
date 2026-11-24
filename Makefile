@@ -14,11 +14,7 @@ MODULE_DIR_tpm2 := pkg/tpm2
 .PHONY: all
 all: test
 
-# pkg/pam splits its default SessionOpener across a //go:build cgo file that
-# needs libpam headers. Everything below builds with CGO_ENABLED=0 so the
-# module compiles, tests, lints and scans on a machine that does not have
-# libpam0g-dev installed. CI's unit-test job is the one exception: the race
-# detector requires cgo, so that job installs libpam0g-dev and drops the flag.
+# CGO_ENABLED=0 so the module builds without libpam headers; CI's race-detector job installs libpam0g-dev and drops it.
 export CGO_ENABLED = 0
 
 .PHONY: fmt
@@ -82,34 +78,9 @@ test: lint $(MODULES:%=%-test)
 test-race:
 	CGO_ENABLED=1 $(GO) test -race -count=1 ./...
 
-# ---- devops.md §8: the mandatory security-analysis suite ----
-#
-# `make security` is the contract (devops.md §4): CI runs this same target, so
-# a finding here is the finding that blocks a merge. The suite is gosec,
-# govulncheck, `go mod verify` and `trivy fs`, all blocking.
-#
-# gosec deliberately runs with NO -exclude rules. The two weak-primitive
-# findings this repository carries are protocol constraints, not cipher
-# choices, and each is annotated at the import that causes it with the RFC
-# that mandates it:
-#   G501 crypto/md5  — pkg/radius: the RADIUS Message-Authenticator attribute
-#                      is defined as HMAC-MD5 (RFC 2869 §5.14, RFC 3579 §3.2).
-#   G505 crypto/sha1 — pkg/yubikey: the Yubico Validation Protocol 2.0 signs
-#                      every request and response with HMAC-SHA1.
-# Both are HMAC constructions, never bare hashes. A blanket -exclude would hide
-# the next crypto/md5 import somewhere it is not justified; a line annotation
-# cannot. -exclude-dir=examples drops the //go:build ignore documentation
-# snippets, which are not part of the module build.
-#
-# The tools are not installed by these targets — devops.md §4 forbids a make
-# target mutating the developer's machine. A missing gosec or govulncheck
-# prints how to get it and the target skips; a missing trivy fails trivy-fs. CI does not install them either: it uses the copies
-# baked into the ci-runner image and runs verify-security-tools first, which
-# fails when one is absent, so a skip cannot turn the gate green (go-auth#26).
+# make security: gosec (no -exclude; md5/sha1 uses are annotated with their RFC), govulncheck, go mod verify and trivy fs, all blocking. Tools are not installed here.
 
-# CI passes GOSEC_EXTRA="-fmt=sarif -out=gosec.sarif" so the SARIF it uploads
-# to code scanning comes from the same flags a developer runs, not a second
-# set that can drift (devops.md §4).
+# CI passes GOSEC_EXTRA for SARIF output so it runs the same flags as a developer.
 GOSEC_EXTRA ?=
 
 .PHONY: gosec
@@ -151,15 +122,7 @@ trivy-fs:
 .PHONY: security
 security: gosec govulncheck mod-verify trivy-fs
 
-# ---- CI tool verification (go-auth#26) ----
-#
-# The golangci-lint this gate is judged by. It moves in the SAME change as the
-# go directive, never ahead of or behind it: v2.12.2 cannot lint Go 1.27, and
-# v2.13.x was measured to panic on Go 1.26 (nilness "unhandled builtin
-# recover"). Documented pin (devops.md §9, the "pin specifically documented,
-# in place, with the reason" clause). It must equal the version baked into the
-# ci-runner image; verify-lint-tool fails on any other version rather than
-# installing over it. test/ci checks this pin against go.mod.
+# golangci-lint pin: moves with the go directive and must equal the ci-runner image version; test/ci checks it against go.mod.
 GOLANGCI_LINT_VERSION := 2.14.0
 
 .PHONY: print-golangci-lint-version
@@ -260,33 +223,12 @@ tpm2-test:
 tpm2-integration-test:
 	$(MAKE) -C $(MODULE_DIR_tpm2) integration-test
 
-# Builds never resolve through a workspace: modules come from Gitea tags
-# (dependency-resolution.md §2). Immunizes against stray go.work files.
+# Builds never resolve through a workspace.
 export GOWORK=off
 
-# ---- dependency-resolution.md targets (2026-08-13 cutover) ----
-# deps-latest runs before compiling in a consumer repo. It picks the highest
-# tag INCLUDING -alpha prereleases — bare 'go get @latest' ignores
-# prereleases and would downgrade to legacy v0.0.0.
+# deps-latest picks the highest tag including -alpha prereleases, which go get @latest ignores.
 
-# ---- release-alpha: handbook template v2.3.9 (go-auth#22) ----
-# mk/release-alpha.mk is software/templates/make/release-alpha.mk from the
-# handbook, vendored UNMODIFIED with its regression harness
-# (mk/testdata/release-alpha-tests.sh); read its header before changing
-# anything here. Cut a release with an explicit version — the recipe refuses
-# to guess patch/minor/major (release-versioning.md):
-#   make release-alpha VERSION=vX.Y.Z-alpha
-# It first runs release-changelog (below), which folds changelog.d/ into
-# CHANGELOG.md and commits that, so the template's CHANGELOG guard finds the
-# section and the tag carries it.
-# Every git write goes through agent-git.sh (identity + signing as
-# agent-go-auth), the tag is annotated, and only that tag and the release
-# commit are pushed. go-auth is a single module, so there are no nested-module
-# lockstep tags. AGENT_GIT resolves from PATH — never bake an absolute path
-# (template v2.3.6); an unresolved value fails before VERSION is written.
-# It must be SIMPLY expanded: the template reads $(value AGENT_GIT), which
-# for a recursive `?=` is the unexpanded $(shell ...) text, not a path. A
-# bare `agent-git.sh` would not do either — `test -x` does not search PATH.
+# release-alpha: mk/release-alpha.mk is the unmodified handbook template; run make release-alpha VERSION=vX.Y.Z-alpha. AGENT_GIT must be simply expanded.
 ifeq ($(origin AGENT_GIT),undefined)
 AGENT_GIT := $(shell command -v agent-git.sh 2>/dev/null)
 endif
@@ -294,27 +236,7 @@ REPO_NAME ?= go-auth
 RELEASE_REMOTE ?= origin
 include mk/release-alpha.mk
 
-# ---- release-changelog: fold changelog.d/ into CHANGELOG.md (go-auth#22) ----
-# release-versioning.md §5: a PR adds changelog.d/<issue>-<slug>.md and never
-# edits CHANGELOG.md; the release step assembles the fragments into the new
-# version's section, deletes them, and COMMITS that before tagging. This target
-# is a prerequisite of release-alpha, so the tagged commit always carries the
-# assembled section. It adds no prerequisite to the template itself, which
-# stays unmodified.
-#
-# It takes its inputs the same way the template does — `override export` of
-# $(value ...) with the public and internal names unexported — so it opens no
-# command-line injection path the template closed (see the template's v2.3.3,
-# v2.3.7 and v2.3.8 notes); the body references only $$REL_* shell
-# parameters. Every guard that can refuse the release without touching the
-# network or the tree runs here too, and the remote duplicate-tag check with
-# the same exit-code reading, so a release the template would refuse leaves no
-# local assembly commit behind. The remaining gap is the template's own: a
-# push that fails after the commit.
-#
-# With no fragments and an empty Unreleased section, or with the version's
-# section already present (a re-run), it changes and commits nothing, and the
-# template's CHANGELOG guard decides.
+# release-changelog folds changelog.d/ into CHANGELOG.md and commits it before release-alpha tags; it applies the template's guards and is a no-op when there is nothing to fold.
 .PHONY: release-changelog
 release-alpha: release-changelog
 release-changelog: override export REL_VERSION   := $(value VERSION)

@@ -50,11 +50,7 @@ func (defaultSessionOpener) Open(ctx context.Context, service, username string) 
 type pamSession struct {
 	txn *pam.Transaction
 	mu  sync.Mutex
-	// response is the reply to a password prompt, set only while
-	// Authenticate is running. It is a string because msteinert/pam's
-	// conversation callback must return one, but it is not an ordinary
-	// string: credential.WithTransientString backs it with a heap buffer that
-	// is wiped as soon as the PAM calls return. Residue R6.
+	// response is the password-prompt reply, a wiped transient string set only during Authenticate (residue R6).
 	response string
 }
 
@@ -76,11 +72,7 @@ var conversationStyles = map[pam.Style]func(s *pamSession, msg string) (string, 
 	pam.TextInfo: func(*pamSession, string) (string, error) { return "", nil },
 }
 
-// conversation is msteinert/pam's callback. The string it returns is copied
-// straight into C memory with C.CString and handed to the PAM module, which
-// owns and frees that copy (Linux-PAM's pam_get_authtok overwrites it before
-// freeing; other modules may not). go-auth cannot reach the C copy: it is the
-// part of residue R6 that belongs to the binding and the module.
+// conversation is msteinert/pam's callback; the C.CString copy belongs to the PAM module (residue R6).
 func (s *pamSession) conversation(style pam.Style, msg string) (string, error) {
 	respond, ok := conversationStyles[style]
 	if !ok {
@@ -119,10 +111,7 @@ func (s *pamSession) setResponse(reply string) {
 	s.mu.Unlock()
 }
 
-// clearResponse drops the session's reference to the reply. The bytes
-// themselves are wiped by credential.WithTransientString, which this runs
-// inside of; dropping the reference keeps a later prompt from seeing zeros
-// instead of being refused.
+// clearResponse drops the session's reference to the reply; WithTransientString wipes the bytes.
 func (s *pamSession) clearResponse() {
 	s.mu.Lock()
 	s.response = ""

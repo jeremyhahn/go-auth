@@ -593,9 +593,7 @@ func TestAlgorithms(t *testing.T) {
 	}
 }
 
-// TestHOTPRoundTripHonoursConfig is the regression test for HOTP validation
-// ignoring the configured algorithm and digit count: every combination must
-// validate the codes it generates, through both validation entry points.
+// TestHOTPRoundTripHonoursConfig checks every algorithm and digit count validates its own codes through both entry points.
 func TestHOTPRoundTripHonoursConfig(t *testing.T) {
 	const counter = 7
 
@@ -661,10 +659,7 @@ func TestDefaults(t *testing.T) {
 	}
 }
 
-// TestTOTPSkewThroughAuthenticator drives the skew window through the public
-// path, deriving neighboring time steps with an HOTP authenticator over the
-// same seed — RFC 6238 §4 defines TOTP as HOTP over the time step, so this
-// needs no clock control.
+// TestTOTPSkewThroughAuthenticator derives neighbouring time steps with HOTP over the same seed (RFC 6238 §4).
 func TestTOTPSkewThroughAuthenticator(t *testing.T) {
 	const period = 30
 	totp, err := NewAuthenticator(Config{Type: TypeTOTP, Seed: testSeed(t), Algorithm: testAlgorithm(), Period: period, Skew: 2, Digits: 8})

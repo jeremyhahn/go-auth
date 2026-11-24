@@ -37,15 +37,7 @@ func TestAuthenticateEAPTLSSuccess(t *testing.T) {
 	srv.assertHandshakeComplete()
 }
 
-// TestAuthenticateEAPTLSRequiresAccessAccept is the regression test for the
-// authorization gap fixed alongside it: the client used to report success as
-// soon as its own TLS handshake completed with nothing left to send, which
-// authenticated the user without the RADIUS server ever having made — or
-// been asked for — an authorization decision. A server that completes the
-// handshake and then withholds its verdict must authenticate nobody.
-//
-// The conversation is bounded by maxEAPTLSRoundTrips rather than by a clock,
-// so this test carries no timing assumption.
+// TestAuthenticateEAPTLSRequiresAccessAccept checks a server that completes the handshake but withholds its verdict authenticates nobody.
 func TestAuthenticateEAPTLSRequiresAccessAccept(t *testing.T) {
 	skipUnderFIPSActivation(t)
 	secret := []byte("sharedsecret")
@@ -105,12 +97,7 @@ func TestAuthenticateEAPTLSRejectsBadFinalPacket(t *testing.T) {
 	}
 }
 
-// TestAuthenticateEAPTLSDiscardsForgedReject pins the specific hazard in an
-// unverified Access-Reject: it must not reach the caller as ErrRejected.
-// ErrRejected is the server's authoritative denial, and an off-path peer that
-// cannot compute the Message-Authenticator must not be able to produce one.
-// RFC 3579 §3.2 has the packet discarded, so the conversation carries on and
-// ends on the round-trip bound instead.
+// TestAuthenticateEAPTLSDiscardsForgedReject checks an unverified Access-Reject is discarded (RFC 3579 §3.2), never ErrRejected.
 func TestAuthenticateEAPTLSDiscardsForgedReject(t *testing.T) {
 	skipUnderFIPSActivation(t)
 	secret := []byte("sharedsecret")
@@ -238,14 +225,7 @@ type fakeEAPTLSServer struct {
 	serverConn *tls.Conn
 	pipe       net.Conn
 
-	// serverOut carries every byte the TLS server writes. A dedicated pump
-	// goroutine drains the pipe into it so the server's handshake never
-	// blocks on a write nobody is reading. Reading the pipe on demand under
-	// a short deadline instead — which is what this harness used to do —
-	// makes progress depend on the server's crypto finishing inside a fixed
-	// wall-clock window; on a loaded CI runner it does not, the server stays
-	// blocked mid-write forever, and the conversation degenerates into an
-	// endless exchange of content-free EAP-TLS acknowledgements.
+	// serverOut collects every byte the TLS server writes, drained by a pump so the handshake never blocks on a write.
 	serverOut chan []byte
 
 	closed    chan struct{}
@@ -272,19 +252,12 @@ type fakeEAPTLSServer struct {
 	// conversation.
 	forgeChallenges bool
 
-	// The last answer sent, replayed when the client retransmits — the RADIUS
-	// server's duplicate-detection cache.
+	// The last answer sent, replayed on retransmit like a server's duplicate cache.
 	lastHandledIdentifier uint8
 	lastResponse          *radiuslib.Packet
 	haveLastResponse      bool
 
-	// reqAuthenticator is the Authenticator of the request being answered.
-	// RFC 2869 §5.14 defines a response's Message-Authenticator over it rather
-	// than over the response's own Authenticator, so every reply this server
-	// signs must use it. Deriving the fake from the RFC rather than from the
-	// client is the point: signing responses the way the client used to verify
-	// them made the unit suite agree with itself while every conforming server
-	// was rejected on the wire.
+	// reqAuthenticator is the Authenticator of the request being answered; replies are signed over it per RFC 2869 §5.14.
 	reqAuthenticator [16]byte
 
 	// lastSignSecret is the key lastResponse was signed under, so a replay can
@@ -292,8 +265,7 @@ type fakeEAPTLSServer struct {
 	lastSignSecret []byte
 }
 
-// signResponse applies the Message-Authenticator a conforming RADIUS server
-// would, over the Authenticator of the request being answered.
+// signResponse applies a conforming server's Message-Authenticator over the request's Authenticator.
 func (s *fakeEAPTLSServer) signResponse(pkt *radiuslib.Packet, secret []byte) {
 	s.t.Helper()
 	s.lastSignSecret = secret
@@ -326,8 +298,7 @@ const (
 	decisionWithhold
 	// decisionReject is a plain Access-Reject.
 	decisionReject
-	// decisionAcceptEAPFailure is an Access-Accept whose EAP payload says
-	// Failure — the RADIUS code and the EAP code disagreeing.
+	// decisionAcceptEAPFailure is an Access-Accept carrying an EAP Failure.
 	decisionAcceptEAPFailure
 	// decisionAcceptWrongEAPCode is an Access-Accept carrying neither
 	// EAP-Success nor EAP-Failure.
@@ -440,11 +411,7 @@ func (s *fakeEAPTLSServer) exchange(ctx context.Context, packet *radiuslib.Packe
 		s.t.Fatalf("expected EAP response, got code %d", msg.Code)
 	}
 
-	// A client that discarded our last answer retransmits the same EAP
-	// response. A real RADIUS server replies from its cache rather than
-	// re-running the conversation, and this harness has to as well: replaying
-	// the request would feed the same bytes to a TLS handshake that has
-	// already returned, blocking on a pipe nobody reads any more.
+	// Answer a retransmitted response from the cache, as a real server does.
 	if s.haveLastResponse && msg.Identifier == s.lastHandledIdentifier {
 		// A retransmission carries a fresh Request Authenticator, so the
 		// cached reply is re-signed for it rather than replayed verbatim.

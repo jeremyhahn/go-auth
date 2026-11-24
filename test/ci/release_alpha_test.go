@@ -1,12 +1,6 @@
 package ci_test
 
-// Regression tests for go-auth#22: the v1 `release-alpha` recipe guessed a
-// PATCH-only version, cut lightweight unsigned tags as the local git identity,
-// pushed every local tag and swallowed a failed VERSION commit with `|| true`.
-// The Makefile now includes the handbook's release-alpha template (v2.3.9,
-// vendored at mk/release-alpha.mk). These tests run the repository's REAL
-// Makefile against a throwaway bare remote — never a real one — with a stub
-// agent-git.sh that records how it was called and then runs plain git.
+// These tests run the real release-alpha Makefile target against a throwaway bare remote with a stub agent-git.sh that records its calls.
 
 import (
 	"bufio"
@@ -89,10 +83,7 @@ func newReleaseFixtureWith(t *testing.T, changelog string, fragments map[string]
 		{"config", "--global", "init.defaultBranch", "main"},
 		{"config", "--global", "commit.gpgSign", "false"},
 		{"config", "--global", "tag.gpgSign", "false"},
-		// No git process may outlive the test: a detached `gc --auto` (from a
-		// commit, or from the bare remote's receive-pack after a push) kept
-		// writing .git/objects while TempDir's cleanup removed it, and the test
-		// failed with "directory not empty" (CI on go-auth PR #54).
+		// No git process may outlive the test, or a detached gc races TempDir cleanup.
 		{"config", "--global", "gc.auto", "0"},
 		{"config", "--global", "gc.autoDetach", "false"},
 		{"config", "--global", "maintenance.auto", "false"},
@@ -103,7 +94,7 @@ func newReleaseFixtureWith(t *testing.T, changelog string, fragments map[string]
 	}
 	f.git(f.work, "init", "-q")
 	f.git(f.work, "remote", "add", "origin", f.remote)
-	// A pre-existing, unrelated LOCAL tag: v1 pushed it with --tags.
+	// A pre-existing, unrelated local tag that must not be pushed.
 	f.git(f.work, "add", ".")
 	f.git(f.work, "commit", "-q", "-m", "initial")
 	f.git(f.work, "tag", "v0.0.8-stale")
@@ -169,8 +160,7 @@ func TestReleaseAlpha_PublishesOnlyTheNamedAnnotatedTagThroughAgentGit(t *testin
 		t.Fatalf("VERSION = %q, want the unprefixed %q", data, "9.9.9-alpha\n")
 	}
 
-	// Every git write went through agent-git.sh, resolved from PATH, signing
-	// as this repository's literal name.
+	// Every git write went through agent-git.sh from PATH, signing as this repository's literal name.
 	calls, err := os.ReadFile(f.calls)
 	if err != nil {
 		t.Fatalf("agent-git.sh was never called: %v", err)
@@ -224,9 +214,7 @@ func TestReleaseAlpha_RefusesWithoutAnExplicitVersion(t *testing.T) {
 	}
 }
 
-// v1 ran `git commit ... || true` and tagged and pushed anyway, so a failed
-// VERSION commit still published a tag. A rejected commit must now stop the
-// release before any tag exists, locally or on the remote.
+// A rejected VERSION commit must stop the release before any tag exists.
 func TestReleaseAlpha_FailedVersionCommitPublishesNothing(t *testing.T) {
 	f := newReleaseFixture(t)
 	f.env = append(f.env, "AGENT_GIT_REJECT=commit")

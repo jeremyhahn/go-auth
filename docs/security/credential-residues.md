@@ -6,8 +6,7 @@
 go-auth holds every credential in a go-enclave `*enclave.MemoryEnclave`
 ([credentials.md](../credentials.md)). This register lists every place where
 plaintext must nevertheless leave locked memory because a dependency accepts
-it only as a `string`, keeps its own copy, or derives state from it. Owner
-ruling on [#3](https://github.com/jeremyhahn/go-auth/issues/3) §10.6:
+it only as a `string`, keeps its own copy, or derives state from it. The policy is
 **accept, document, gate** — fix what go-auth owns, register what third-party
 APIs force, and do not fork upstream libraries.
 

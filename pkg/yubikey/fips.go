@@ -1,18 +1,12 @@
 // FIPS activation gate for the YubiCloud validator.
 //
-// Company FIPS boundary ruling 1 (2026-08-20) is one artifact for both markets:
-// every binary is built FIPS-capable and FIPS is *activated at deployment*
-// with GODEBUG=fips140=only. Product ruling 7 says what an interop surface does
-// when that happens — restrict to approved options, or be "disabled with a
-// clear typed error".
-//
-// pkg/yubikey is the restrict case. Yubico Validation Protocol 2.0 signs every
-// request and response with HMAC-SHA-1, which fips140=only refuses, so the
-// YubiCloud validator (HTTPValidator) is disabled with ErrFIPSUnsupported. The
-// rest of the package is untouched: an injected OTPValidator that speaks to an
-// approved validation service keeps working. Without the gate a FIPS-activated
-// deployment using the package default would construct cleanly and panic
-// inside crypto/hmac on the first OTP. This mirrors pkg/radius/fips.go.
+// Every binary is built FIPS-capable and FIPS is activated at deployment with
+// GODEBUG=fips140=only. Yubico Validation Protocol 2.0 signs every request and
+// response with HMAC-SHA-1, which fips140=only refuses, so the YubiCloud
+// validator (HTTPValidator) is disabled with ErrFIPSUnsupported. An injected
+// OTPValidator that speaks to an approved validation service keeps working.
+// Without the gate the package default would panic inside crypto/hmac on the
+// first OTP. Mirrors pkg/radius/fips.go.
 
 package yubikey
 
@@ -35,18 +29,10 @@ import (
 var ErrFIPSUnsupported = errors.New("yubikey: YubiCloud validator unavailable under FIPS 140-only mode: " +
 	"Yubico Validation Protocol 2.0 signs with HMAC-SHA-1, which is not an approved primitive")
 
-// fips140OnlyActive reports whether this process refuses HMAC-SHA-1.
-//
-// It is a variable so that the tests can drive both branches without a second
-// process; production code never assigns it.
+// fips140OnlyActive reports whether HMAC-SHA-1 is refused; a variable so tests can drive both branches.
 var fips140OnlyActive = sync.OnceValue(hmacSHA1Unavailable)
 
-// hmacSHA1Unavailable computes one HMAC-SHA-1 over a fixed non-secret input and
-// reports whether the runtime refused.
-//
-// It executes the primitive rather than asking crypto/fips140, for the reasons
-// pkg/radius/fips.go measures and records. The key is 32 bytes so that a
-// refusal is for the digest and not for a short key.
+// hmacSHA1Unavailable runs one HMAC-SHA-1 with a 32-byte key and reports whether the runtime refused.
 func hmacSHA1Unavailable() (unavailable bool) {
 	defer func() {
 		if recover() != nil {

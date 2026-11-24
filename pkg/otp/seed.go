@@ -77,11 +77,7 @@ func DecodeSeed(encoded string) (*enclave.MemoryEnclave, error) {
 		return nil, fmt.Errorf("%w: seed must not be empty", ErrInvalidConfig)
 	}
 
-	// Go's unpadded decoder discards a trailing group too short to encode a
-	// whole byte rather than rejecting it, so "<seed>A" decodes to exactly the
-	// key "<seed>" does. A seed carrying a stray character would then be
-	// accepted here and produce codes the enrolled authenticator never agrees
-	// with — a failure at every login, with nothing at construction to say why.
+	// Reject a trailing group too short for a whole byte, which Go's unpadded decoder would silently drop.
 	if n := len(trimmed) % 8; n == 1 || n == 3 || n == 6 {
 		return nil, fmt.Errorf("%w: seed must be valid base32: it ends in %d "+
 			"characters that do not encode a whole byte", ErrInvalidConfig, n)
@@ -93,14 +89,7 @@ func DecodeSeed(encoded string) (*enclave.MemoryEnclave, error) {
 	}
 	var seed *enclave.MemoryEnclave
 	err = scratch.WithBytes(func(text []byte) error {
-		// Upper-case in place rather than with strings.ToUpper, which would
-		// allocate a second copy of the encoded seed on the heap.
-		//
-		// Every character is checked against the alphabet here, before the
-		// output is sized: Go's decoder skips CR and LF without counting them,
-		// so an embedded newline would leave zero bytes past the decoded seed
-		// in a buffer sized from the input length -- a longer key than the one
-		// enrolled, and one that could pass the FIPS minimum it does not meet.
+		// Upper-case in place and check every character first, so CR/LF cannot leave padding bytes in the key.
 		for i := range len(trimmed) {
 			c := trimmed[i]
 			if c >= 'a' && c <= 'z' {
@@ -180,10 +169,7 @@ func EncodeSecret(seed *enclave.MemoryEnclave) (string, error) {
 	return encoded, nil
 }
 
-// trimBase32 returns encoded without surrounding whitespace or trailing
-// padding. It slices the input rather than building a new string, so no copy
-// of the encoded seed is made: the result shares the caller's backing array,
-// which the caller already holds.
+// trimBase32 slices encoded to drop surrounding whitespace and trailing padding without copying.
 func trimBase32(encoded string) string {
 	return strings.TrimRight(strings.TrimSpace(encoded), "=")
 }

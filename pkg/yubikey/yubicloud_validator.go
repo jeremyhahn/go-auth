@@ -17,12 +17,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
-	// SHA-1 here is protocol-mandated, not a cipher choice: the YubiCloud
-	// validation protocol (Yubico Validation Protocol 2.0) signs every
-	// request and response with HMAC-SHA1 over the sorted parameter list.
-	// Any other digest is rejected by the service. It is used only for HMAC,
-	// never as a bare hash, and SHA-1 collisions do not carry over to
-	// HMAC-SHA1.
+	// SHA-1 is protocol-mandated: Yubico Validation Protocol 2.0 signs with HMAC-SHA1, used only in HMAC.
 	"crypto/sha1" // #nosec G505 -- Yubico Validation Protocol 2.0 signs with HMAC-SHA1 by definition
 	"encoding/base64"
 	"errors"
@@ -154,13 +149,7 @@ func (v *HTTPValidator) exchange(ctx context.Context, clientID string, apiKey *e
 	return nil
 }
 
-// computeSignature signs the sorted parameter list with the API key, which is
-// borrowed from its enclave and decoded into a locked scratch enclave for the
-// HMAC. Neither the base64 key nor the decoded key reaches ordinary heap
-// (crypto/hmac's ipad/opad blocks are its own derived copies).
-//
-// It is the one path to the HMAC-SHA-1, so it carries the FIPS gate itself and
-// no caller can reach the primitive's panic.
+// computeSignature HMACs the sorted parameters with the API key decoded into locked memory, and carries the FIPS gate.
 func computeSignature(values url.Values, apiKey *enclave.MemoryEnclave) (string, error) {
 	if fips140OnlyActive() {
 		return "", ErrFIPSUnsupported
@@ -182,18 +171,9 @@ func computeSignature(values url.Values, apiKey *enclave.MemoryEnclave) (string,
 	return signature, nil
 }
 
-// withDecodedAPIKey base64-decodes the API key into a locked scratch enclave
-// and calls fn with it; the scratch enclave is destroyed before it returns.
-//
-// A key that is not valid base64 is passed through as its own bytes. That is
-// what this package has always done — Yubico issues base64 keys, but callers
-// have been known to configure the raw value, and changing that here would
-// break their signatures rather than protect anything.
+// withDecodedAPIKey base64-decodes the API key into a locked scratch enclave for fn; a non-base64 key is used as raw bytes.
 func withDecodedAPIKey(encoded []byte, fn func(key []byte) error) (err error) {
-	// base64 needs two characters to carry a byte, so a key shorter than that
-	// decodes to nothing and can only be a raw one. Asking for a zero-length
-	// scratch buffer would fail before the fallback could run, which would
-	// reject a one-byte raw key that Config.validate accepts.
+	// A key under two characters can only be raw.
 	size := base64.StdEncoding.DecodedLen(len(encoded))
 	if size == 0 {
 		return fn(encoded)

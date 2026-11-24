@@ -141,9 +141,7 @@ func TestIntegration_TOTP_EndToEnd(t *testing.T) {
 	}
 }
 
-// TestIntegration_TOTP_TimeSkew drives the skew window without waiting on the
-// clock: RFC 6238 §4 defines TOTP as HOTP over the time step, so an HOTP
-// authenticator over the same seed derives the codes for neighboring steps.
+// TestIntegration_TOTP_TimeSkew derives neighbouring steps with HOTP over the same seed (RFC 6238 §4).
 func TestIntegration_TOTP_TimeSkew(t *testing.T) {
 	const period = 30
 	seeds := seedCopies(t, 2)

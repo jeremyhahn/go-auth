@@ -3,11 +3,7 @@ package radius
 import (
 	"bytes"
 	"crypto/hmac"
-	// MD5 here is protocol-mandated, not a cipher choice: the RADIUS
-	// Message-Authenticator attribute is defined as HMAC-MD5 over the packet
-	// (RFC 2869 §5.14, RFC 3579 §3.2). Any other digest is unreadable by a
-	// conforming RADIUS server. It is used only for HMAC, never as a bare
-	// hash, and the collision attacks on MD5 do not carry over to HMAC-MD5.
+	// MD5 is protocol-mandated: Message-Authenticator is HMAC-MD5 (RFC 2869 §5.14, RFC 3579 §3.2), used only in HMAC.
 	"crypto/md5" // #nosec G501 -- RFC 2869 Message-Authenticator is HMAC-MD5 by definition
 	"encoding/binary"
 	"errors"
@@ -204,15 +200,7 @@ func setResponseMessageAuthenticator(resp *radiuslib.Packet, requestAuthenticato
 	return setMessageAuthenticator(resp, secret)
 }
 
-// verifyResponseMessageAuthenticator validates the Message-Authenticator on a
-// response packet.
-//
-// RFC 2869 §5.14 and RFC 3579 §3.2 compute the attribute for an Access-Accept,
-// Access-Reject or Access-Challenge over the response with the *request's*
-// Authenticator standing in the Authenticator field — not the response's own,
-// which at that point holds the Response Authenticator. Verifying against the
-// response's own value cannot match a conforming server, so this is a separate
-// entry point from the request-side check rather than a flag on it.
+// verifyResponseMessageAuthenticator validates a response's Message-Authenticator computed over the request's Authenticator (RFC 2869 §5.14).
 func verifyResponseMessageAuthenticator(resp *radiuslib.Packet, requestAuthenticator [16]byte, secret []byte) error {
 	if resp == nil {
 		return errors.New("radius: nil response packet")
@@ -223,10 +211,7 @@ func verifyResponseMessageAuthenticator(resp *radiuslib.Packet, requestAuthentic
 	return verifyMessageAuthenticator(resp, secret)
 }
 
-// verifyMessageAuthenticator validates the attribute over the packet as it
-// stands. That is correct for an Access-Request, whose Authenticator field
-// already holds the Request Authenticator the HMAC is defined over. Responses
-// go through verifyResponseMessageAuthenticator.
+// verifyMessageAuthenticator validates the attribute over an Access-Request as it stands.
 func verifyMessageAuthenticator(packet *radiuslib.Packet, secret []byte) error {
 	attr, ok := packet.Attributes.Lookup(radiusTypeMessageAuthenticator)
 	if !ok {

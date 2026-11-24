@@ -30,7 +30,7 @@ the release versioning of the company conventions (`release-versioning.md`).
 - CI tool pins move to the upstream latest, in step with the ci-runner image:
   golangci-lint `v2.13.2` → `v2.14.0` (govulncheck `v1.8.0`, gosec `v2.29.0`
   and Go `1.27.1` are the baked versions) ([#60]).
-- go-enclave `v0.6.1-alpha` → `v0.8.0-alpha` ([#62], owner ruling 2026-10-07).
+- go-enclave `v0.6.1-alpha` → `v0.8.0-alpha` ([#62]).
   Every caller of a removed or changed go-enclave API is migrated:
   `NewMemoryEnclaveFromString(s)` → `NewMemoryEnclave([]byte(s))`,
   `OpenString()` → a copy taken inside `WithBytes`, `DestroyErr()` → `Destroy()`,
@@ -53,8 +53,8 @@ the release versioning of the company conventions (`release-versioning.md`).
 ### Changed
 
 - **BREAKING — the `fips140only` build tag no longer exists for RADIUS,
-  TACACS+, the YubiCloud validator or `pkg/api` ([#20]).** FIPS boundary
-  ruling 1 mandates one FIPS-capable artifact: build with `GOFIPS140=latest`
+  TACACS+, the YubiCloud validator or `pkg/api` ([#20]).** One FIPS-capable
+  artifact: build with `GOFIPS140=latest`
   and activate FIPS at deployment with `GODEBUG=fips140=only`. `pkg/radius`,
   `pkg/tacacs`, the YubiCloud `HTTPValidator` and the RADIUS/TACACS+ assertions
   in `pkg/api` are now in every build. Anyone building with
@@ -85,8 +85,7 @@ the release versioning of the company conventions (`release-versioning.md`).
   tests the whole module under `GOFIPS140=latest` and `GODEBUG=fips140=only`,
   so it proves every backend either works or refuses with its typed error.
 - **BREAKING:** `pkg/otp`: the OTP seed lives only in a go-enclave
-  `*enclave.MemoryEnclave`, as `Config.Seed` ([#46], owner ruling go-auth#3,
-  2026-10-01). The plaintext `Config.Secret string` path is removed outright, as
+  `*enclave.MemoryEnclave`, as `Config.Seed` ([#46]). The plaintext `Config.Secret string` path is removed outright, as
   is `Config.SecretKey *secret.Secret`; `pkg/otp` no longer imports
   `pkg/secret`.
 - **BREAKING:** `pkg/otp`: `NewAuthenticator` takes ownership of `Config.Seed`
@@ -193,8 +192,7 @@ refresh surface (go-recountly `pkg/qbo/oauth.go`):
 | `oauth.FlowAuthorizationCode`, `oauth.FlowClientCredentials` | unchanged |
 - **BREAKING:** one credential type across the library: every password, PIN,
   one-time password, shared secret, service-account password and API key is a
-  go-enclave `*enclave.MemoryEnclave` ([#48], owner ruling on go-auth#3,
-  2026-10-01). Every plaintext-`string` credential path is removed, with no
+  go-enclave `*enclave.MemoryEnclave` ([#48]). Every plaintext-`string` credential path is removed, with no
   deprecated shims. Usernames, DNs and client IDs stay `string`.
 - **BREAKING:** the common authenticator interface is
   `Authenticate(ctx, username string, password *enclave.MemoryEnclave) error`
@@ -369,9 +367,9 @@ Migration:
 ### Changed
 
 - The module's `go` directive is raised from `1.26.7` to `1.27.0`, the
-  portfolio toolchain (owner ruling 2026-09-01); consumers now need Go 1.27.
+  portfolio toolchain; consumers now need Go 1.27.
   CI lints with golangci-lint `v2.13.2`, moved in the same change because
-  `v2.12.2` cannot lint Go 1.27, and on Gitea it uses the ci-runner image's
+  `v2.12.2` cannot lint Go 1.27, and in CI it uses the ci-runner image's
   baked golangci-lint, gosec and govulncheck instead of installing over them,
   failing if a tool is absent or golangci-lint is not the pinned version
   ([#26]). The checks are `make verify-lint-tool` and
@@ -466,7 +464,7 @@ Migration:
   promise in the API's own vocabulary: a caller who invokes a security function
   and gets silence is worse off than one that fails to compile, because the
   compile error is found once at build time by the person who can fix it, while
-  the silent no-op is found after an incident, if ever. So callers of these two
+  the silent no-op may never be found. So callers of these two
   symbols get a compile error. Verified zero consumers before removal — no
   reference anywhere in go-auth (source or tests) and none in the three in-house
   consumers (go-quicbaas, go-recountly, go-trusted-platform). Ordered shutdown

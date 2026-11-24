@@ -136,8 +136,7 @@ func ExampleNewAuthenticator_authorizationCode() {
 	}
 	defer auth.Close()
 
-	// Generate authorization URL with PKCE. The verifier is generated in
-	// locked memory; keep it in-process, keyed by state.
+	// Build the PKCE authorization URL; keep the verifier in-process, keyed by state.
 	state := "random-state-string"
 	authURL, verifier, err := auth.BuildAuthURLPKCE(state, nil)
 	if err != nil {

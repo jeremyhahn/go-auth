@@ -21,10 +21,7 @@ type Authenticator struct {
 	url            string
 	userDNTemplate string
 	serviceBindDN  string
-	// servicePassword is the service account's bind password in locked
-	// memory. The authenticator owns it from the moment WithServiceAccount is
-	// applied, opens it only for the duration of a single service bind, and
-	// destroys it in Close (or in NewAuthenticator, if construction fails).
+	// servicePassword is owned by the authenticator, opened only for a service bind and destroyed in Close.
 	servicePassword *enclave.MemoryEnclave
 	// optionErr collects a failed Destroy of a password an option replaced.
 	// Options cannot return an error, so NewAuthenticator reports it.

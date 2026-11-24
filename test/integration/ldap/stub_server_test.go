@@ -15,13 +15,7 @@ import (
 	ber "github.com/go-asn1-ber/asn1-ber"
 )
 
-// This file is the suite's LDAP fixture: a minimal in-process LDAPv3 server
-// implementing exactly the operations pkg/ldap's Authenticator performs —
-// simple Bind, the StartTLS extended operation, and Unbind — plus Search over a
-// fixed directory, served over plain TCP or a TLS listener (ldaps). It replaces github.com/vjeantet/ldapserver, which is
-// unmaintained and carries a shutdown race (#15). Shutdown here is ordered:
-// Close stops the listener, closes every live connection, and waits for every
-// connection goroutine before returning, so no goroutine outlives the test.
+// A minimal in-process LDAPv3 server (Bind, StartTLS, Unbind, Search) over TCP or TLS whose Close waits for every connection goroutine.
 
 // LDAPv3 protocol-op application tags (RFC 4511 §4.2, §4.3, §4.5, §4.12).
 const (

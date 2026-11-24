@@ -1,18 +1,5 @@
 #!/bin/sh
-# verify-ci-tools.sh — fail closed when a CI analyser is not the one the gate
-# expects (go-auth#26).
-#
-#   verify-ci-tools.sh lint <golangci-lint version>
-#   verify-ci-tools.sh security
-#
-# The ci-runner image bakes golangci-lint, gosec and govulncheck. This script
-# checks them; it never installs anything. A missing or mismatched tool means
-# the image is wrong, and installing over it would hide exactly that. The make
-# targets that run the analysers skip a missing tool with exit 0, so without
-# this check a runner without the tools would pass with nothing analysed.
-#
-# Only shell builtins are used besides the tools under test, so the script
-# behaves the same with a PATH that holds nothing else (the tests rely on it).
+# verify-ci-tools.sh lint <version> | security: fail when an analyser baked into the CI image is missing or not the pinned version; never installs.
 
 set -u
 

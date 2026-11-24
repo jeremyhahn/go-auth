@@ -365,8 +365,7 @@ endpoint with nothing pointing at the cause. Those keys are rejected.
 ### Credentials in locked memory
 
 Every OAuth credential the package handles lives in a go-enclave
-`*enclave.MemoryEnclave`, never in a plaintext `string` ([#47], owner ruling on
-[#3]).
+`*enclave.MemoryEnclave`, never in a plaintext `string` ([#47]).
 
 | Credential | Where it lives | Owner |
 |---|---|---|
