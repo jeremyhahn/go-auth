@@ -1,6 +1,15 @@
 //go:build ignore
 
-// Package main demonstrates RADIUS PAP authentication; run with go run pap_example.go.
+// Package main demonstrates RADIUS PAP authentication.
+//
+// This example shows how to:
+// - Configure the RADIUS authenticator
+// - Perform PAP (Password Authentication Protocol) authentication
+// - Handle errors properly
+//
+// Usage:
+//
+//	go run pap_example.go
 package main
 
 import (

@@ -1,6 +1,16 @@
 //go:build ignore
 
-// Package main demonstrates OAuth 2.0 JWT validation against a JWKS; run with go run token_validation_example.go.
+// Package main demonstrates OAuth 2.0 token validation.
+//
+// This example shows how to:
+// - Configure OAuth for token validation
+// - Validate JWT tokens using JWKS
+// - Extract user claims from tokens
+// - Use token caching for performance
+//
+// Usage:
+//
+//	go run token_validation_example.go
 package main
 
 import (

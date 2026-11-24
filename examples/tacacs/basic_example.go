@@ -1,4 +1,14 @@
-// Package main demonstrates TACACS+ authentication and privilege levels; run with go run basic_example.go.
+// Package main demonstrates TACACS+ authentication.
+//
+// This example shows how to:
+// - Configure the TACACS+ authenticator
+// - Perform username/password authentication
+// - Handle privilege levels
+// - Handle errors properly
+//
+// Usage:
+//
+//	go run basic_example.go
 package main
 
 import (

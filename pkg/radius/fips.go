@@ -1,4 +1,12 @@
-// FIPS activation gate: RADIUS needs MD5 and HMAC-MD5 (RFC 2865 §3, RFC 2869 §5.14), so it refuses to start under GODEBUG=fips140=only instead of panicking.
+// FIPS activation gate.
+//
+// Every binary is built FIPS-capable and FIPS is activated at deployment with
+// GODEBUG=fips140=only. There is no approved RADIUS: RFC 2865 §3 authenticates
+// every packet with MD5, RFC 2869 §5.14 signs it with HMAC-MD5, and RadSec
+// (RFC 6614) only wraps the same packet in TLS. When FIPS is activated the
+// RADIUS backend is refused at startup with a typed error instead of panicking
+// inside crypto/hmac on the first Access-Request. This is the only FIPS
+// mechanism in this package; there is no FIPS-only build.
 
 package radius
 
@@ -9,7 +17,14 @@ import (
 	"sync"
 )
 
-// ErrFIPSUnsupported reports that FIPS 140-only mode is active, where RADIUS cannot operate; see docs/fips.md.
+// ErrFIPSUnsupported reports that the process is running under Go's FIPS
+// 140-only mode, in which the RADIUS backend cannot operate at all.
+//
+// Every RADIUS packet carries an MD5 Request/Response Authenticator (RFC 2865
+// §3) and an HMAC-MD5 Message-Authenticator (RFC 2869 §5.14), so there is no
+// configuration, transport or option that avoids the primitive — RadSec
+// included. A caller that must authenticate under FIPS 140-3 uses a different
+// backend; see docs/fips.md.
 var ErrFIPSUnsupported = errors.New("radius: unavailable under FIPS 140-only mode: " +
 	"RFC 2865 §3 authenticates every packet with MD5 and RFC 2869 §5.14 signs it with HMAC-MD5, " +
 	"neither of which is an approved primitive")

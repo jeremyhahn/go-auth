@@ -20,7 +20,20 @@ const seedBytes = 20
 // no padding, per the Key URI Format's "secret" parameter.
 var seedEncoding = base32.StdEncoding.WithPadding(base32.NoPadding)
 
-// GenerateProtectedSecret generates a random 160-bit seed directly into a locked, frozen enclave owned by the caller.
+// GenerateProtectedSecret generates a cryptographically random 160-bit seed
+// directly into a locked enclave. The key never exists anywhere else: the
+// enclave is allocated at its final size, crypto/rand fills the locked pages
+// in place inside WithBytes, and the pages are frozen read-only before this
+// returns.
+//
+// The caller owns the result until it hands it to NewAuthenticator in
+// Config.Seed, which takes ownership. Callers that need the base32 text to
+// enroll the seed — a QR code, a recovery slip, an encrypted column — get it
+// from Authenticator.ProvisioningURI or EncodeSecret, which are explicit about
+// producing a copy that cannot be wiped.
+//
+// A refusal to lock memory surfaces as enclave.ErrLockedMemoryUnavailable;
+// there is no fallback to ordinary memory.
 func GenerateProtectedSecret() (*enclave.MemoryEnclave, error) {
 	seed, err := enclave.NewMemoryEnclaveSized(seedBytes)
 	if err != nil {
@@ -38,7 +51,26 @@ func GenerateProtectedSecret() (*enclave.MemoryEnclave, error) {
 	return seed, nil
 }
 
-// DecodeSeed decodes a case-insensitive, optionally padded base32 seed into a locked enclave without a heap copy; encoded itself is the caller's residue.
+// DecodeSeed decodes a base32 seed — the form a provisioning URI carries and
+// the form most stores persist — into a locked enclave.
+//
+// Nothing about the key reaches ordinary heap: the encoded text is copied into
+// a locked scratch enclave, upper-cased there, and decoded from there straight
+// into the locked pages of the enclave that is returned. base32.DecodeString
+// would instead hand back a plaintext slice for the collector to keep — and so
+// would the strings.ToUpper and []byte conversion an ordinary normalization
+// step needs.
+//
+// encoded itself is a Go string and cannot be wiped. That is the one residue,
+// and it is the caller's: a seed read from a configuration file or a database
+// already exists in that form. Use GenerateProtectedSecret for a seed this
+// process is creating, which has no string form at all until something asks
+// for one.
+//
+// Padding is optional and the input is case-insensitive, matching what
+// provisioning tools emit. An unpadded final group that encodes whole bytes is
+// accepted for the same reason; one too short to encode a whole byte is not,
+// and is the one case Go's unpadded decoder would discard silently.
 func DecodeSeed(encoded string) (*enclave.MemoryEnclave, error) {
 	trimmed := trimBase32(encoded)
 	if trimmed == "" {
@@ -103,7 +135,15 @@ func DecodeSeed(encoded string) (*enclave.MemoryEnclave, error) {
 	return seed, nil
 }
 
-// EncodeSecret renders a borrowed seed as unpadded base32; the returned string is an unwipeable copy for enrollment or storage.
+// EncodeSecret renders a seed as unpadded base32, the form a provisioning URI
+// and most persistent stores carry. It borrows the seed and leaves it alive.
+//
+// This deliberately takes the key out of protected memory: the result is an
+// immutable Go string that cannot be wiped and lives until the collector
+// reclaims it. It exists for the two moments that genuinely need the encoded
+// form — showing a newly generated seed to the user to enroll, and persisting
+// it — and is the documented residue of both. The encoding itself happens in a
+// locked scratch enclave, so the string is the only unprotected copy.
 func EncodeSecret(seed *enclave.MemoryEnclave) (string, error) {
 	if seed == nil {
 		return "", fmt.Errorf("%w: seed must not be nil", ErrInvalidConfig)

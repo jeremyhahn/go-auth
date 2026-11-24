@@ -1,6 +1,16 @@
 //go:build ignore
 
-// Package main demonstrates the OAuth 2.0 client credentials flow; run with go run client_credentials_example.go.
+// Package main demonstrates OAuth 2.0 client credentials flow.
+//
+// This example shows how to:
+// - Configure OAuth for client credentials flow
+// - Authenticate machine-to-machine (M2M) applications
+// - Request access tokens with specific scopes
+// - Handle token refresh
+//
+// Usage:
+//
+//	go run client_credentials_example.go
 package main
 
 import (

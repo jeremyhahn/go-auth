@@ -1,4 +1,14 @@
-// Package main demonstrates YubiKey OTP validation through YubiCloud; run with go run basic_example.go.
+// Package main demonstrates YubiKey OTP authentication.
+//
+// This example shows how to:
+// - Configure the YubiKey authenticator
+// - Validate YubiKey OTPs
+// - Use the YubiCloud validation service
+// - Handle errors properly
+//
+// Usage:
+//
+//	go run basic_example.go
 package main
 
 import (

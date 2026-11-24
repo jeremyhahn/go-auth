@@ -1,4 +1,16 @@
-// Package main demonstrates TPM 2.0 unseal with password and PCR validation; requires a TPM 2.0 device or simulator.
+// Package main demonstrates TPM 2.0 authentication.
+//
+// This example shows how to:
+// - Configure the TPM 2.0 authenticator
+// - Unseal data with password validation
+// - Verify platform integrity with PCR validation
+// - Handle errors properly
+//
+// Usage:
+//
+//	go run basic_example.go
+//
+// Note: This example requires a TPM 2.0 device (physical or software emulator).
 package main
 
 import (

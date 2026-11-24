@@ -1,4 +1,11 @@
-// TACACS+ obfuscates bodies with an MD5 keystream (RFC 8907 §4.5), so under GODEBUG=fips140=only the constructors return ErrFIPSUnsupported. See docs/fips.md.
+// TACACS+ is in every build and refuses to run when FIPS is activated.
+//
+// RFC 8907 §4.5 obfuscates every packet body with an MD5-based keystream
+// (a chain of MD5(session_id || key || version || seq_no || prev_hash) blocks
+// XORed over the body). It is the only body encoding the protocol defines, so
+// a conforming TACACS+ client cannot avoid MD5. Under GODEBUG=fips140=only the
+// constructors therefore return ErrFIPSUnsupported (fips.go) rather than
+// shipping a backend that panics on first use. See docs/fips.md.
 
 package tacacs
 
@@ -74,7 +81,20 @@ func WithDialContext(dial func(ctx context.Context, network, addr string) (net.C
 	}
 }
 
-// NewAuthenticator constructs a TACACS+ authenticator; it takes ownership of sharedSecret and returns ErrFIPSUnsupported first under FIPS activation.
+// NewAuthenticator constructs a TACACS+ authenticator for the given server.
+//
+// sharedSecret is the RFC 8907 shared secret in locked memory; build it with
+// enclave.NewMemoryEnclave (which wipes the caller's slice) or, from a
+// configuration string, enclave.NewMemoryEnclave([]byte(s)).
+//
+// It TAKES OWNERSHIP of sharedSecret on every return path: when it returns an
+// error — the FIPS refusal included — the enclave has already been destroyed,
+// and otherwise Close destroys it. Do not use or destroy it afterwards, and
+// give each authenticator its own enclave.
+//
+// Under FIPS activation this returns ErrFIPSUnsupported ahead of every argument
+// check, so startup code can branch on errors.Is(err, ErrFIPSUnsupported) to
+// learn the backend is unavailable.
 func NewAuthenticator(addr string, sharedSecret *enclave.MemoryEnclave, opts ...Option) (*Authenticator, error) {
 	if err := validateArgs(addr, sharedSecret); err != nil {
 		return nil, credential.DestroyAll(err, sharedSecret)
@@ -115,7 +135,12 @@ func (a *Authenticator) Close() error {
 	return a.secret.Destroy()
 }
 
-// Authenticate verifies a username and borrowed password; it returns ErrFIPSUnsupported under FIPS activation.
+// Authenticate verifies username/password credentials against the TACACS+ server.
+//
+// The password is BORROWED and never destroyed here. Under FIPS activation it
+// returns ErrFIPSUnsupported before any packet is built; the constructor
+// already refuses, so this only matters for an authenticator that did not
+// come from it.
 func (a *Authenticator) Authenticate(ctx context.Context, username string, password *enclave.MemoryEnclave) error {
 	if fips140OnlyActive() {
 		return ErrFIPSUnsupported

@@ -1,6 +1,16 @@
 //go:build ignore
 
-// Package main demonstrates RADIUS EAP-TLS authentication with client certificates; run with go run eap_tls_example.go.
+// Package main demonstrates RADIUS EAP-TLS authentication.
+//
+// This example shows how to:
+// - Configure RADIUS for EAP-TLS authentication
+// - Use client certificates for authentication
+// - Handle TLS configuration
+// - Handle errors properly
+//
+// Usage:
+//
+//	go run eap_tls_example.go
 package main
 
 import (

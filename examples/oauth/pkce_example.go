@@ -1,6 +1,17 @@
 //go:build ignore
 
-// Package main demonstrates the OAuth 2.0 authorization code flow with PKCE; run with go run pkce_example.go.
+// Package main demonstrates OAuth 2.0 authorization code flow with PKCE.
+//
+// This example shows how to:
+// - Configure OAuth for authorization code flow
+// - Generate PKCE challenge and verifier
+// - Build authorization URL
+// - Exchange authorization code for tokens
+// - Handle the OAuth callback
+//
+// Usage:
+//
+//	go run pkce_example.go
 package main
 
 import (

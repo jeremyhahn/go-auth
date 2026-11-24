@@ -1,4 +1,11 @@
-// FIPS activation gate: TACACS+ needs an MD5 keystream (RFC 8907 §4.5), so it refuses to start under GODEBUG=fips140=only instead of panicking.
+// FIPS activation gate.
+//
+// Every binary is built FIPS-capable and FIPS is activated at deployment with
+// GODEBUG=fips140=only. There is no approved TACACS+: RFC 8907 §4.5 obfuscates
+// every packet body with an MD5 keystream, the only body encoding it defines
+// for production use. When FIPS is activated TACACS+ is refused at startup with
+// a typed error instead of panicking inside crypto/md5 on the first
+// authentication. Same shape as pkg/radius/fips.go.
 
 package tacacs
 
@@ -8,7 +15,13 @@ import (
 	"sync"
 )
 
-// ErrFIPSUnsupported reports that FIPS 140-only mode is active, where TACACS+ cannot operate; see docs/fips.md.
+// ErrFIPSUnsupported reports that the process is running under Go's FIPS
+// 140-only mode, in which the TACACS+ backend cannot operate at all.
+//
+// Every TACACS+ packet body is obfuscated with an MD5 keystream (RFC 8907
+// §4.5), so there is no configuration or option that avoids the primitive. A
+// caller that must authenticate under FIPS 140-3 uses a different backend; see
+// docs/fips.md.
 var ErrFIPSUnsupported = errors.New("tacacs: unavailable under FIPS 140-only mode: " +
 	"RFC 8907 §4.5 obfuscates every packet body with an MD5 keystream, " +
 	"which is not an approved primitive")

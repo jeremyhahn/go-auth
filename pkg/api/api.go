@@ -19,7 +19,12 @@ import (
 	"github.com/jeremyhahn/go-auth/pkg/yubikey"
 )
 
-// Handler is a backend authenticator; password and otp are borrowed for the call, may be nil, and must not be retained or destroyed.
+// Handler defines the contract for a backend authenticator.
+// The implementation should return nil on success or an error on failure.
+//
+// password and otp are BORROWED for the length of the call and either may be
+// nil. A Handler reads them only through the backend it delegates to, must
+// not retain them, and must not destroy them: Service.Login owns them.
 type Handler interface {
 	Authenticate(ctx context.Context, username string, password, otp *enclave.MemoryEnclave) error
 }
@@ -100,7 +105,19 @@ func NewService(cfg Config) (*Service, error) {
 	return &Service{backends: backends}, nil
 }
 
-// LoginRequest holds the credentials in enclaves and an optional target backend; Login takes ownership of Password and OTP and destroys them.
+// LoginRequest contains the credentials and optional target backend.
+//
+// Password and OTP are go-enclave locked memory. Password carries whatever
+// single credential the target backend takes — a password, a PKCS#11 PIN, a
+// TPM authorization value or an OAuth bearer token — and OTP the one-time
+// password for backends that take one. Build them with
+// enclave.NewMemoryEnclave (which wipes the caller's slice) or, at a boundary
+// that hands out strings, enclave.NewMemoryEnclave([]byte(s)).
+//
+// Service.Login TAKES OWNERSHIP of both: it destroys them when the attempt
+// completes, whether it succeeds, fails or is refused. Do not use or destroy
+// them after passing the request to Login, and build a new request for a
+// retry.
 type LoginRequest struct {
 	Backend  BackendName
 	Username string
@@ -108,7 +125,12 @@ type LoginRequest struct {
 	OTP      *enclave.MemoryEnclave
 }
 
-// Login authenticates against the configured backends and destroys req.Password and req.OTP on every path; a failed Destroy is joined to the error.
+// Login attempts authentication using the configured backends.
+//
+// It owns req.Password and req.OTP and destroys them before returning, on
+// every path. Backends borrow them for the length of their attempt. A failed
+// Destroy is joined to the returned error, so a login that succeeded still
+// reports credentials that could not be wiped.
 func (s *Service) Login(ctx context.Context, req LoginRequest) (err error) {
 	defer func() {
 		err = credential.DestroyAll(err, req.Password, req.OTP)
@@ -230,7 +252,11 @@ func OAuth(auth passwordAuthenticator) Handler {
 	})
 }
 
-// OTP creates a Handler for an OTP authenticator; the code comes from OTP, else Password, and Username is ignored.
+// OTP creates a Handler that delegates to an OTP authenticator.
+// The OTP code should be passed in the OTP field, or the Password field as a fallback.
+// Username is ignored for standalone OTP validation.
+// For TOTP, the code is validated against the current time with skew tolerance.
+// For HOTP, the code is validated against the configured counter value.
 func OTP(auth otpAuthenticator) Handler {
 	return HandlerFunc(func(ctx context.Context, _ string, password, otp *enclave.MemoryEnclave) error {
 		code := firstLive(otp, password)

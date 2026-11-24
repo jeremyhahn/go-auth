@@ -1,4 +1,13 @@
-// RADIUS requires MD5 (RFC 2865 §3, RFC 2869 §5.14), so under GODEBUG=fips140=only the constructors return ErrFIPSUnsupported. See docs/fips.md.
+// RADIUS is in every build and refuses to run when FIPS is activated.
+//
+// Every RADIUS exchange is authenticated with MD5: RFC 2865 §3 defines the
+// Request/Response Authenticator as MD5(Code || ID || Length || RequestAuth ||
+// Attributes || Secret), and RFC 2869 §5.14 defines the Message-Authenticator
+// as HMAC-MD5. There is no conforming RADIUS without MD5, and RadSec (RFC 6614)
+// does not help — it wraps the same packet in TLS, and the inner authenticator
+// is still MD5. So this backend cannot be made FIPS-140-only compliant; under
+// GODEBUG=fips140=only the constructors return ErrFIPSUnsupported (fips.go)
+// rather than shipping a backend that panics on first use. See docs/fips.md.
 
 package radius
 
@@ -62,7 +71,15 @@ type dialContext interface {
 // Option configures an Authenticator.
 type Option func(*authConfig)
 
-// WithPacketExchanger overrides the packet exchanger, mainly for tests; it must not retain the packet, which aliases the secret's locked pages.
+// WithPacketExchanger overrides the packet exchanger implementation; primarily used for testing.
+//
+// The packet an exchanger is given aliases the shared secret's locked pages,
+// borrowed for the length of the exchange and unmapped by Close. An
+// implementation must not retain the packet, its Secret field, or anything
+// derived from them beyond the call — a read after Close is of unmapped memory
+// and faults the process.
+// The exchangers in this package, and layeh.com/radius itself, use the secret
+// only on the synchronous encode and verify paths.
 func WithPacketExchanger(pe packetExchanger) Option {
 	return func(c *authConfig) {
 		c.exchanger = pe
@@ -76,7 +93,8 @@ func WithNetwork(network string) Option {
 	}
 }
 
-// WithTLSConfig enables RadSec (RADIUS-over-TLS) with a clone of cfg.
+// WithTLSConfig enables RadSec (RADIUS-over-TLS) using the provided TLS configuration.
+// The configuration is cloned before use to avoid external mutation.
 func WithTLSConfig(cfg *tls.Config) Option {
 	return func(c *authConfig) {
 		c.useTLS = true
@@ -155,7 +173,23 @@ type Authenticator struct {
 	closed    bool // guarded by lifecycle
 }
 
-// NewAuthenticator constructs a RADIUS authenticator for host:port; it takes ownership of sharedSecret and returns ErrFIPSUnsupported first under FIPS activation.
+// NewAuthenticator constructs a RADIUS authenticator.
+//
+// The address must include host and port (for example, "127.0.0.1:1812").
+// sharedSecret is the shared secret that protects Access-Request packets, in
+// locked memory; build it with enclave.NewMemoryEnclave (which wipes the
+// caller's slice) or, from a configuration string, with
+// enclave.NewMemoryEnclave([]byte(s)). Options adjust transport behavior,
+// enable TLS, or supply custom packet exchangers.
+//
+// It TAKES OWNERSHIP of sharedSecret on every return path: when it returns an
+// error — the FIPS refusal included — the enclave has already been destroyed,
+// and otherwise Close destroys it. Do not use or destroy it afterwards, and
+// give each authenticator its own enclave.
+//
+// Under FIPS activation this returns ErrFIPSUnsupported ahead of every argument
+// check, whatever the arguments are, so startup code can branch on
+// errors.Is(err, ErrFIPSUnsupported) to learn the backend is unavailable.
 func NewAuthenticator(address string, sharedSecret *enclave.MemoryEnclave, opts ...Option) (*Authenticator, error) {
 	auth, err := newAuthenticator(address, sharedSecret, opts)
 	if err != nil {
@@ -230,7 +264,11 @@ func (a *Authenticator) Close() error {
 	return a.secret.Destroy()
 }
 
-// Authenticate validates a username and borrowed password; with EAP-TLS the certificate is the credential and password may be nil.
+// Authenticate validates the provided username/password pair.
+//
+// The password is BORROWED and never destroyed here. With EAP-TLS configured
+// the client certificate is the credential, the password is ignored, and it
+// may be nil.
 func (a *Authenticator) Authenticate(ctx context.Context, username string, password *enclave.MemoryEnclave) error {
 	a.lifecycle.RLock()
 	defer a.lifecycle.RUnlock()

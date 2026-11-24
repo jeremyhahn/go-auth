@@ -58,7 +58,10 @@ type UserInfoConfig struct {
 	// Default: 5 minutes
 	CacheTTL time.Duration
 
-	// CacheMaxSize bounds the UserInfo cache (each entry takes locked memory); LRU eviction. Default: 1000
+	// CacheMaxSize is the maximum number of UserInfo responses to cache. Each
+	// one occupies at least a page of locked memory, so the cache is bounded:
+	// at capacity the least-recently-used entry is evicted and destroyed.
+	// Default: 1000
 	CacheMaxSize int
 
 	// Timeout is the HTTP timeout for UserInfo requests.

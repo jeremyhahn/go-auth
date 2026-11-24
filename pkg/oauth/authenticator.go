@@ -24,7 +24,11 @@ type Authenticator struct {
 	userInfoClient  *userInfoClient
 }
 
-// NewAuthenticator creates an OAuth authenticator and takes ownership of config.ClientSecret on every return path.
+// NewAuthenticator creates a new OAuth authenticator with the given configuration.
+//
+// It takes ownership of config.ClientSecret on every return path: the
+// Authenticator destroys it in Close, and NewAuthenticator destroys it before
+// returning an error. The caller must not use that enclave again.
 func NewAuthenticator(config *Config) (auth *Authenticator, err error) {
 	if config == nil {
 		return nil, fmt.Errorf("%w: config is nil", ErrInvalidConfiguration)
@@ -89,7 +93,14 @@ func NewAuthenticator(config *Config) (auth *Authenticator, err error) {
 	return auth, nil
 }
 
-// ValidateToken validates a JWT or opaque access token and returns its claims; the token is borrowed and cached claims are keyed by its SHA-256 fingerprint.
+// ValidateToken validates an access token and returns the claims.
+// The token can be a JWT or opaque token depending on the provider.
+//
+// The token is borrowed, not destroyed: a bearer token taken from an inbound
+// request is typically sealed by the caller and destroyed once this returns.
+// It is opened only at the JWT parse boundary and, for introspection, copied
+// into a locked request body. Cached claims are keyed by the token's SHA-256
+// fingerprint and held in an enclave.
 func (a *Authenticator) ValidateToken(ctx context.Context, token *enclave.MemoryEnclave) (*TokenClaims, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -187,7 +198,12 @@ func (a *Authenticator) AuthenticateClientCredentials(ctx context.Context) (*Tok
 	return a.flows.authenticateClientCredentials(ctx)
 }
 
-// ExchangeAuthorizationCode exchanges a code for tokens without PKCE; the single-use code stays a string.
+// ExchangeAuthorizationCode exchanges an authorization code for tokens without
+// PKCE. Use ExchangeAuthorizationCodePKCE for a flow started with
+// BuildAuthURLPKCE.
+//
+// The code stays a string: it arrives in the redirect's query string, which
+// net/http has already parsed into strings, and is redeemable exactly once.
 func (a *Authenticator) ExchangeAuthorizationCode(ctx context.Context, code string) (*Token, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -208,7 +224,12 @@ func (a *Authenticator) ExchangeAuthorizationCode(ctx context.Context, code stri
 	return a.flows.exchangeAuthorizationCode(ctx, code)
 }
 
-// RefreshToken obtains a new token with a borrowed refresh token; the returned Token is the caller's to Destroy.
+// RefreshToken uses a refresh token to obtain a new access token.
+//
+// The refresh token is borrowed: it is copied from its enclave into a locked
+// request body and is not destroyed, so a caller can pass token.RefreshToken()
+// straight through and destroy the old Token afterwards. The returned Token is
+// the caller's to Destroy.
 func (a *Authenticator) RefreshToken(ctx context.Context, refreshToken *enclave.MemoryEnclave) (*Token, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -225,7 +246,10 @@ func (a *Authenticator) RefreshToken(ctx context.Context, refreshToken *enclave.
 	return a.flows.refreshToken(ctx, refreshToken)
 }
 
-// BuildAuthURL builds the authorization URL without PKCE; additionalParams may not set reserved parameters.
+// BuildAuthURL builds the authorization URL for the authorization code flow
+// without PKCE. state should be a random string to prevent CSRF attacks.
+// additionalParams may not set a parameter this package owns; see buildAuthURL's
+// reservedAuthParams. Use BuildAuthURLPKCE for a flow with PKCE.
 func (a *Authenticator) BuildAuthURL(state string, additionalParams map[string]string) (string, error) {
 	if a.config.Flow != FlowAuthorizationCode {
 		return "", fmt.Errorf("%w: authorization code flow not configured", ErrFlowNotSupported)
@@ -238,7 +262,12 @@ func (a *Authenticator) BuildAuthURL(state string, additionalParams map[string]s
 	return a.flows.buildAuthURL(state, "", additionalParams)
 }
 
-// Authenticate validates a borrowed bearer token for the pkg/api adapter; username is ignored.
+// Authenticate is a convenience method that validates a bearer token. It is
+// the pkg/api adapter: username is ignored and the token arrives where other
+// backends take a password.
+//
+// The token is BORROWED and never destroyed here; a nil, destroyed or blank
+// token fails with ErrMissingToken.
 func (a *Authenticator) Authenticate(ctx context.Context, _ string, token *enclave.MemoryEnclave) error {
 	_, err := a.ValidateToken(ctx, token)
 	return err
@@ -251,7 +280,10 @@ func (a *Authenticator) ClearCache() {
 	}
 }
 
-// Close destroys the client secret and both caches; later requests fail with ErrCredentialUnavailable.
+// Close releases resources held by the authenticator and destroys every
+// credential it owns: the client secret, the cached claims and the cached
+// UserInfo responses. Requests made after Close fail with
+// ErrCredentialUnavailable rather than going out without the client secret.
 func (a *Authenticator) Close() error {
 	if a.validator != nil {
 		a.validator.Close()
@@ -281,7 +313,11 @@ func (a *Authenticator) closeCache() error {
 
 // OIDC-specific methods
 
-// ValidateIDToken validates an OIDC ID token with an optional nonce and access token for at_hash; both tokens are borrowed.
+// ValidateIDToken validates an OpenID Connect ID token.
+// nonce is optional but recommended for authorization code flow.
+// accessToken is optional (nil) and used for at_hash validation if present.
+// Both tokens are borrowed, not destroyed; the ID token is opened only at the
+// JWT parse boundary and the access token is hashed inside its enclave.
 func (a *Authenticator) ValidateIDToken(ctx context.Context, idToken *enclave.MemoryEnclave, nonce string, accessToken *enclave.MemoryEnclave) (*IDTokenClaims, error) {
 	if !a.isOIDCEnabled() {
 		return nil, ErrOIDCNotEnabled

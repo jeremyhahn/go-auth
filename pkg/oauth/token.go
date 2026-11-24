@@ -9,7 +9,25 @@ import (
 	"github.com/jeremyhahn/go-enclave"
 )
 
-// Token is an OAuth 2.0 token response that owns its access, refresh and ID token enclaves until Destroy; the accessors lend them.
+// Token represents an OAuth 2.0 token response.
+//
+// The access, refresh and ID tokens are bearer credentials, so a Token holds
+// each one in its own go-enclave locked region and lends it through an
+// accessor rather than exposing a string. The Token OWNS those enclaves: they
+// stay alive until Destroy, and a caller that needs a credential to outlive the
+// Token must copy it out — inside WithBytes — before destroying the Token.
+// Expiry, token type and scopes are not secrets and stay plain.
+//
+//	token, err := auth.AuthenticateClientCredentials(ctx)
+//	if err != nil {
+//	    return err
+//	}
+//	defer token.Destroy()
+//
+//	err = token.AccessToken().WithBytes(func(access []byte) error {
+//	    req.Header.Set("Authorization", "Bearer "+string(access)) // the caller's own HTTP boundary
+//	    return nil
+//	})
 type Token struct {
 	// TokenType is the type of token (usually "Bearer").
 	TokenType string

@@ -1,4 +1,16 @@
-// Package main demonstrates PAM authentication; build with CGO_ENABLED=1 and PAM libraries installed.
+// Package main demonstrates PAM authentication.
+//
+// This example shows how to:
+// - Configure the PAM authenticator
+// - Perform username/password authentication
+// - Handle errors properly
+//
+// Usage:
+//
+//	go run basic_example.go
+//
+// Note: This example requires PAM libraries to be installed and the binary
+// must be built with CGO enabled (CGO_ENABLED=1).
 package main
 
 import (

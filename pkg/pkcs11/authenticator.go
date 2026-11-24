@@ -9,7 +9,11 @@ import (
 	"github.com/jeremyhahn/go-auth/pkg/internal/credential"
 )
 
-// Session is a PKCS#11 session; Login borrows the PIN and must not retain or destroy it.
+// Session represents an active PKCS#11 session capable of authenticating a PIN.
+//
+// Login BORROWS the PIN for the length of the call: an implementation reads it
+// through WithBytes (or, where the binding only takes a string, through a
+// copy it wipes), must not retain it, and must not destroy it.
 type Session interface {
 	Login(ctx context.Context, pin *enclave.MemoryEnclave) error
 	Logout(ctx context.Context) error
@@ -84,7 +88,10 @@ func NewAuthenticator(cfg Config, provider SessionProvider) (*Authenticator, err
 	return &Authenticator{cfg: cfg, provider: provider}, nil
 }
 
-// Authenticate opens a PKCS#11 session and logs in with the borrowed PIN.
+// Authenticate opens a PKCS#11 session and attempts to log in with the provided PIN.
+//
+// The PIN is BORROWED: it is lent to the session's Login and never destroyed
+// here; the caller still owns it.
 func (a *Authenticator) Authenticate(ctx context.Context, pin *enclave.MemoryEnclave) (err error) {
 	if a == nil {
 		return ErrNilAuthenticator

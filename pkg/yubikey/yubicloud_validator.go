@@ -1,4 +1,15 @@
-// The YubiCloud validator needs HMAC-SHA-1, so under GODEBUG=fips140=only every entry point returns ErrFIPSUnsupported. See docs/fips.md.
+// The YubiCloud validator is in every build and refuses to run when FIPS is
+// activated.
+//
+// Yubico Validation Protocol 2.0 signs every request and response with
+// HMAC-SHA-1 over the sorted parameter list (computeSignature below), and the
+// service rejects any other digest. Go's fips140=only mode admits HMAC over
+// SHA-2 and SHA-3 only, so under that activation every entry point here
+// returns ErrFIPSUnsupported (fips.go) instead of reaching the HMAC, and
+// NewAuthenticator refuses to construct around this validator. init() still
+// installs it as the package default in every build. The rest of pkg/yubikey
+// is unaffected: an injected OTPValidator that speaks to an approved
+// validation service works normally. See docs/fips.md.
 
 package yubikey
 
@@ -57,7 +68,16 @@ func init() {
 	systemValidator = NewHTTPValidator(nil, "")
 }
 
-// Validate signs the request and verifies the response with the borrowed API key; the OTP is a wiped transient string (residue R5).
+// Validate implements OTPValidator: it signs the request and verifies the
+// response signature with the API key borrowed from its enclave, and never
+// materializes the key as a string.
+//
+// The OTP has to travel in the request's query string, so it is lent to
+// net/url and net/http as a string that is wiped when Validate returns; their
+// own copies (the encoded URL, the request line) are residue R5.
+//
+// Under FIPS activation it returns ErrFIPSUnsupported before any request is
+// built or sent.
 func (v *HTTPValidator) Validate(ctx context.Context, clientID string, apiKey, otp *enclave.MemoryEnclave) error {
 	if fips140OnlyActive() {
 		return ErrFIPSUnsupported

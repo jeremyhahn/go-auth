@@ -198,7 +198,10 @@ func (c *userInfoClient) ClearCache() {
 	c.cache.clear()
 }
 
-// Close destroys every cached entry and rejects later inserts with ErrCacheClosed; it is idempotent.
+// Close destroys every cached entry and closes the cache for good: a later
+// insert — including one from a request that was in flight during Close —
+// fails with ErrCacheClosed instead of leaving an enclave nothing will destroy.
+// It is idempotent. The error is the first failed Destroy of a cached entry.
 func (c *userInfoClient) Close() error {
 	return c.cache.close()
 }

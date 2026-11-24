@@ -1,4 +1,16 @@
-// Package main demonstrates PKCS#11 PIN authentication; requires a PKCS#11 library and a token or HSM.
+// Package main demonstrates PKCS#11 smart card/HSM authentication.
+//
+// This example shows how to:
+// - Configure the PKCS#11 authenticator
+// - Authenticate with a PIN
+// - Access hardware security modules or smart cards
+// - Handle errors properly
+//
+// Usage:
+//
+//	go run basic_example.go
+//
+// Note: This example requires PKCS#11 libraries and a connected token/HSM.
 package main
 
 import (

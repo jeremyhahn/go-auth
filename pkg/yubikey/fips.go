@@ -1,4 +1,12 @@
-// FIPS activation gate for YubiCloud: its protocol requires HMAC-SHA-1, so HTTPValidator is disabled under GODEBUG=fips140=only; injected validators still work.
+// FIPS activation gate for the YubiCloud validator.
+//
+// Every binary is built FIPS-capable and FIPS is activated at deployment with
+// GODEBUG=fips140=only. Yubico Validation Protocol 2.0 signs every request and
+// response with HMAC-SHA-1, which fips140=only refuses, so the YubiCloud
+// validator (HTTPValidator) is disabled with ErrFIPSUnsupported. An injected
+// OTPValidator that speaks to an approved validation service keeps working.
+// Without the gate the package default would panic inside crypto/hmac on the
+// first OTP. Mirrors pkg/radius/fips.go.
 
 package yubikey
 
@@ -9,7 +17,15 @@ import (
 	"sync"
 )
 
-// ErrFIPSUnsupported reports that FIPS 140-only mode is active and the YubiCloud validator would be used; see docs/fips.md.
+// ErrFIPSUnsupported reports that the process is running under Go's FIPS
+// 140-only mode, in which the YubiCloud validator cannot operate.
+//
+// Yubico Validation Protocol 2.0 signs every request and response with
+// HMAC-SHA-1 and the service accepts no other digest. NewAuthenticator returns
+// it when the YubiCloud validator — explicitly or as the package default —
+// would be used, and HTTPValidator returns it from every entry point. A caller
+// that must validate OTPs under FIPS 140-3 injects an OTPValidator for an
+// approved service; see docs/fips.md.
 var ErrFIPSUnsupported = errors.New("yubikey: YubiCloud validator unavailable under FIPS 140-only mode: " +
 	"Yubico Validation Protocol 2.0 signs with HMAC-SHA-1, which is not an approved primitive")
 

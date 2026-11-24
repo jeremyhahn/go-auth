@@ -10,7 +10,12 @@ import (
 	"github.com/jeremyhahn/go-auth/pkg/internal/credential"
 )
 
-// OTPValidator validates a YubiKey OTP; apiKey and otp are borrowed and must not be retained or destroyed.
+// OTPValidator describes a component capable of validating a YubiKey OTP.
+//
+// Both credentials are BORROWED for the length of the call: apiKey is the
+// authenticator's Yubico API key and otp is the caller's one-time password.
+// An implementation reads them through WithBytes, must not retain the bytes,
+// and must not destroy either enclave.
 type OTPValidator interface {
 	Validate(ctx context.Context, clientID string, apiKey, otp *enclave.MemoryEnclave) error
 }
@@ -37,7 +42,12 @@ var (
 // Config contains the inputs required to talk to a YubiKey validation service.
 type Config struct {
 	ClientID string
-	// APIKey is the base64 Yubico API key in locked memory; NewAuthenticator takes ownership of it.
+	// APIKey is the base64 API key issued by Yubico, in locked memory. Build
+	// it with enclave.NewMemoryEnclave (which wipes the caller's slice) or,
+	// from a configuration string, enclave.NewMemoryEnclave([]byte(s)).
+	//
+	// NewAuthenticator TAKES OWNERSHIP of it on every return path, and Close
+	// destroys it. Do not use or destroy it afterwards.
 	APIKey *enclave.MemoryEnclave
 }
 
@@ -67,7 +77,16 @@ type Authenticator struct {
 	closed    bool // guarded by lifecycle
 }
 
-// NewAuthenticator constructs a YubiKey authenticator, using the system validator when validator is nil; it owns cfg.APIKey and refuses YubiCloud under FIPS activation.
+// NewAuthenticator constructs a YubiKey authenticator. If validator is nil the
+// package-level system validator is used — the YubiCloud HTTPValidator unless
+// SetSystemValidator replaced it.
+//
+// It owns cfg.APIKey on every return path: when it returns an error the key
+// has already been destroyed, and otherwise Close destroys it.
+//
+// Under FIPS activation it returns ErrFIPSUnsupported, ahead of the
+// configuration checks, when the validator it would use is the YubiCloud one.
+// Any other validator is accepted as usual.
 func NewAuthenticator(cfg Config, validator OTPValidator) (*Authenticator, error) {
 	if validator == nil {
 		validator = systemValidator
@@ -91,7 +110,11 @@ func checkConstruction(cfg Config, validator OTPValidator) error {
 	return nil
 }
 
-// Close waits for in-flight Authenticate calls and destroys the API key; it is idempotent and later calls fail with ErrClosed.
+// Close destroys the API key the authenticator owns. It waits for every
+// in-flight Authenticate to finish — including a YubiCloud exchange whose
+// response signature still has to be verified with the key — and it is
+// idempotent.
+// Authenticate fails with ErrClosed afterwards.
 func (a *Authenticator) Close() error {
 	if a == nil {
 		return nil
@@ -102,7 +125,11 @@ func (a *Authenticator) Close() error {
 	return a.cfg.APIKey.Destroy()
 }
 
-// Authenticate validates a borrowed OTP enclave.
+// Authenticate validates the provided OTP.
+//
+// A YubiKey OTP is a credential for as long as the validation service would
+// accept it, so it travels in an enclave like every other credential. It is
+// BORROWED: the caller still owns it and destroys it.
 func (a *Authenticator) Authenticate(ctx context.Context, otp *enclave.MemoryEnclave) error {
 	if a == nil {
 		return ErrNilAuthenticator
